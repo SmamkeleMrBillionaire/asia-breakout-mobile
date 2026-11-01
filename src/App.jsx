@@ -1,4 +1,3 @@
-
 import React, { useCallback, useEffect, useRef, useState } from "react";
 
 const WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public";
@@ -101,9 +100,7 @@ function candleColor(c) {
 
 function pipSize(symbol, category, candles) {
   if (category === "Forex") {
-    return symbol.toUpperCase().includes("JPY")
-      ? 0.01
-      : 0.0001;
+    return symbol.toUpperCase().includes("JPY") ? 0.01 : 0.0001;
   }
 
   const last = candles[candles.length - 1]?.close || 1;
@@ -112,7 +109,6 @@ function pipSize(symbol, category, candles) {
   return Math.pow(10, -Math.min(decimals, 8));
 }
 
-// ASIA RANGE: 00:00–07:00 UTC
 function buildAsiaRange(candles) {
   if (!candles.length) return null;
 
@@ -139,7 +135,6 @@ function buildAsiaRange(candles) {
   };
 }
 
-// THREE ORIGINAL BOX TYPES ONLY.
 function createBoxes(candles, asiaDay) {
   const boxes = [];
 
@@ -163,7 +158,6 @@ function createBoxes(candles, asiaDay) {
     const currentBear = c.close < c.open;
     const previousBull = prev.close > prev.open;
 
-    // ENGULFED BOX
     if (
       (currentBull && previousBear &&
         c.open <= prev.close && c.close >= prev.open) ||
@@ -178,7 +172,6 @@ function createBoxes(candles, asiaDay) {
       });
     }
 
-    // DOJI BOX
     if (body / range <= 0.25) {
       boxes.push({
         type: "DOJI",
@@ -188,7 +181,6 @@ function createBoxes(candles, asiaDay) {
       });
     }
 
-    // WICK BOX
     if (currentBull) {
       const upperWick = c.high - c.close;
 
@@ -220,33 +212,22 @@ function createBoxes(candles, asiaDay) {
 }
 
 function touchesTop(candle, box) {
-  return candle.low <= box.high &&
-    candle.high >= box.high;
+  return candle.low <= box.high && candle.high >= box.high;
 }
 
 function touchesBottom(candle, box) {
-  return candle.low <= box.low &&
-    candle.high >= box.low;
+  return candle.low <= box.low && candle.high >= box.low;
 }
 
 function touchesBox(candle, box) {
-  return candle.low <= box.high &&
-    candle.high >= box.low;
+  return candle.low <= box.high && candle.high >= box.low;
 }
 
-// NORMAL RETEST DIRECTION
-// Green candle at bottom = SELL.
-// Red candle at top = BUY.
 function getRetestDirection(candle, boundary) {
   const color = candleColor(candle);
 
-  if (boundary === "BOTTOM" && color === "GREEN") {
-    return "SELL";
-  }
-
-  if (boundary === "TOP" && color === "RED") {
-    return "BUY";
-  }
+  if (boundary === "BOTTOM" && color === "GREEN") return "SELL";
+  if (boundary === "TOP" && color === "RED") return "BUY";
 
   return "NONE";
 }
@@ -261,16 +242,6 @@ function makeBoxId(box, asiaDay) {
   ].join("-");
 }
 
-// HLZ BOX LIFECYCLE
-//
-// 1. First breakout.
-// 2. First retest.
-// 3. If first retest fails, wait for opposite-side breakout.
-// 4. Wait for FLIPPY retest.
-// 5. Third touch deletes the box.
-//
-// Confirmed signals remain available on later scans.
-// EMA IS NOT USED.
 function findRetestSignal(candles, symbol, category) {
   const empty = {
     direction: "NONE",
@@ -283,19 +254,13 @@ function findRetestSignal(candles, symbol, category) {
   const asia = buildAsiaRange(candles);
 
   if (!asia) {
-    return {
-      ...empty,
-      reason: "Asia range unavailable"
-    };
+    return { ...empty, reason: "Asia range unavailable" };
   }
 
   const boxes = createBoxes(candles, asia.day);
 
   if (!boxes.length) {
-    return {
-      ...empty,
-      reason: "No boxes found"
-    };
+    return { ...empty, reason: "No boxes found" };
   }
 
   const lastIndex = candles.length - 1;
@@ -316,7 +281,6 @@ function findRetestSignal(candles, symbol, category) {
 
     const boxId = makeBoxId(box, asia.day);
 
-    // STEP 1: FIRST BREAKOUT
     let breakoutIndex = -1;
     let breakoutDirection = null;
 
@@ -340,18 +304,15 @@ function findRetestSignal(candles, symbol, category) {
 
     if (lastIndex <= breakoutIndex) continue;
 
-    // STEP 2: FIRST RETEST
     const firstBoundary =
       breakoutDirection === "UP" ? "TOP" : "BOTTOM";
 
     let firstTouchIndex = -1;
 
     for (let i = breakoutIndex + 1; i <= lastIndex; i++) {
-      const candle = candles[i];
-
       const touched = firstBoundary === "TOP"
-        ? touchesTop(candle, box)
-        : touchesBottom(candle, box);
+        ? touchesTop(candles[i], box)
+        : touchesBottom(candles[i], box);
 
       if (touched) {
         firstTouchIndex = i;
@@ -370,17 +331,11 @@ function findRetestSignal(candles, symbol, category) {
       firstBoundary
     );
 
-    // NORMAL RETEST CONFIRMED
     if (firstDirection !== "NONE") {
       let touchCount = 1;
       let deleted = false;
 
-      // The setup remains active until its third touch.
-      for (
-        let i = firstTouchIndex + 1;
-        i <= lastIndex;
-        i++
-      ) {
+      for (let i = firstTouchIndex + 1; i <= lastIndex; i++) {
         if (touchesBox(candles[i], box)) {
           touchCount++;
 
@@ -421,18 +376,12 @@ function findRetestSignal(candles, symbol, category) {
       continue;
     }
 
-    // FIRST RETEST FAILED.
-    // WAIT FOR PRICE TO BREAK THE OPPOSITE SIDE.
     const oppositeBoundary =
       firstBoundary === "TOP" ? "BOTTOM" : "TOP";
 
     let oppositeBreakIndex = -1;
 
-    for (
-      let i = firstTouchIndex + 1;
-      i <= lastIndex;
-      i++
-    ) {
+    for (let i = firstTouchIndex + 1; i <= lastIndex; i++) {
       if (
         firstBoundary === "TOP" &&
         candles[i].close < box.low
@@ -457,19 +406,12 @@ function findRetestSignal(candles, symbol, category) {
 
     sawOppositeBreak = true;
 
-    // STEP 3: FLIPPY RETEST
     let flippyTouchIndex = -1;
 
-    for (
-      let i = oppositeBreakIndex + 1;
-      i <= lastIndex;
-      i++
-    ) {
-      const candle = candles[i];
-
+    for (let i = oppositeBreakIndex + 1; i <= lastIndex; i++) {
       const touched = oppositeBoundary === "TOP"
-        ? touchesTop(candle, box)
-        : touchesBottom(candle, box);
+        ? touchesTop(candles[i], box)
+        : touchesBottom(candles[i], box);
 
       if (touched) {
         flippyTouchIndex = i;
@@ -481,15 +423,10 @@ function findRetestSignal(candles, symbol, category) {
 
     sawFlippyRetest = true;
 
-    // STEP 4: THIRD TOUCH DELETES THE BOX.
     let touchCount = 2;
     let deleted = false;
 
-    for (
-      let i = flippyTouchIndex + 1;
-      i <= lastIndex;
-      i++
-    ) {
+    for (let i = flippyTouchIndex + 1; i <= lastIndex; i++) {
       if (touchesBox(candles[i], box)) {
         touchCount++;
 
@@ -574,15 +511,7 @@ function findRetestSignal(candles, symbol, category) {
   };
 }
 
-// SIMULATED PENDING ORDER.
-// This does not submit an order to a Deriv account.
-function makeDemoOrder(
-  signal,
-  symbol,
-  category,
-  balance,
-  riskPct
-) {
+function makeDemoOrder(signal, symbol, category, balance, riskPct) {
   const point = signal.pip;
   const isForex = category === "Forex";
 
@@ -662,7 +591,6 @@ export default function App() {
 
   const [lastScan, setLastScan] = useState("Not scanned");
 
-  // DERIV REQUEST HANDLER
   const request = useCallback(payload => {
     return new Promise((resolve, reject) => {
       const ws = socketRef.current;
@@ -679,11 +607,7 @@ export default function App() {
         reject(new Error("Deriv request timed out."));
       }, 30000);
 
-      pendingRef.current.set(id, {
-        resolve,
-        reject,
-        timeout
-      });
+      pendingRef.current.set(id, { resolve, reject, timeout });
 
       ws.send(JSON.stringify({
         ...payload,
@@ -692,7 +616,6 @@ export default function App() {
     });
   }, []);
 
-  // DATA CONNECTION
   const connect = useCallback(() => {
     return new Promise((resolve, reject) => {
       if (
@@ -723,10 +646,7 @@ export default function App() {
           return;
         }
 
-        if (
-          data.req_id &&
-          pendingRef.current.has(data.req_id)
-        ) {
+        if (data.req_id && pendingRef.current.has(data.req_id)) {
           const pending = pendingRef.current.get(data.req_id);
 
           clearTimeout(pending.timeout);
@@ -765,13 +685,10 @@ export default function App() {
     });
   }, []);
 
-  // DISCOVER ALL AVAILABLE MARKETS
   const discoverMarkets = useCallback(async () => {
     setMessage("Requesting active markets from Deriv...");
 
-    const response = await request({
-      active_symbols: "full"
-    });
+    const response = await request({ active_symbols: "full" });
 
     const rawList =
       response.active_symbols ||
@@ -779,9 +696,7 @@ export default function App() {
       [];
 
     if (!Array.isArray(rawList)) {
-      throw new Error(
-        "Deriv active-symbol response was not an array."
-      );
+      throw new Error("Deriv active-symbol response was not an array.");
     }
 
     const list = rawList
@@ -811,22 +726,15 @@ export default function App() {
         category: categoryOf(s)
       }))
       .sort((a, b) =>
-        String(a.display_name).localeCompare(
-          String(b.display_name)
-        )
+        String(a.display_name).localeCompare(String(b.display_name))
       );
 
     setSymbols(list);
-
-    setMessage(
-      `${list.length} active Deriv markets discovered.`
-    );
+    setMessage(`${list.length} active Deriv markets discovered.`);
 
     return list;
   }, [request]);
 
-  // SCAN ONE MARKET.
-  // Use every valid closed candle Deriv actually returns.
   const scanSymbol = useCallback(async item => {
     const diagnostic = {
       requestedMaximum: CANDLE_COUNT,
@@ -848,8 +756,7 @@ export default function App() {
         granularity: TIMEFRAME
       });
 
-      diagnostic.responseType =
-        response.msg_type || "Unknown";
+      diagnostic.responseType = response.msg_type || "Unknown";
 
       const raw = Array.isArray(response.candles)
         ? response.candles
@@ -884,8 +791,7 @@ export default function App() {
 
       if (closed.length) {
         diagnostic.oldestEpoch = closed[0].epoch;
-        diagnostic.latestEpoch =
-          closed[closed.length - 1].epoch;
+        diagnostic.latestEpoch = closed[closed.length - 1].epoch;
       }
 
       const signal = findRetestSignal(
@@ -900,8 +806,7 @@ export default function App() {
       };
 
     } catch (error) {
-      diagnostic.error =
-        error.message || "Unknown Deriv API error";
+      diagnostic.error = error.message || "Unknown Deriv API error";
 
       return {
         direction: "NONE",
@@ -912,12 +817,10 @@ export default function App() {
     }
   }, [request]);
 
-  // SCAN ALL MARKETS
   const scanAll = useCallback(async list => {
     if (scanLock.current || !runningRef.current) return;
 
     scanLock.current = true;
-
     setMessage("Scanning all available Deriv markets...");
 
     const results = {};
@@ -925,15 +828,11 @@ export default function App() {
     let nextIndex = 0;
 
     const worker = async () => {
-      while (
-        nextIndex < list.length &&
-        runningRef.current
-      ) {
+      while (nextIndex < list.length && runningRef.current) {
         const index = nextIndex++;
         const item = list[index];
 
         const result = await scanSymbol(item);
-
         results[item.symbol] = result;
 
         if (result._candleData) {
@@ -946,9 +845,7 @@ export default function App() {
         completed++;
 
         setScanned(completed);
-        setProgress(
-          Math.round(completed / list.length * 100)
-        );
+        setProgress(Math.round(completed / list.length * 100));
 
         if (completed % 10 === 0) {
           setSignals(previous => ({
@@ -960,25 +857,19 @@ export default function App() {
     };
 
     try {
-      await Promise.all([
-        worker(),
-        worker()
-      ]);
+      await Promise.all([worker(), worker()]);
 
       setSignals(previous => ({
         ...previous,
         ...results
       }));
 
-      // CANCEL ORDERS LINKED TO DELETED BOXES.
       setOrders(previous => previous.filter(order => {
         const result = results[order.symbol];
 
         if (!result) return true;
 
-        const deleted = result.deletedBoxIds || [];
-
-        return !deleted.includes(order.boxId);
+        return !(result.deletedBoxIds || []).includes(order.boxId);
       }));
 
       setLastScan(new Date().toLocaleTimeString());
@@ -994,13 +885,11 @@ export default function App() {
     }
   }, [scanSymbol]);
 
-  // START
   const startRobot = async () => {
     if (runningRef.current) return;
 
     try {
       setMessage("Connecting to Deriv...");
-
       await connect();
 
       runningRef.current = true;
@@ -1022,14 +911,10 @@ export default function App() {
 
       await scanAll(list);
 
-      if (scanTimer.current) {
-        clearInterval(scanTimer.current);
-      }
+      if (scanTimer.current) clearInterval(scanTimer.current);
 
       scanTimer.current = setInterval(() => {
-        if (runningRef.current) {
-          scanAll(list);
-        }
+        if (runningRef.current) scanAll(list);
       }, TIMEFRAME * 1000);
 
     } catch (error) {
@@ -1039,7 +924,6 @@ export default function App() {
     }
   };
 
-  // STOP
   const stopRobot = () => {
     runningRef.current = false;
     setRunning(false);
@@ -1050,12 +934,9 @@ export default function App() {
     }
 
     setOrders([]);
-    setMessage(
-      "STOPPED. All simulated pending orders cleared."
-    );
+    setMessage("STOPPED. All simulated pending orders cleared.");
   };
 
-  // ACTIVATE CONFIRMED SIGNAL
   const activateSignal = item => {
     const signal = signals[item.symbol];
 
@@ -1066,16 +947,13 @@ export default function App() {
       return;
     }
 
-    // PREVENT DUPLICATE ORDERS FROM THE SAME BOX.
     const duplicate = orders.some(order =>
       order.symbol === item.symbol &&
       order.boxId === signal.boxId
     );
 
     if (duplicate) {
-      setMessage(
-        `${item.symbol}: an order already exists for this box.`
-      );
+      setMessage(`${item.symbol}: an order already exists for this box.`);
       return;
     }
 
@@ -1087,11 +965,7 @@ export default function App() {
       riskPct
     );
 
-    setOrders(previous => [
-      order,
-      ...previous
-    ]);
-
+    setOrders(previous => [order, ...previous]);
     setSelected(item);
     setLastActivated(order.source);
 
@@ -1100,41 +974,28 @@ export default function App() {
     );
   };
 
-  // CLEANUP
   useEffect(() => {
     return () => {
       runningRef.current = false;
 
-      if (scanTimer.current) {
-        clearInterval(scanTimer.current);
-      }
+      if (scanTimer.current) clearInterval(scanTimer.current);
+      if (socketRef.current) socketRef.current.close();
 
-      if (socketRef.current) {
-        socketRef.current.close();
-      }
-
-      pendingRef.current.forEach(p => {
-        clearTimeout(p.timeout);
-      });
-
+      pendingRef.current.forEach(p => clearTimeout(p.timeout));
       pendingRef.current.clear();
     };
   }, []);
 
-  // FILTER MARKETS
   const visibleSymbols = symbols.filter(item => {
     const matchesCategory =
-      category === "All" ||
-      item.category === category;
+      category === "All" || item.category === category;
 
     const searchTerm = search.toLowerCase();
 
     const matchesSearch =
       !searchTerm ||
-      String(item.display_name || "")
-        .toLowerCase().includes(searchTerm) ||
-      String(item.symbol || "")
-        .toLowerCase().includes(searchTerm);
+      String(item.display_name || "").toLowerCase().includes(searchTerm) ||
+      String(item.symbol || "").toLowerCase().includes(searchTerm);
 
     return matchesCategory && matchesSearch;
   });
@@ -1155,7 +1016,6 @@ export default function App() {
 
   symbols.forEach(item => {
     const result = signals[item.symbol];
-
     if (!result) return;
 
     const reason = result.direction !== "NONE"
@@ -1168,27 +1028,20 @@ export default function App() {
 
   const diagnosticMarkets = symbols
     .filter(item => signals[item.symbol])
-    .filter(item =>
-      signals[item.symbol].direction === "NONE"
-    )
+    .filter(item => signals[item.symbol].direction === "NONE")
     .sort((a, b) =>
-      String(a.display_name).localeCompare(
-        String(b.display_name)
-      )
+      String(a.display_name).localeCompare(String(b.display_name))
     );
 
-  const candleDiagnosticList =
-    Object.values(candleDiagnostics);
+  const candleDiagnosticList = Object.values(candleDiagnostics);
 
-  const marketsWithCandleData =
-    candleDiagnosticList.filter(d =>
-      d.returned > 0
-    ).length;
+  const marketsWithCandleData = candleDiagnosticList.filter(d =>
+    d.returned > 0
+  ).length;
 
-  const marketsWithErrors =
-    candleDiagnosticList.filter(d =>
-      d.error
-    ).length;
+  const marketsWithErrors = candleDiagnosticList.filter(d =>
+    d.error
+  ).length;
 
   const signalColor = direction =>
     direction === "BUY"
@@ -1244,7 +1097,7 @@ export default function App() {
 
       <main style={styles.main}>
 
-        {/* ROBOT CONTROL */}
+        {/* 1. ROBOT CONTROL */}
         <section style={styles.panel}>
           <div style={styles.panelTitle}>ROBOT CONTROL</div>
 
@@ -1292,7 +1145,7 @@ export default function App() {
           </div>
         </section>
 
-        {/* SUMMARY */}
+        {/* 2. SUMMARY */}
         <section style={styles.statsGrid}>
           <div style={styles.stat}>
             <div style={styles.statLabel}>MARKETS FOUND</div>
@@ -1301,20 +1154,14 @@ export default function App() {
 
           <div style={styles.stat}>
             <div style={styles.statLabel}>BUY SIGNALS</div>
-            <div style={{
-              ...styles.statValue,
-              color: "#16c784"
-            }}>
+            <div style={{ ...styles.statValue, color: "#16c784" }}>
               {buyCount}
             </div>
           </div>
 
           <div style={styles.stat}>
             <div style={styles.statLabel}>SELL SIGNALS</div>
-            <div style={{
-              ...styles.statValue,
-              color: "#ea5455"
-            }}>
+            <div style={{ ...styles.statValue, color: "#ea5455" }}>
               {sellCount}
             </div>
           </div>
@@ -1325,248 +1172,17 @@ export default function App() {
           </div>
         </section>
 
-        {/* STRATEGY */}
-        <section style={styles.panel}>
-          <div style={styles.panelTitle}>STRATEGY RULES</div>
-
-          <div style={styles.ruleText}>
-            ASIA RANGE: 00:00–07:00 UTC.
-            <br/>
-            BOXES: DOJI · ENGULFED · WICK.
-            <br/>
-            NORMAL RETEST: Green candle at bottom = SELL.
-            Red candle at top = BUY.
-            <br/>
-            FLIPPY: First retest fails, price breaks the opposite
-            side, then returns to retest that opposite boundary.
-            <br/>
-            BOX LIFECYCLE: First retest → Second retest/FLIPPY
-            → Third touch DELETE.
-            <br/>
-            EMA: Completely removed. No EMA calculations or filters.
-          </div>
-        </section>
-
-        {/* CANDLE DATA */}
+        {/* 3. ACTIVE SIGNALS */}
         <section style={styles.panel}>
           <div style={styles.panelHeading}>
             <div>
-              <div style={styles.panelTitle}>
-                DERIV CANDLE DATA DIAGNOSTICS
-              </div>
-              <div style={styles.smallText}>
-                Maximum request: {CANDLE_COUNT} candles · M5
-              </div>
-            </div>
-          </div>
-
-          {scanned === 0 && (
-            <div style={styles.empty}>
-              Start the robot to inspect Deriv candle responses.
-            </div>
-          )}
-
-          {scanned > 0 && (
-            <>
-              <div style={styles.diagnosticList}>
-                {[
-                  ["Markets checked", scanned],
-                  ["Maximum candles requested", CANDLE_COUNT],
-                  ["Markets with candle data", marketsWithCandleData],
-                  ["Markets with API errors", marketsWithErrors]
-                ].map(([label, value]) => (
-                  <div key={label} style={styles.diagnosticRow}>
-                    <span style={styles.diagnosticReason}>
-                      {label}
-                    </span>
-                    <span style={styles.diagnosticCount}>
-                      {value}
-                    </span>
-                  </div>
-                ))}
-              </div>
-
-              <div style={{
-                ...styles.panelTitle,
-                marginTop: 17
-              }}>
-                INDIVIDUAL MARKET DATA
-              </div>
-
-              {symbols
-                .filter(item => candleDiagnostics[item.symbol])
-                .map(item => {
-                  const d = candleDiagnostics[item.symbol];
-
-                  return (
-                    <div
-                      key={item.symbol}
-                      style={styles.diagnosticMarket}
-                    >
-                      <div style={styles.diagnosticMarketName}>
-                        {item.display_name || item.symbol}
-                      </div>
-
-                      <div style={styles.smallText}>
-                        Symbol: {item.symbol}
-                      </div>
-
-                      <div style={styles.diagnosticReasonText}>
-                        Maximum requested: {d.requestedMaximum}
-                      </div>
-
-                      <div style={styles.diagnosticReasonText}>
-                        Returned by Deriv: {d.returned}
-                      </div>
-
-                      <div style={styles.diagnosticReasonText}>
-                        Valid candles: {d.valid}
-                      </div>
-
-                      <div style={styles.diagnosticReasonText}>
-                        Closed candles: {d.closed}
-                      </div>
-
-                      <div style={styles.diagnosticReasonText}>
-                        Response type: {d.responseType}
-                      </div>
-
-                      {d.oldestEpoch && (
-                        <div style={styles.smallText}>
-                          Oldest closed candle:{" "}
-                          {new Date(
-                            d.oldestEpoch * 1000
-                          ).toISOString()}
-                        </div>
-                      )}
-
-                      {d.latestEpoch && (
-                        <div style={styles.smallText}>
-                          Latest closed candle:{" "}
-                          {new Date(
-                            d.latestEpoch * 1000
-                          ).toISOString()}
-                        </div>
-                      )}
-
-                      {d.error && (
-                        <div style={{
-                          ...styles.diagnosticReasonText,
-                          color: "#ff7777"
-                        }}>
-                          API ERROR: {d.error}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-            </>
-          )}
-
-          <div style={styles.ruleText}>
-            Deriv may return fewer candles than requested.
-            All valid closed candles returned are used.
-            No minimum of 1,200 candles is required.
-          </div>
-        </section>
-
-        {/* STRATEGY DIAGNOSTICS */}
-        <section style={styles.panel}>
-          <div style={styles.panelHeading}>
-            <div>
-              <div style={styles.panelTitle}>
-                STRATEGY DIAGNOSTICS
-              </div>
-              <div style={styles.smallText}>
-                Why each scanned market does or does not have a signal
-              </div>
-            </div>
-
-            <div style={styles.countBadge}>
-              {scanned} SCANNED
-            </div>
-          </div>
-
-          {!scanned && (
-            <div style={styles.empty}>
-              Start the robot to see diagnostic results.
-            </div>
-          )}
-
-          {scanned > 0 && (
-            <div style={styles.diagnosticList}>
-              {Object.entries(diagnosticCounts)
-                .filter(([, count]) => count > 0)
-                .sort((a, b) => b[1] - a[1])
-                .map(([reason, count]) => (
-                  <div
-                    key={reason}
-                    style={styles.diagnosticRow}
-                  >
-                    <span style={styles.diagnosticReason}>
-                      {reason}
-                    </span>
-                    <span style={styles.diagnosticCount}>
-                      {count}
-                    </span>
-                  </div>
-                ))}
-            </div>
-          )}
-
-          <div style={styles.ruleText}>
-            Diagnostics only. No EMA conditions are used.
-          </div>
-
-          <div style={{
-            ...styles.panelTitle,
-            marginTop: 17
-          }}>
-            MARKET-BY-MARKET REASONS
-          </div>
-
-          {!diagnosticMarkets.length && scanned > 0 && (
-            <div style={styles.empty}>
-              No markets currently have a NONE signal.
-            </div>
-          )}
-
-          {diagnosticMarkets.map(item => (
-            <div
-              key={item.symbol}
-              style={styles.diagnosticMarket}
-            >
-              <div style={styles.diagnosticMarketName}>
-                {item.display_name || item.symbol}
-              </div>
-
-              <div style={styles.smallText}>
-                {item.symbol}
-              </div>
-
-              <div style={styles.diagnosticReasonText}>
-                {signals[item.symbol]?.reason ||
-                  "No diagnostic available"}
-              </div>
-            </div>
-          ))}
-        </section>
-
-        {/* ACTIVE SIGNALS */}
-        <section style={styles.panel}>
-          <div style={styles.panelHeading}>
-            <div>
-              <div style={styles.panelTitle}>
-                ACTIVE RETEST SIGNALS
-              </div>
+              <div style={styles.panelTitle}>ACTIVE RETEST SIGNALS</div>
               <div style={styles.smallText}>
                 All currently discovered Deriv markets
               </div>
             </div>
 
-            <div style={styles.smallText}>
-              M5 · BOX RETEST ONLY
-            </div>
+            <div style={styles.smallText}>M5 · BOX RETEST ONLY</div>
           </div>
 
           <input
@@ -1583,12 +1199,8 @@ export default function App() {
                 onClick={() => setCategory(cat)}
                 style={{
                   ...styles.categoryButton,
-                  background: category === cat
-                    ? "#1677d2"
-                    : "#18243a",
-                  color: category === cat
-                    ? "#fff"
-                    : "#aab7cc"
+                  background: category === cat ? "#1677d2" : "#18243a",
+                  color: category === cat ? "#fff" : "#aab7cc"
                 }}
               >
                 {cat}
@@ -1610,9 +1222,7 @@ export default function App() {
               };
 
               const color = signalColor(signal.direction);
-
-              const isSelected =
-                selected?.symbol === item.symbol;
+              const isSelected = selected?.symbol === item.symbol;
 
               const hasOrder = orders.some(order =>
                 order.symbol === item.symbol &&
@@ -1629,17 +1239,13 @@ export default function App() {
                     } else {
                       setSelected(item);
                       setMessage(
-                        `${item.display_name}: ${
-                          signal.reason || "No signal"
-                        }`
+                        `${item.display_name}: ${signal.reason || "No signal"}`
                       );
                     }
                   }}
                   style={{
                     ...styles.marketCard,
-                    borderColor: isSelected
-                      ? "#31a8ff"
-                      : "#24334b"
+                    borderColor: isSelected ? "#31a8ff" : "#24334b"
                   }}
                 >
                   <div style={styles.marketLeft}>
@@ -1683,9 +1289,7 @@ export default function App() {
                     ...styles.signalBadge,
                     background: color
                   }}>
-                    {signal.direction === "NONE"
-                      ? "NONE"
-                      : signal.direction}
+                    {signal.direction === "NONE" ? "NONE" : signal.direction}
                   </div>
                 </button>
               );
@@ -1693,7 +1297,7 @@ export default function App() {
           </div>
         </section>
 
-        {/* SETTINGS */}
+        {/* 4. TRADE SETTINGS */}
         <section style={styles.panel}>
           <div style={styles.panelTitle}>TRADE SETTINGS</div>
 
@@ -1703,9 +1307,7 @@ export default function App() {
               <input
                 type="number"
                 value={balance}
-                onChange={e =>
-                  setBalance(Number(e.target.value))
-                }
+                onChange={e => setBalance(Number(e.target.value))}
                 style={styles.numberInput}
               />
             </label>
@@ -1718,9 +1320,7 @@ export default function App() {
                 max="10"
                 step="0.1"
                 value={riskPct}
-                onChange={e =>
-                  setRiskPct(Number(e.target.value))
-                }
+                onChange={e => setRiskPct(Number(e.target.value))}
                 style={styles.numberInput}
               />
             </label>
@@ -1732,9 +1332,7 @@ export default function App() {
                 min="0.01"
                 step="0.01"
                 value={fixedLots}
-                onChange={e =>
-                  setFixedLots(Number(e.target.value))
-                }
+                onChange={e => setFixedLots(Number(e.target.value))}
                 style={styles.numberInput}
               />
             </label>
@@ -1750,50 +1348,37 @@ export default function App() {
           </div>
         </section>
 
-        {/* DEMO ORDERS */}
+        {/* 5. DEMO PENDING ORDERS */}
         <section style={styles.panel}>
           <div style={styles.panelHeading}>
             <div>
-              <div style={styles.panelTitle}>
-                DEMO PENDING ORDERS
-              </div>
+              <div style={styles.panelTitle}>DEMO PENDING ORDERS</div>
               <div style={styles.smallText}>
                 Orders created by tapping a valid signal
               </div>
             </div>
 
-            <div style={styles.countBadge}>
-              {orders.length}
-            </div>
+            <div style={styles.countBadge}>{orders.length}</div>
           </div>
 
           {!orders.length && (
-            <div style={styles.empty}>
-              No demo pending orders.
-            </div>
+            <div style={styles.empty}>No demo pending orders.</div>
           )}
 
           {orders.map(order => (
-            <div
-              key={order.id}
-              style={styles.orderCard}
-            >
+            <div key={order.id} style={styles.orderCard}>
               <div style={styles.panelHeading}>
                 <strong>{order.symbol}</strong>
 
                 <span style={{
-                  color: order.direction === "BUY"
-                    ? "#16c784"
-                    : "#ea5455",
+                  color: order.direction === "BUY" ? "#16c784" : "#ea5455",
                   fontWeight: 800
                 }}>
                   {order.direction}
                 </span>
               </div>
 
-              <div style={styles.smallText}>
-                {order.source}
-              </div>
+              <div style={styles.smallText}>{order.source}</div>
 
               <div style={styles.orderGrid}>
                 <div>
@@ -1817,48 +1402,275 @@ export default function App() {
                 </div>
               </div>
 
-              <div style={styles.demoTag}>
-                {order.status}
-              </div>
+              <div style={styles.demoTag}>{order.status}</div>
             </div>
           ))}
         </section>
 
-        {/* LAST ACTIVATED */}
+        {/* 6. LAST ACTIVATED */}
         <section style={styles.panel}>
           <div style={styles.panelTitle}>LAST ACTIVATED</div>
 
-          <div style={styles.lastActivated}>
-            {lastActivated}
-          </div>
+          <div style={styles.lastActivated}>{lastActivated}</div>
 
-          <div style={styles.smallText}>
-            Last scan: {lastScan}
-          </div>
+          <div style={styles.smallText}>Last scan: {lastScan}</div>
         </section>
 
-        {/* EXECUTION WARNING */}
+        {/* 7. EXECUTION WARNING */}
         <section style={styles.warning}>
           <strong>IMPORTANT — EXECUTION STATUS</strong>
 
           <p>
-            Deriv public market data is connected separately
-            from broker execution. This build scans Deriv
-            market data and creates simulated pending orders.
-            It does not send real pending orders, close real
-            positions or manage a live account.
+            Deriv public market data is connected separately from broker
+            execution. This build scans Deriv market data and creates
+            simulated pending orders. It does not send real pending orders,
+            close real positions or manage a live account.
           </p>
 
           <p>
-            Simulated pending orders are recorded at the
-            calculated entry price. Automatic fill, SL and TP
-            outcome simulation is not implemented in this build.
+            Simulated pending orders are recorded at the calculated entry
+            price. Automatic fill, SL and TP outcome simulation is not
+            implemented in this build.
           </p>
 
           <p>
-            Asia session is calculated using UTC candle
-            timestamps.
+            Asia session is calculated using UTC candle timestamps.
           </p>
+        </section>
+
+        {/* BOTTOM SECTION 1: DERIV CANDLE DATA DIAGNOSTICS */}
+        <section style={styles.panel}>
+          <div style={styles.panelHeading}>
+            <div>
+              <div style={styles.panelTitle}>
+                DERIV CANDLE DATA DIAGNOSTICS
+              </div>
+              <div style={styles.smallText}>
+                Maximum request: {CANDLE_COUNT} candles · M5
+              </div>
+            </div>
+          </div>
+
+          {scanned === 0 && (
+            <div style={styles.empty}>
+              Start the robot to inspect Deriv candle responses.
+            </div>
+          )}
+
+          {scanned > 0 && (
+            <div style={styles.diagnosticList}>
+              {[
+                ["Markets checked", scanned],
+                ["Maximum candles requested", CANDLE_COUNT],
+                ["Markets with candle data", marketsWithCandleData],
+                ["Markets with API errors", marketsWithErrors]
+              ].map(([label, value]) => (
+                <div key={label} style={styles.diagnosticRow}>
+                  <span style={styles.diagnosticReason}>{label}</span>
+                  <span style={styles.diagnosticCount}>{value}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div style={styles.ruleText}>
+            Deriv may return fewer candles than requested. All valid closed
+            candles returned are used. No minimum of 1,200 candles is required.
+          </div>
+        </section>
+
+        {/* BOTTOM SECTION 2: STRATEGY RULES */}
+        <section style={styles.panel}>
+          <div style={styles.panelTitle}>STRATEGY RULES</div>
+
+          <div style={styles.ruleText}>
+            ASIA RANGE: 00:00–07:00 UTC.
+            <br/>
+            BOXES: DOJI · ENGULFED · WICK.
+            <br/>
+            NORMAL RETEST: Green candle at bottom = SELL.
+            Red candle at top = BUY.
+            <br/>
+            FLIPPY: First retest fails, price breaks the opposite
+            side, then returns to retest that opposite boundary.
+            <br/>
+            BOX LIFECYCLE: First retest → Second retest/FLIPPY
+            → Third touch DELETE.
+            <br/>
+            ENTRY: BUY above box high or SELL below box low,
+            using a 2-pip buffer.
+            <br/>
+            EMA: Completely removed. No EMA calculations or filters.
+          </div>
+        </section>
+
+        {/* BOTTOM SECTION 3: INDIVIDUAL MARKET DATA */}
+        <section style={styles.panel}>
+          <div style={styles.panelHeading}>
+            <div>
+              <div style={styles.panelTitle}>INDIVIDUAL MARKET DATA</div>
+              <div style={styles.smallText}>
+                Candle history returned by Deriv for each market
+              </div>
+            </div>
+
+            <div style={styles.countBadge}>
+              {candleDiagnosticList.length} MARKETS
+            </div>
+          </div>
+
+          {scanned === 0 && (
+            <div style={styles.empty}>
+              Individual candle information will appear here after scanning.
+            </div>
+          )}
+
+          {scanned > 0 && !candleDiagnosticList.length && (
+            <div style={styles.empty}>
+              No individual market candle diagnostics available yet.
+            </div>
+          )}
+
+          {symbols
+            .filter(item => candleDiagnostics[item.symbol])
+            .map(item => {
+              const d = candleDiagnostics[item.symbol];
+
+              return (
+                <div key={item.symbol} style={styles.diagnosticMarket}>
+                  <div style={styles.diagnosticMarketName}>
+                    {item.display_name || item.symbol}
+                  </div>
+
+                  <div style={styles.smallText}>
+                    Symbol: {item.symbol}
+                  </div>
+
+                  <div style={styles.diagnosticReasonText}>
+                    Maximum requested: {d.requestedMaximum}
+                  </div>
+
+                  <div style={styles.diagnosticReasonText}>
+                    Returned by Deriv: {d.returned}
+                  </div>
+
+                  <div style={styles.diagnosticReasonText}>
+                    Valid candles: {d.valid}
+                  </div>
+
+                  <div style={styles.diagnosticReasonText}>
+                    Closed candles: {d.closed}
+                  </div>
+
+                  <div style={styles.diagnosticReasonText}>
+                    Response type: {d.responseType}
+                  </div>
+
+                  {d.oldestEpoch && (
+                    <div style={styles.smallText}>
+                      Oldest closed candle:{" "}
+                      {new Date(d.oldestEpoch * 1000).toISOString()}
+                    </div>
+                  )}
+
+                  {d.latestEpoch && (
+                    <div style={styles.smallText}>
+                      Latest closed candle:{" "}
+                      {new Date(d.latestEpoch * 1000).toISOString()}
+                    </div>
+                  )}
+
+                  {d.error && (
+                    <div style={{
+                      ...styles.diagnosticReasonText,
+                      color: "#ff7777"
+                    }}>
+                      API ERROR: {d.error}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+        </section>
+
+        {/* BOTTOM SECTION 4: STRATEGY DIAGNOSTICS */}
+        <section style={styles.panel}>
+          <div style={styles.panelHeading}>
+            <div>
+              <div style={styles.panelTitle}>STRATEGY DIAGNOSTICS</div>
+              <div style={styles.smallText}>
+                Why each scanned market does or does not have a signal
+              </div>
+            </div>
+
+            <div style={styles.countBadge}>{scanned} SCANNED</div>
+          </div>
+
+          {!scanned && (
+            <div style={styles.empty}>
+              Start the robot to see diagnostic results.
+            </div>
+          )}
+
+          {scanned > 0 && (
+            <div style={styles.diagnosticList}>
+              {Object.entries(diagnosticCounts)
+                .filter(([, count]) => count > 0)
+                .sort((a, b) => b[1] - a[1])
+                .map(([reason, count]) => (
+                  <div key={reason} style={styles.diagnosticRow}>
+                    <span style={styles.diagnosticReason}>{reason}</span>
+                    <span style={styles.diagnosticCount}>{count}</span>
+                  </div>
+                ))}
+            </div>
+          )}
+
+          <div style={styles.ruleText}>
+            Diagnostics only. No EMA conditions are used.
+          </div>
+        </section>
+
+        {/* BOTTOM SECTION 5: MARKET-BY-MARKET REASONS */}
+        <section style={styles.panel}>
+          <div style={styles.panelHeading}>
+            <div>
+              <div style={styles.panelTitle}>MARKET-BY-MARKET REASONS</div>
+              <div style={styles.smallText}>
+                Individual explanation for every market without a signal
+              </div>
+            </div>
+
+            <div style={styles.countBadge}>
+              {diagnosticMarkets.length} MARKETS
+            </div>
+          </div>
+
+          {!diagnosticMarkets.length && scanned > 0 && (
+            <div style={styles.empty}>
+              No markets currently have a NONE signal.
+            </div>
+          )}
+
+          {!scanned && (
+            <div style={styles.empty}>
+              Start the robot to see individual market reasons.
+            </div>
+          )}
+
+          {diagnosticMarkets.map(item => (
+            <div key={item.symbol} style={styles.diagnosticMarket}>
+              <div style={styles.diagnosticMarketName}>
+                {item.display_name || item.symbol}
+              </div>
+
+              <div style={styles.smallText}>{item.symbol}</div>
+
+              <div style={styles.diagnosticReasonText}>
+                {signals[item.symbol]?.reason || "No diagnostic available"}
+              </div>
+            </div>
+          ))}
         </section>
 
         <footer style={styles.footer}>
@@ -1866,7 +1678,6 @@ export default function App() {
           <br/>
           Breakouts · Retests · FLIPPY
         </footer>
-
       </main>
     </div>
   );
