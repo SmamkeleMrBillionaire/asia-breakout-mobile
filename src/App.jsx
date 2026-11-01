@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 
 const WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public";
-
 const TIMEFRAME = 300;
 const CANDLE_COUNT = 1000;
 const BUFFER_PIPS = 2;
@@ -15,15 +14,11 @@ const CATEGORIES = [
 ];
 
 const DIAGNOSTIC_REASONS = [
-  "Asia range unavailable",
-  "No boxes found",
-  "Waiting for breakout",
-  "Waiting for first retest",
+  "Asia range unavailable", "No boxes found",
+  "Waiting for breakout", "Waiting for first retest",
   "Waiting for opposite-side breakout",
-  "Waiting for FLIPPY retest",
-  "Third touch — DELETE",
-  "Neutral retest candle",
-  "Signal confirmed",
+  "Waiting for FLIPPY retest", "Third touch — DELETE",
+  "Neutral retest candle", "Signal confirmed",
   "Market data unavailable"
 ];
 
@@ -38,54 +33,36 @@ function categoryOf(s) {
   const symbol = String(s.symbol || "").toLowerCase();
   const type = String(s.symbol_type || "").toLowerCase();
 
-  if (
-    market.includes("forex") ||
-    sub.includes("forex") ||
-    type.includes("forex")
-  ) return "Forex";
+  if (market.includes("forex") || sub.includes("forex") || type.includes("forex")) return "Forex";
 
   if (
-    market.includes("synthetic") ||
-    sub.includes("synthetic") ||
-    subgroup.includes("synthetic") ||
-    symbol.startsWith("1hz") ||
-    symbol.startsWith("r_") ||
-    symbol.includes("boom") ||
-    symbol.includes("crash") ||
-    symbol.includes("step")
+    market.includes("synthetic") || sub.includes("synthetic") ||
+    subgroup.includes("synthetic") || symbol.startsWith("1hz") ||
+    symbol.startsWith("r_") || symbol.includes("boom") ||
+    symbol.includes("crash") || symbol.includes("step")
   ) return "Synthetics";
 
   if (
-    market.includes("crypt") ||
-    sub.includes("crypt") ||
-    subgroup.includes("crypt") ||
-    name.includes("bitcoin") ||
-    name.includes("ethereum") ||
-    type.includes("crypt")
+    market.includes("crypt") || sub.includes("crypt") ||
+    subgroup.includes("crypt") || name.includes("bitcoin") ||
+    name.includes("ethereum") || type.includes("crypt")
   ) return "Crypto";
 
   if (
-    market.includes("stock") ||
-    sub.includes("stock") ||
-    subgroup.includes("stock") ||
-    market.includes("share") ||
+    market.includes("stock") || sub.includes("stock") ||
+    subgroup.includes("stock") || market.includes("share") ||
     type.includes("stock")
   ) return "Stocks";
 
   if (
-    market.includes("index") ||
-    sub.includes("index") ||
-    subgroup.includes("index") ||
-    type.includes("index")
+    market.includes("index") || sub.includes("index") ||
+    subgroup.includes("index") || type.includes("index")
   ) return "Indices";
 
   if (
-    market.includes("commodit") ||
-    sub.includes("metal") ||
-    subgroup.includes("metal") ||
-    name.includes("gold") ||
-    name.includes("silver") ||
-    name.includes("platinum") ||
+    market.includes("commodit") || sub.includes("metal") ||
+    subgroup.includes("metal") || name.includes("gold") ||
+    name.includes("silver") || name.includes("platinum") ||
     name.includes("palladium")
   ) return "Metals";
 
@@ -105,7 +82,6 @@ function pipSize(symbol, category, candles) {
 
   const last = candles[candles.length - 1]?.close || 1;
   const decimals = (String(last).split(".")[1] || "").length;
-
   return Math.pow(10, -Math.min(decimals, 8));
 }
 
@@ -118,7 +94,6 @@ function buildAsiaRange(candles) {
 
   const asia = candles.filter(c => {
     const date = new Date(c.epoch * 1000);
-
     return (
       date.toISOString().slice(0, 10) === lastDay &&
       date.getUTCHours() >= 0 &&
@@ -141,16 +116,13 @@ function createBoxes(candles, asiaDay) {
   for (let i = 1; i < candles.length; i++) {
     const c = candles[i];
     const prev = candles[i - 1];
-
     const date = new Date(c.epoch * 1000);
-    const candleDay = date.toISOString().slice(0, 10);
 
-    if (candleDay !== asiaDay) continue;
+    if (date.toISOString().slice(0, 10) !== asiaDay) continue;
     if (date.getUTCHours() < 7) continue;
 
     const range = c.high - c.low;
     const body = Math.abs(c.close - c.open);
-
     if (range <= 0) continue;
 
     const currentBull = c.close > c.open;
@@ -183,7 +155,6 @@ function createBoxes(candles, asiaDay) {
 
     if (currentBull) {
       const upperWick = c.high - c.close;
-
       if (upperWick >= body * 0.20) {
         boxes.push({
           type: "WICK",
@@ -196,7 +167,6 @@ function createBoxes(candles, asiaDay) {
 
     if (currentBear) {
       const lowerWick = c.close - c.low;
-
       if (lowerWick >= body * 0.20) {
         boxes.push({
           type: "WICK",
@@ -234,9 +204,7 @@ function getRetestDirection(candle, boundary) {
 
 function makeBoxId(box, asiaDay) {
   return [
-    asiaDay,
-    box.type,
-    box.created,
+    asiaDay, box.type, box.created,
     box.high.toPrecision(12),
     box.low.toPrecision(12)
   ].join("-");
@@ -299,9 +267,7 @@ function findRetestSignal(candles, symbol, category) {
     }
 
     if (breakoutIndex < 0) continue;
-
     sawBreakout = true;
-
     if (lastIndex <= breakoutIndex) continue;
 
     const firstBoundary =
@@ -321,13 +287,10 @@ function findRetestSignal(candles, symbol, category) {
     }
 
     if (firstTouchIndex < 0) continue;
-
     sawFirstRetest = true;
 
-    const firstTouch = candles[firstTouchIndex];
-
     const firstDirection = getRetestDirection(
-      firstTouch,
+      candles[firstTouchIndex],
       firstBoundary
     );
 
@@ -338,7 +301,6 @@ function findRetestSignal(candles, symbol, category) {
       for (let i = firstTouchIndex + 1; i <= lastIndex; i++) {
         if (touchesBox(candles[i], box)) {
           touchCount++;
-
           if (touchCount >= 3) {
             deleted = true;
             break;
@@ -365,7 +327,7 @@ function findRetestSignal(candles, symbol, category) {
           ? box.high + entryBuffer
           : box.low - entryBuffer,
         pip: unit,
-        candleTime: firstTouch.epoch,
+        candleTime: candles[firstTouchIndex].epoch,
         reason: "Signal confirmed"
       };
 
@@ -420,7 +382,6 @@ function findRetestSignal(candles, symbol, category) {
     }
 
     if (flippyTouchIndex < 0) continue;
-
     sawFlippyRetest = true;
 
     let touchCount = 2;
@@ -429,7 +390,6 @@ function findRetestSignal(candles, symbol, category) {
     for (let i = flippyTouchIndex + 1; i <= lastIndex; i++) {
       if (touchesBox(candles[i], box)) {
         touchCount++;
-
         if (touchCount >= 3) {
           deleted = true;
           break;
@@ -442,10 +402,8 @@ function findRetestSignal(candles, symbol, category) {
       continue;
     }
 
-    const flippyCandle = candles[flippyTouchIndex];
-
     const flippyDirection = getRetestDirection(
-      flippyCandle,
+      candles[flippyTouchIndex],
       oppositeBoundary
     );
 
@@ -468,7 +426,7 @@ function findRetestSignal(candles, symbol, category) {
         ? box.high + entryBuffer
         : box.low - entryBuffer,
       pip: unit,
-      candleTime: flippyCandle.epoch,
+      candleTime: candles[flippyTouchIndex].epoch,
       reason: "Signal confirmed"
     };
 
@@ -479,29 +437,17 @@ function findRetestSignal(candles, symbol, category) {
 
   if (best) {
     const { created, ...signal } = best;
-
-    return {
-      ...signal,
-      deletedBoxIds,
-      reason: "Signal confirmed"
-    };
+    return { ...signal, deletedBoxIds, reason: "Signal confirmed" };
   }
 
   let reason = "Waiting for breakout";
 
-  if (deletedBoxIds.length) {
-    reason = "Third touch — DELETE";
-  } else if (sawFlippyRetest) {
-    reason = "Neutral retest candle";
-  } else if (sawOppositeBreak) {
-    reason = "Waiting for FLIPPY retest";
-  } else if (sawFirstRetest) {
-    reason = "Waiting for opposite-side breakout";
-  } else if (sawBreakout) {
-    reason = "Waiting for first retest";
-  } else if (sawNeutral) {
-    reason = "Neutral retest candle";
-  }
+  if (deletedBoxIds.length) reason = "Third touch — DELETE";
+  else if (sawFlippyRetest) reason = "Neutral retest candle";
+  else if (sawOppositeBreak) reason = "Waiting for FLIPPY retest";
+  else if (sawFirstRetest) reason = "Waiting for opposite-side breakout";
+  else if (sawBreakout) reason = "Waiting for first retest";
+  else if (sawNeutral) reason = "Neutral retest candle";
 
   return {
     direction: "NONE",
@@ -538,8 +484,6 @@ function makeDemoOrder(signal, symbol, category, balance, riskPct) {
     Number.isFinite(riskPct) ? riskPct : 0
   );
 
-  const riskMoney = balance * safeRisk / 100;
-
   return {
     id: `${symbol}-${signal.boxId}-${Date.now()}`,
     boxId: signal.boxId,
@@ -550,10 +494,36 @@ function makeDemoOrder(signal, symbol, category, balance, riskPct) {
     entry: signal.entry,
     sl,
     tp,
-    riskMoney,
+    riskMoney: balance * safeRisk / 100,
     status: "DEMO PENDING",
+    currentPrice: null,
+    floatingPnl: 0,
     created: new Date().toLocaleTimeString()
   };
+}
+
+// Risk-normalised demo P&L. It is not actual broker contract valuation.
+function calculateDemoPnl(order, price) {
+  const stopDistance = Math.abs(order.entry - order.sl);
+  if (!stopDistance) return 0;
+
+  const priceMove = order.direction === "BUY"
+    ? price - order.entry
+    : order.entry - price;
+
+  return (priceMove / stopDistance) * order.riskMoney;
+}
+
+function getExitReason(order, price) {
+  if (order.direction === "BUY") {
+    if (price <= order.sl) return "STOP LOSS";
+    if (price >= order.tp) return "TAKE PROFIT";
+  } else {
+    if (price >= order.sl) return "STOP LOSS";
+    if (price <= order.tp) return "TAKE PROFIT";
+  }
+
+  return null;
 }
 
 export default function App() {
@@ -564,6 +534,11 @@ export default function App() {
   const runningRef = useRef(false);
   const scanTimer = useRef(null);
 
+  // Live-price subscription tracking.
+  const subscriptionsRef = useRef(new Map());
+  const tickHandlerRef = useRef(null);
+  const latestPricesRef = useRef({});
+
   const [connected, setConnected] = useState(false);
   const [running, setRunning] = useState(false);
   const [connectionText, setConnectionText] = useState("DISCONNECTED");
@@ -572,6 +547,7 @@ export default function App() {
   const [signals, setSignals] = useState({});
   const [candleDiagnostics, setCandleDiagnostics] = useState({});
   const [orders, setOrders] = useState([]);
+  const [closedTrades, setClosedTrades] = useState([]);
 
   const [lastActivated, setLastActivated] = useState("NONE");
   const [category, setCategory] = useState("All");
@@ -646,6 +622,18 @@ export default function App() {
           return;
         }
 
+        // Ongoing live tick messages.
+        if (data.msg_type === "tick" && data.tick) {
+          const tick = data.tick;
+          const symbol = tick.symbol;
+          const price = Number(tick.quote);
+
+          if (symbol && Number.isFinite(price)) {
+            tickHandlerRef.current?.(symbol, price);
+          }
+        }
+
+        // Initial subscription response and normal requests.
         if (data.req_id && pendingRef.current.has(data.req_id)) {
           const pending = pendingRef.current.get(data.req_id);
 
@@ -668,6 +656,7 @@ export default function App() {
       ws.onclose = () => {
         setConnected(false);
         setConnectionText("DISCONNECTED");
+        subscriptionsRef.current.clear();
 
         pendingRef.current.forEach(p => {
           clearTimeout(p.timeout);
@@ -684,6 +673,39 @@ export default function App() {
       };
     });
   }, []);
+
+  // Subscribe once per symbol while there is a pending or open demo trade.
+  const subscribeMarket = useCallback(async symbol => {
+    if (subscriptionsRef.current.has(symbol)) return;
+
+    if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    // Mark it before sending to prevent duplicate subscriptions.
+    subscriptionsRef.current.set(symbol, "REQUESTING");
+
+    try {
+      const response = await request({
+        ticks: symbol,
+        subscribe: 1
+      });
+
+      const subscriptionId = response.subscription?.id || null;
+
+      subscriptionsRef.current.set(symbol, subscriptionId || "SUBSCRIBED");
+
+      if (response.tick) {
+        const price = Number(response.tick.quote);
+        if (Number.isFinite(price)) {
+          tickHandlerRef.current?.(symbol, price);
+        }
+      }
+    } catch (error) {
+      subscriptionsRef.current.delete(symbol);
+      setMessage(`${symbol}: live price subscription failed: ${error.message}`);
+    }
+  }, [request]);
 
   const discoverMarkets = useCallback(async () => {
     setMessage("Requesting active markets from Deriv...");
@@ -706,14 +728,8 @@ export default function App() {
         return {
           ...s,
           symbol,
-          display_name:
-            s.underlying_symbol_name ||
-            s.display_name ||
-            symbol,
-          symbol_type:
-            s.underlying_symbol_type ||
-            s.symbol_type ||
-            "",
+          display_name: s.underlying_symbol_name || s.display_name || symbol,
+          symbol_type: s.underlying_symbol_type || s.symbol_type || "",
           pip: s.pip_size ?? s.pip ?? null
         };
       })
@@ -721,17 +737,13 @@ export default function App() {
         s.symbol &&
         Number(s.is_trading_suspended || 0) !== 1
       )
-      .map(s => ({
-        ...s,
-        category: categoryOf(s)
-      }))
+      .map(s => ({ ...s, category: categoryOf(s) }))
       .sort((a, b) =>
         String(a.display_name).localeCompare(String(b.display_name))
       );
 
     setSymbols(list);
     setMessage(`${list.length} active Deriv markets discovered.`);
-
     return list;
   }, [request]);
 
@@ -800,10 +812,7 @@ export default function App() {
         item.category
       );
 
-      return {
-        ...signal,
-        _candleData: diagnostic
-      };
+      return { ...signal, _candleData: diagnostic };
 
     } catch (error) {
       diagnostic.error = error.message || "Unknown Deriv API error";
@@ -843,15 +852,11 @@ export default function App() {
         }
 
         completed++;
-
         setScanned(completed);
         setProgress(Math.round(completed / list.length * 100));
 
         if (completed % 10 === 0) {
-          setSignals(previous => ({
-            ...previous,
-            ...results
-          }));
+          setSignals(previous => ({ ...previous, ...results }));
         }
       }
     };
@@ -859,14 +864,14 @@ export default function App() {
     try {
       await Promise.all([worker(), worker()]);
 
-      setSignals(previous => ({
-        ...previous,
-        ...results
-      }));
+      setSignals(previous => ({ ...previous, ...results }));
 
+      // A deleted box cancels its pending order only.
+      // Already-open trades are allowed to finish at SL or TP.
       setOrders(previous => previous.filter(order => {
-        const result = results[order.symbol];
+        if (order.status !== "DEMO PENDING") return true;
 
+        const result = results[order.symbol];
         if (!result) return true;
 
         return !(result.deletedBoxIds || []).includes(order.boxId);
@@ -884,6 +889,77 @@ export default function App() {
       scanLock.current = false;
     }
   }, [scanSymbol]);
+
+  // Process every incoming live quote against pending and open trades.
+  tickHandlerRef.current = (symbol, price) => {
+    latestPricesRef.current[symbol] = price;
+
+    setOrders(previous => {
+      let changed = false;
+      const remaining = [];
+
+      const newlyClosed = [];
+
+      for (const order of previous) {
+        if (order.symbol !== symbol) {
+          remaining.push(order);
+          continue;
+        }
+
+        let updated = { ...order, currentPrice: price };
+
+        // Pending BUY stop fills when price reaches or exceeds entry.
+        // Pending SELL stop fills when price reaches or falls below entry.
+        if (updated.status === "DEMO PENDING") {
+          const filled = updated.direction === "BUY"
+            ? price >= updated.entry
+            : price <= updated.entry;
+
+          if (!filled) {
+            remaining.push(updated);
+            changed = true;
+            continue;
+          }
+
+          updated.status = "OPEN DEMO TRADE";
+          updated.filledAt = new Date().toLocaleTimeString();
+          updated.fillPrice = updated.entry;
+        }
+
+        const exitReason = getExitReason(updated, price);
+
+        if (exitReason) {
+          const exitPrice = exitReason === "STOP LOSS"
+            ? updated.sl
+            : updated.tp;
+
+          const finalPnl = calculateDemoPnl(updated, exitPrice);
+
+          newlyClosed.push({
+            ...updated,
+            status: "CLOSED",
+            exitPrice,
+            exitReason,
+            realisedPnl: finalPnl,
+            closedAt: new Date().toLocaleTimeString()
+          });
+
+          changed = true;
+          continue;
+        }
+
+        updated.floatingPnl = calculateDemoPnl(updated, price);
+        remaining.push(updated);
+        changed = true;
+      }
+
+      if (newlyClosed.length) {
+        setClosedTrades(old => [...newlyClosed, ...old]);
+      }
+
+      return changed ? remaining : previous;
+    };
+  };
 
   const startRobot = async () => {
     if (runningRef.current) return;
@@ -933,8 +1009,61 @@ export default function App() {
       scanTimer.current = null;
     }
 
-    setOrders([]);
-    setMessage("STOPPED. All simulated pending orders cleared.");
+    // Close open demo positions at their latest received market price.
+    setOrders(previous => {
+      const closedNow = [];
+
+      previous.forEach(order => {
+        if (order.status === "OPEN DEMO TRADE") {
+          const price =
+            latestPricesRef.current[order.symbol] ??
+            order.currentPrice ??
+            order.entry;
+
+          const pnl = calculateDemoPnl(order, price);
+
+          closedNow.push({
+            ...order,
+            status: "CLOSED",
+            exitPrice: price,
+            exitReason: "ROBOT STOPPED",
+            realisedPnl: pnl,
+            closedAt: new Date().toLocaleTimeString()
+          });
+        }
+      });
+
+      if (closedNow.length) {
+        setClosedTrades(old => [...closedNow, ...old]);
+      }
+
+      return [];
+    });
+
+    // Remove live tick subscriptions.
+    const ws = socketRef.current;
+
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      subscriptionsRef.current.forEach((subscriptionId) => {
+        if (subscriptionId && subscriptionId !== "REQUESTING" &&
+            subscriptionId !== "SUBSCRIBED") {
+          try {
+            ws.send(JSON.stringify({
+              forget: subscriptionId,
+              req_id: ++requestRef.current
+            }));
+          } catch {
+            // Socket may be closing.
+          }
+        }
+      });
+    }
+
+    subscriptionsRef.current.clear();
+
+    setMessage(
+      "STOPPED. Open demo trades closed and pending orders deleted."
+    );
   };
 
   const activateSignal = item => {
@@ -957,6 +1086,16 @@ export default function App() {
       return;
     }
 
+    const alreadyClosed = closedTrades.some(order =>
+      order.symbol === item.symbol &&
+      order.boxId === signal.boxId
+    );
+
+    if (alreadyClosed) {
+      setMessage(`${item.symbol}: this box has already been traded.`);
+      return;
+    }
+
     const order = makeDemoOrder(
       signal,
       item.symbol,
@@ -970,8 +1109,10 @@ export default function App() {
     setLastActivated(order.source);
 
     setMessage(
-      `${item.symbol}: simulated pending order placed at ${fmt(order.entry, 8)}.`
+      `${item.symbol}: demo pending order waiting at ${fmt(order.entry, 8)}.`
     );
+
+    subscribeMarket(item.symbol);
   };
 
   useEffect(() => {
@@ -1007,6 +1148,22 @@ export default function App() {
   const sellCount = symbols.filter(s =>
     signals[s.symbol]?.direction === "SELL"
   ).length;
+
+  const pendingOrders = orders.filter(o => o.status === "DEMO PENDING");
+  const openTrades = orders.filter(o => o.status === "OPEN DEMO TRADE");
+
+  const floatingPnl = openTrades.reduce(
+    (total, trade) => total + (trade.floatingPnl || 0), 0
+  );
+
+  const realisedPnl = closedTrades.reduce(
+    (total, trade) => total + (trade.realisedPnl || 0), 0
+  );
+
+  const totalPnl = floatingPnl + realisedPnl;
+
+  const moneyColor = value =>
+    value > 0 ? "#16c784" : value < 0 ? "#ea5455" : "#eef4ff";
 
   const diagnosticCounts = {};
 
@@ -1050,72 +1207,189 @@ export default function App() {
       ? "#ea5455"
       : "#8993a4";
 
+  const card = {
+    background: "#101a2b",
+    border: "1px solid #24334b",
+    borderRadius: 13,
+    padding: 14,
+    marginBottom: 12
+  };
+
+  const title = {
+    fontSize: 12,
+    fontWeight: 900,
+    letterSpacing: 1,
+    color: "#dce8fb"
+  };
+
+  const small = {
+    fontSize: 10,
+    color: "#8395af",
+    marginTop: 6,
+    lineHeight: 1.5
+  };
+
+  const stat = {
+    padding: 13,
+    background: "#101a2b",
+    border: "1px solid #24334b",
+    borderRadius: 10
+  };
+
+  const statLabel = {
+    fontSize: 9,
+    color: "#8193ad",
+    fontWeight: 800,
+    letterSpacing: .7
+  };
+
+  const statValue = {
+    fontSize: 22,
+    fontWeight: 900,
+    marginTop: 7
+  };
+
+  const orderCard = {
+    background: "#0b1525",
+    border: "1px solid #2b3e58",
+    borderRadius: 9,
+    padding: 12,
+    marginTop: 10
+  };
+
+  const grid2 = {
+    display: "grid",
+    gridTemplateColumns: "repeat(2,minmax(0,1fr))",
+    gap: 8
+  };
+
+  const orderGrid = {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 12,
+    marginTop: 13,
+    fontSize: 9,
+    color: "#8395af"
+  };
+
+  const diagnosticRow = {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 10,
+    background: "#0b1525",
+    padding: "10px 11px",
+    borderRadius: 7,
+    marginTop: 7
+  };
+
+  const searchStyle = {
+    width: "100%",
+    marginTop: 13,
+    background: "#0a1424",
+    border: "1px solid #30435e",
+    borderRadius: 8,
+    color: "white",
+    padding: 12,
+    fontSize: 13
+  };
+
   return (
-    <div style={styles.app}>
+    <div style={{
+      minHeight: "100vh",
+      background: "#080d18",
+      color: "#eef4ff",
+      fontFamily: "Arial, sans-serif"
+    }}>
       <style>{`
         * { box-sizing: border-box; }
         body { margin: 0; background: #080d18; }
         button, input { font: inherit; }
         button { cursor: pointer; }
         .market-scroll {
-          display:flex;
-          gap:7px;
-          overflow-x:auto;
-          padding:4px 0 10px;
-          scrollbar-width:none;
+          display:flex; gap:7px; overflow-x:auto;
+          padding:4px 0 10px; scrollbar-width:none;
         }
         .market-scroll::-webkit-scrollbar { display:none; }
         .market-card:active { transform:scale(.99); }
         .market-card { transition:transform .12s ease; }
-        .market-card:disabled {
-          opacity:.55;
-          cursor:not-allowed;
-        }
+        .market-card:disabled { opacity:.55; cursor:not-allowed; }
         input:focus { outline:1px solid #31a8ff; }
       `}</style>
 
-      <header style={styles.header}>
+      <header style={{
+        padding: "20px 16px",
+        background: "#101a2b",
+        borderBottom: "1px solid #24334b",
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        gap: 10
+      }}>
         <div>
-          <div style={styles.brand}>iFX BILLIONAIRE</div>
-          <div style={styles.subtitle}>
+          <div style={{ fontSize: 19, fontWeight: 900, letterSpacing: 1.2 }}>
+            iFX BILLIONAIRE
+          </div>
+          <div style={{
+            fontSize: 10, color: "#8293ad", marginTop: 5, letterSpacing: 1.5
+          }}>
             HLZ MOBILE ROBOT · RETEST EDITION
           </div>
         </div>
 
         <div style={{
-          ...styles.status,
+          borderRadius: 20,
+          padding: "8px 11px",
+          fontSize: 11,
+          fontWeight: 900,
           background: running ? "#123e30" : "#33252a",
           color: running ? "#25d99a" : "#ff7a82"
         }}>
-          <span style={{
-            ...styles.dot,
-            background: running ? "#25d99a" : "#ff626c"
-          }}/>
-          {running ? "RUNNING" : "STOPPED"}
+          ● {running ? "RUNNING" : "STOPPED"}
         </div>
       </header>
 
-      <main style={styles.main}>
+      <main style={{
+        width: "100%",
+        maxWidth: 900,
+        margin: "0 auto",
+        padding: 12
+      }}>
 
         {/* 1. ROBOT CONTROL */}
-        <section style={styles.panel}>
-          <div style={styles.panelTitle}>ROBOT CONTROL</div>
+        <section style={card}>
+          <div style={title}>ROBOT CONTROL</div>
 
-          <div style={styles.connection}>
+          <div style={small}>
+            ● {connectionText}
             <span style={{
-              ...styles.dot,
-              background: connected ? "#20c997" : "#8892a6"
-            }}/>
-            {connectionText}
-            <span style={styles.demoTag}>DEMO EXECUTION</span>
+              marginLeft: 10,
+              color: "#f4c46a",
+              background: "#382e1d",
+              padding: "5px 7px",
+              borderRadius: 5,
+              fontWeight: 900
+            }}>
+              DEMO EXECUTION
+            </span>
           </div>
 
-          <div style={styles.buttonRow}>
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: 9,
+            marginTop: 15
+          }}>
             <button
               onClick={startRobot}
               disabled={running}
               style={{
-                ...styles.primaryButton,
+                border: 0,
+                borderRadius: 9,
+                background: "#138d68",
+                color: "white",
+                padding: 14,
+                fontWeight: 900,
                 opacity: running ? .5 : 1
               }}
             >
@@ -1125,71 +1399,113 @@ export default function App() {
             <button
               onClick={stopRobot}
               disabled={!running && orders.length === 0}
-              style={styles.stopButton}
+              style={{
+                border: 0,
+                borderRadius: 9,
+                background: "#a52d3a",
+                color: "white",
+                padding: 14,
+                fontWeight: 900
+              }}
             >
               ■ STOP
             </button>
           </div>
 
-          <div style={styles.message}>{message}</div>
+          <div style={small}>{message}</div>
 
-          <div style={styles.progressTrack}>
+          <div style={{
+            height: 5,
+            background: "#26364e",
+            borderRadius: 10,
+            marginTop: 10,
+            overflow: "hidden"
+          }}>
             <div style={{
-              ...styles.progressFill,
+              height: "100%",
+              background: "#31a8ff",
               width: `${progress}%`
             }}/>
           </div>
 
-          <div style={styles.smallText}>
+          <div style={small}>
             Scan progress: {scanned}/{symbols.length} · {progress}%
           </div>
         </section>
 
         {/* 2. SUMMARY */}
-        <section style={styles.statsGrid}>
-          <div style={styles.stat}>
-            <div style={styles.statLabel}>MARKETS FOUND</div>
-            <div style={styles.statValue}>{symbols.length}</div>
+        <section style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(2,minmax(0,1fr))",
+          gap: 8,
+          marginBottom: 12
+        }}>
+          <div style={stat}>
+            <div style={statLabel}>MARKETS FOUND</div>
+            <div style={statValue}>{symbols.length}</div>
           </div>
 
-          <div style={styles.stat}>
-            <div style={styles.statLabel}>BUY SIGNALS</div>
-            <div style={{ ...styles.statValue, color: "#16c784" }}>
-              {buyCount}
+          <div style={stat}>
+            <div style={statLabel}>BUY SIGNALS</div>
+            <div style={{ ...statValue, color: "#16c784" }}>{buyCount}</div>
+          </div>
+
+          <div style={stat}>
+            <div style={statLabel}>SELL SIGNALS</div>
+            <div style={{ ...statValue, color: "#ea5455" }}>{sellCount}</div>
+          </div>
+
+          <div style={stat}>
+            <div style={statLabel}>OPEN DEMO TRADES</div>
+            <div style={statValue}>{openTrades.length}</div>
+          </div>
+
+          <div style={stat}>
+            <div style={statLabel}>PENDING ORDERS</div>
+            <div style={statValue}>{pendingOrders.length}</div>
+          </div>
+
+          <div style={stat}>
+            <div style={statLabel}>FLOATING P&L</div>
+            <div style={{
+              ...statValue,
+              color: moneyColor(floatingPnl)
+            }}>
+              {floatingPnl >= 0 ? "+" : ""}${fmt(floatingPnl, 2)}
             </div>
           </div>
 
-          <div style={styles.stat}>
-            <div style={styles.statLabel}>SELL SIGNALS</div>
-            <div style={{ ...styles.statValue, color: "#ea5455" }}>
-              {sellCount}
+          <div style={stat}>
+            <div style={statLabel}>REALISED P&L</div>
+            <div style={{
+              ...statValue,
+              color: moneyColor(realisedPnl)
+            }}>
+              {realisedPnl >= 0 ? "+" : ""}${fmt(realisedPnl, 2)}
             </div>
           </div>
 
-          <div style={styles.stat}>
-            <div style={styles.statLabel}>OPEN DEMO ORDERS</div>
-            <div style={styles.statValue}>{orders.length}</div>
+          <div style={stat}>
+            <div style={statLabel}>TOTAL P&L</div>
+            <div style={{
+              ...statValue,
+              color: moneyColor(totalPnl)
+            }}>
+              {totalPnl >= 0 ? "+" : ""}${fmt(totalPnl, 2)}
+            </div>
           </div>
         </section>
 
         {/* 3. ACTIVE SIGNALS */}
-        <section style={styles.panel}>
-          <div style={styles.panelHeading}>
-            <div>
-              <div style={styles.panelTitle}>ACTIVE RETEST SIGNALS</div>
-              <div style={styles.smallText}>
-                All currently discovered Deriv markets
-              </div>
-            </div>
-
-            <div style={styles.smallText}>M5 · BOX RETEST ONLY</div>
-          </div>
+        <section style={card}>
+          <div style={title}>ACTIVE RETEST SIGNALS</div>
+          <div style={small}>All currently discovered Deriv markets · M5</div>
 
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="Search symbol or market..."
-            style={styles.search}
+            style={searchStyle}
           />
 
           <div className="market-scroll">
@@ -1198,7 +1514,12 @@ export default function App() {
                 key={cat}
                 onClick={() => setCategory(cat)}
                 style={{
-                  ...styles.categoryButton,
+                  border: 0,
+                  borderRadius: 20,
+                  padding: "8px 12px",
+                  fontSize: 10,
+                  fontWeight: 800,
+                  whiteSpace: "nowrap",
                   background: category === cat ? "#1677d2" : "#18243a",
                   color: category === cat ? "#fff" : "#aab7cc"
                 }}
@@ -1209,19 +1530,18 @@ export default function App() {
           </div>
 
           {!symbols.length && (
-            <div style={styles.empty}>
+            <div style={{ textAlign: "center", padding: 22, color: "#8395af" }}>
               Press START ROBOT to discover Deriv markets.
             </div>
           )}
 
-          <div style={styles.marketList}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
             {visibleSymbols.map(item => {
               const signal = signals[item.symbol] || {
                 direction: "NONE",
                 reason: "Waiting for scan"
               };
 
-              const color = signalColor(signal.direction);
               const isSelected = selected?.symbol === item.symbol;
 
               const hasOrder = orders.some(order =>
@@ -1244,33 +1564,49 @@ export default function App() {
                     }
                   }}
                   style={{
-                    ...styles.marketCard,
-                    borderColor: isSelected ? "#31a8ff" : "#24334b"
+                    width: "100%",
+                    background: "#0b1525",
+                    border: `1px solid ${isSelected ? "#31a8ff" : "#24334b"}`,
+                    borderRadius: 9,
+                    padding: 11,
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    textAlign: "left",
+                    gap: 8,
+                    color: "#edf4ff"
                   }}
                 >
-                  <div style={styles.marketLeft}>
-                    <div style={styles.marketName}>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ fontSize: 12, fontWeight: 800 }}>
                       {item.display_name || item.symbol}
                     </div>
 
-                    <div style={styles.marketMeta}>
+                    <div style={small}>
                       {item.symbol} · {item.category}
                     </div>
 
                     {signal.direction !== "NONE" && (
                       <>
-                        <div style={styles.signalDetail}>
+                        <div style={{
+                          fontSize: 9,
+                          color: "#a9c9e9",
+                          marginTop: 5
+                        }}>
                           {signal.boxType} · {signal.touchType}
                         </div>
-
-                        <div style={styles.signalDetail}>
+                        <div style={{
+                          fontSize: 9,
+                          color: "#a9c9e9",
+                          marginTop: 5
+                        }}>
                           Entry: {fmt(signal.entry, 8)}
                         </div>
-
                         {hasOrder && (
                           <div style={{
-                            ...styles.signalDetail,
-                            color: "#f4c46a"
+                            fontSize: 9,
+                            color: "#f4c46a",
+                            marginTop: 5
                           }}>
                             DEMO ORDER ALREADY CREATED
                           </div>
@@ -1279,17 +1615,27 @@ export default function App() {
                     )}
 
                     {signal.direction === "NONE" && (
-                      <div style={styles.diagnosticReasonText}>
+                      <div style={{
+                        fontSize: 10,
+                        color: "#f1c477",
+                        marginTop: 5
+                      }}>
                         {signal.reason}
                       </div>
                     )}
                   </div>
 
                   <div style={{
-                    ...styles.signalBadge,
-                    background: color
+                    minWidth: 65,
+                    textAlign: "center",
+                    padding: "8px 7px",
+                    borderRadius: 6,
+                    fontSize: 10,
+                    fontWeight: 900,
+                    color: "#07111c",
+                    background: signalColor(signal.direction)
                   }}>
-                    {signal.direction === "NONE" ? "NONE" : signal.direction}
+                    {signal.direction}
                   </div>
                 </button>
               );
@@ -1298,139 +1644,247 @@ export default function App() {
         </section>
 
         {/* 4. TRADE SETTINGS */}
-        <section style={styles.panel}>
-          <div style={styles.panelTitle}>TRADE SETTINGS</div>
+        <section style={card}>
+          <div style={title}>TRADE SETTINGS</div>
 
-          <div style={styles.settingsGrid}>
-            <label style={styles.field}>
-              <span>Demo balance ($)</span>
-              <input
-                type="number"
-                value={balance}
-                onChange={e => setBalance(Number(e.target.value))}
-                style={styles.numberInput}
-              />
-            </label>
-
-            <label style={styles.field}>
-              <span>Risk per trade (%)</span>
-              <input
-                type="number"
-                min="0.1"
-                max="10"
-                step="0.1"
-                value={riskPct}
-                onChange={e => setRiskPct(Number(e.target.value))}
-                style={styles.numberInput}
-              />
-            </label>
-
-            <label style={styles.field}>
-              <span>Fixed lots (display only)</span>
-              <input
-                type="number"
-                min="0.01"
-                step="0.01"
-                value={fixedLots}
-                onChange={e => setFixedLots(Number(e.target.value))}
-                style={styles.numberInput}
-              />
-            </label>
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(2,minmax(0,1fr))",
+            gap: 12,
+            marginTop: 13
+          }}>
+            {[
+              ["Demo balance ($)", balance, setBalance],
+              ["Risk per trade (%)", riskPct, setRiskPct],
+              ["Fixed lots (display only)", fixedLots, setFixedLots]
+            ].map(([label, value, setter]) => (
+              <label key={label} style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 7,
+                fontSize: 10,
+                color: "#94a8c3"
+              }}>
+                <span>{label}</span>
+                <input
+                  type="number"
+                  value={value}
+                  onChange={e => setter(Number(e.target.value))}
+                  style={{
+                    width: "100%",
+                    minWidth: 0,
+                    background: "#0a1424",
+                    border: "1px solid #30435e",
+                    borderRadius: 7,
+                    color: "white",
+                    padding: 10,
+                    fontSize: 13
+                  }}
+                />
+              </label>
+            ))}
           </div>
 
-          <div style={styles.ruleText}>
+          <div style={{
+            marginTop: 13,
+            fontSize: 10,
+            lineHeight: 1.7,
+            color: "#a8b7cb",
+            background: "#0b1525",
+            padding: 10,
+            borderRadius: 7
+          }}>
             Forex demo: 10-pip SL / 31-pip TP.
             <br/>
             Non-Forex demo: 10-point SL / 1,000-point TP.
             <br/>
-            Non-Forex distances remain provisional test values,
-            not validated live contract settings.
+            Non-Forex distances remain provisional test values.
           </div>
         </section>
 
         {/* 5. DEMO PENDING ORDERS */}
-        <section style={styles.panel}>
-          <div style={styles.panelHeading}>
-            <div>
-              <div style={styles.panelTitle}>DEMO PENDING ORDERS</div>
-              <div style={styles.smallText}>
-                Orders created by tapping a valid signal
-              </div>
+        <section style={card}>
+          <div style={title}>DEMO PENDING ORDERS</div>
+          <div style={small}>Waiting for the live price to reach entry</div>
+
+          {!pendingOrders.length && (
+            <div style={{ textAlign: "center", padding: 18, color: "#8395af" }}>
+              No demo pending orders.
             </div>
-
-            <div style={styles.countBadge}>{orders.length}</div>
-          </div>
-
-          {!orders.length && (
-            <div style={styles.empty}>No demo pending orders.</div>
           )}
 
-          {orders.map(order => (
-            <div key={order.id} style={styles.orderCard}>
-              <div style={styles.panelHeading}>
+          {pendingOrders.map(order => (
+            <div key={order.id} style={orderCard}>
+              <div style={{
+                display: "flex",
+                justifyContent: "space-between",
+                gap: 10
+              }}>
                 <strong>{order.symbol}</strong>
-
-                <span style={{
-                  color: order.direction === "BUY" ? "#16c784" : "#ea5455",
-                  fontWeight: 800
+                <strong style={{
+                  color: order.direction === "BUY" ? "#16c784" : "#ea5455"
                 }}>
                   {order.direction}
-                </span>
+                </strong>
               </div>
 
-              <div style={styles.smallText}>{order.source}</div>
+              <div style={small}>{order.source}</div>
 
-              <div style={styles.orderGrid}>
-                <div>
-                  ENTRY
-                  <b>{fmt(order.entry, 8)}</b>
-                </div>
-
-                <div>
-                  STOP LOSS
-                  <b>{fmt(order.sl, 8)}</b>
-                </div>
-
-                <div>
-                  TAKE PROFIT
-                  <b>{fmt(order.tp, 8)}</b>
-                </div>
-
-                <div>
-                  RISK
-                  <b>${fmt(order.riskMoney, 2)}</b>
-                </div>
+              <div style={orderGrid}>
+                <div>ENTRY<b style={{ display: "block", color: "white" }}>{fmt(order.entry, 8)}</b></div>
+                <div>STOP LOSS<b style={{ display: "block", color: "white" }}>{fmt(order.sl, 8)}</b></div>
+                <div>TAKE PROFIT<b style={{ display: "block", color: "white" }}>{fmt(order.tp, 8)}</b></div>
+                <div>RISK<b style={{ display: "block", color: "white" }}>${fmt(order.riskMoney, 2)}</b></div>
               </div>
 
-              <div style={styles.demoTag}>{order.status}</div>
+              <div style={{
+                display: "inline-block",
+                fontSize: 9,
+                color: "#f4c46a",
+                background: "#382e1d",
+                borderRadius: 5,
+                padding: "5px 7px",
+                fontWeight: 900,
+                marginTop: 9
+              }}>
+                {order.status}
+              </div>
             </div>
           ))}
         </section>
 
-        {/* 6. LAST ACTIVATED */}
-        <section style={styles.panel}>
-          <div style={styles.panelTitle}>LAST ACTIVATED</div>
+        {/* 6. OPEN DEMO TRADES */}
+        <section style={card}>
+          <div style={title}>OPEN DEMO TRADES</div>
+          <div style={small}>Live price monitoring · Floating P&L</div>
 
-          <div style={styles.lastActivated}>{lastActivated}</div>
+          {!openTrades.length && (
+            <div style={{ textAlign: "center", padding: 18, color: "#8395af" }}>
+              No open demo trades. Pending orders will appear here after entry is reached.
+            </div>
+          )}
 
-          <div style={styles.smallText}>Last scan: {lastScan}</div>
+          {openTrades.map(trade => (
+            <div key={trade.id} style={orderCard}>
+              <div style={{
+                display: "flex",
+                justifyContent: "space-between",
+                gap: 10
+              }}>
+                <strong>{trade.symbol}</strong>
+                <strong style={{
+                  color: trade.direction === "BUY" ? "#16c784" : "#ea5455"
+                }}>
+                  {trade.direction}
+                </strong>
+              </div>
+
+              <div style={small}>
+                {trade.source} · {trade.status}
+              </div>
+
+              <div style={orderGrid}>
+                <div>ENTRY<b style={{ display: "block", color: "white" }}>{fmt(trade.entry, 8)}</b></div>
+                <div>CURRENT PRICE<b style={{ display: "block", color: "white" }}>{fmt(trade.currentPrice, 8)}</b></div>
+                <div>STOP LOSS<b style={{ display: "block", color: "white" }}>{fmt(trade.sl, 8)}</b></div>
+                <div>TAKE PROFIT<b style={{ display: "block", color: "white" }}>{fmt(trade.tp, 8)}</b></div>
+              </div>
+
+              <div style={{
+                marginTop: 12,
+                fontSize: 17,
+                fontWeight: 900,
+                color: moneyColor(trade.floatingPnl)
+              }}>
+                FLOATING P&L: {trade.floatingPnl >= 0 ? "+" : ""}
+                ${fmt(trade.floatingPnl, 2)}
+              </div>
+            </div>
+          ))}
         </section>
 
-        {/* 7. EXECUTION WARNING */}
-        <section style={styles.warning}>
+        {/* 7. CLOSED TRADES */}
+        <section style={card}>
+          <div style={title}>CLOSED DEMO TRADES</div>
+          <div style={small}>Trade results recorded after SL, TP or robot stop</div>
+
+          {!closedTrades.length && (
+            <div style={{ textAlign: "center", padding: 18, color: "#8395af" }}>
+              No closed demo trades yet.
+            </div>
+          )}
+
+          {closedTrades.slice(0, 20).map(trade => (
+            <div key={trade.id} style={orderCard}>
+              <div style={{
+                display: "flex",
+                justifyContent: "space-between",
+                gap: 10
+              }}>
+                <strong>{trade.symbol} · {trade.direction}</strong>
+                <strong style={{ color: moneyColor(trade.realisedPnl) }}>
+                  {trade.realisedPnl >= 0 ? "+" : ""}
+                  ${fmt(trade.realisedPnl, 2)}
+                </strong>
+              </div>
+
+              <div style={small}>
+                {trade.exitReason} · Closed {trade.closedAt}
+              </div>
+
+              <div style={small}>
+                Entry: {fmt(trade.entry, 8)} · Exit: {fmt(trade.exitPrice, 8)}
+              </div>
+            </div>
+          ))}
+        </section>
+
+        {/* 8. LAST ACTIVATED */}
+        <section style={card}>
+          <div style={title}>LAST ACTIVATED</div>
+          <div style={{
+            marginTop: 12,
+            padding: 12,
+            background: "#0b1525",
+            borderRadius: 8,
+            color: "#48c9a0",
+            fontSize: 13,
+            fontWeight: 900,
+            overflowWrap: "anywhere"
+          }}>
+            {lastActivated}
+          </div>
+          <div style={small}>Last scan: {lastScan}</div>
+        </section>
+
+        {/* 9. EXECUTION WARNING */}
+        <section style={{
+          background: "#302719",
+          border: "1px solid #725b2e",
+          color: "#f4d69a",
+          padding: 13,
+          borderRadius: 10,
+          fontSize: 11,
+          lineHeight: 1.6,
+          marginBottom: 12
+        }}>
           <strong>IMPORTANT — EXECUTION STATUS</strong>
 
           <p>
-            Deriv public market data is connected separately from broker
-            execution. This build scans Deriv market data and creates
-            simulated pending orders. It does not send real pending orders,
-            close real positions or manage a live account.
+            This build uses Deriv public market data and simulated demo orders.
+            It does not place or manage real broker trades.
           </p>
 
           <p>
-            Simulated pending orders are recorded at the calculated entry
-            price. Automatic fill, SL and TP outcome simulation is not
-            implemented in this build.
+            Pending orders are monitored using live Deriv tick subscriptions.
+            When the entry is reached, a demo trade opens. The demo trade is
+            closed when its SL or TP is reached.
+          </p>
+
+          <p>
+            P&L is risk-normalised using the configured risk amount and stop
+            distance. It is not actual Deriv contract valuation. Fixed lots
+            are display-only.
           </p>
 
           <p>
@@ -1439,51 +1893,60 @@ export default function App() {
         </section>
 
         {/* BOTTOM SECTION 1: DERIV CANDLE DATA DIAGNOSTICS */}
-        <section style={styles.panel}>
-          <div style={styles.panelHeading}>
-            <div>
-              <div style={styles.panelTitle}>
-                DERIV CANDLE DATA DIAGNOSTICS
-              </div>
-              <div style={styles.smallText}>
-                Maximum request: {CANDLE_COUNT} candles · M5
-              </div>
-            </div>
+        <section style={card}>
+          <div style={title}>DERIV CANDLE DATA DIAGNOSTICS</div>
+          <div style={small}>
+            Maximum request: {CANDLE_COUNT} candles · M5
           </div>
 
           {scanned === 0 && (
-            <div style={styles.empty}>
+            <div style={{ textAlign: "center", padding: 18, color: "#8395af" }}>
               Start the robot to inspect Deriv candle responses.
             </div>
           )}
 
           {scanned > 0 && (
-            <div style={styles.diagnosticList}>
+            <div style={{ marginTop: 14 }}>
               {[
                 ["Markets checked", scanned],
                 ["Maximum candles requested", CANDLE_COUNT],
                 ["Markets with candle data", marketsWithCandleData],
                 ["Markets with API errors", marketsWithErrors]
               ].map(([label, value]) => (
-                <div key={label} style={styles.diagnosticRow}>
-                  <span style={styles.diagnosticReason}>{label}</span>
-                  <span style={styles.diagnosticCount}>{value}</span>
+                <div key={label} style={diagnosticRow}>
+                  <span style={{ color: "#b9c9df", fontSize: 11 }}>{label}</span>
+                  <strong style={{ color: "#55c9ff" }}>{value}</strong>
                 </div>
               ))}
             </div>
           )}
 
-          <div style={styles.ruleText}>
+          <div style={{
+            marginTop: 13,
+            fontSize: 10,
+            lineHeight: 1.7,
+            color: "#a8b7cb",
+            background: "#0b1525",
+            padding: 10,
+            borderRadius: 7
+          }}>
             Deriv may return fewer candles than requested. All valid closed
             candles returned are used. No minimum of 1,200 candles is required.
           </div>
         </section>
 
         {/* BOTTOM SECTION 2: STRATEGY RULES */}
-        <section style={styles.panel}>
-          <div style={styles.panelTitle}>STRATEGY RULES</div>
-
-          <div style={styles.ruleText}>
+        <section style={card}>
+          <div style={title}>STRATEGY RULES</div>
+          <div style={{
+            marginTop: 13,
+            fontSize: 10,
+            lineHeight: 1.7,
+            color: "#a8b7cb",
+            background: "#0b1525",
+            padding: 10,
+            borderRadius: 7
+          }}>
             ASIA RANGE: 00:00–07:00 UTC.
             <br/>
             BOXES: DOJI · ENGULFED · WICK.
@@ -1505,29 +1968,15 @@ export default function App() {
         </section>
 
         {/* BOTTOM SECTION 3: INDIVIDUAL MARKET DATA */}
-        <section style={styles.panel}>
-          <div style={styles.panelHeading}>
-            <div>
-              <div style={styles.panelTitle}>INDIVIDUAL MARKET DATA</div>
-              <div style={styles.smallText}>
-                Candle history returned by Deriv for each market
-              </div>
-            </div>
-
-            <div style={styles.countBadge}>
-              {candleDiagnosticList.length} MARKETS
-            </div>
+        <section style={card}>
+          <div style={title}>INDIVIDUAL MARKET DATA</div>
+          <div style={small}>
+            Candle history returned by Deriv for each market · {candleDiagnosticList.length} markets
           </div>
 
           {scanned === 0 && (
-            <div style={styles.empty}>
+            <div style={{ textAlign: "center", padding: 18, color: "#8395af" }}>
               Individual candle information will appear here after scanning.
-            </div>
-          )}
-
-          {scanned > 0 && !candleDiagnosticList.length && (
-            <div style={styles.empty}>
-              No individual market candle diagnostics available yet.
             </div>
           )}
 
@@ -1537,54 +1986,37 @@ export default function App() {
               const d = candleDiagnostics[item.symbol];
 
               return (
-                <div key={item.symbol} style={styles.diagnosticMarket}>
-                  <div style={styles.diagnosticMarketName}>
+                <div key={item.symbol} style={{
+                  background: "#0b1525",
+                  border: "1px solid #24334b",
+                  padding: 10,
+                  borderRadius: 7,
+                  marginTop: 8
+                }}>
+                  <div style={{ fontSize: 11, fontWeight: 800 }}>
                     {item.display_name || item.symbol}
                   </div>
-
-                  <div style={styles.smallText}>
-                    Symbol: {item.symbol}
-                  </div>
-
-                  <div style={styles.diagnosticReasonText}>
-                    Maximum requested: {d.requestedMaximum}
-                  </div>
-
-                  <div style={styles.diagnosticReasonText}>
-                    Returned by Deriv: {d.returned}
-                  </div>
-
-                  <div style={styles.diagnosticReasonText}>
-                    Valid candles: {d.valid}
-                  </div>
-
-                  <div style={styles.diagnosticReasonText}>
-                    Closed candles: {d.closed}
-                  </div>
-
-                  <div style={styles.diagnosticReasonText}>
-                    Response type: {d.responseType}
-                  </div>
+                  <div style={small}>Symbol: {item.symbol}</div>
+                  <div style={small}>Maximum requested: {d.requestedMaximum}</div>
+                  <div style={small}>Returned by Deriv: {d.returned}</div>
+                  <div style={small}>Valid candles: {d.valid}</div>
+                  <div style={small}>Closed candles: {d.closed}</div>
+                  <div style={small}>Response type: {d.responseType}</div>
 
                   {d.oldestEpoch && (
-                    <div style={styles.smallText}>
-                      Oldest closed candle:{" "}
-                      {new Date(d.oldestEpoch * 1000).toISOString()}
+                    <div style={small}>
+                      Oldest closed candle: {new Date(d.oldestEpoch * 1000).toISOString()}
                     </div>
                   )}
 
                   {d.latestEpoch && (
-                    <div style={styles.smallText}>
-                      Latest closed candle:{" "}
-                      {new Date(d.latestEpoch * 1000).toISOString()}
+                    <div style={small}>
+                      Latest closed candle: {new Date(d.latestEpoch * 1000).toISOString()}
                     </div>
                   )}
 
                   {d.error && (
-                    <div style={{
-                      ...styles.diagnosticReasonText,
-                      color: "#ff7777"
-                    }}>
+                    <div style={{ ...small, color: "#ff7777" }}>
                       API ERROR: {d.error}
                     </div>
                   )}
@@ -1594,86 +2026,90 @@ export default function App() {
         </section>
 
         {/* BOTTOM SECTION 4: STRATEGY DIAGNOSTICS */}
-        <section style={styles.panel}>
-          <div style={styles.panelHeading}>
-            <div>
-              <div style={styles.panelTitle}>STRATEGY DIAGNOSTICS</div>
-              <div style={styles.smallText}>
-                Why each scanned market does or does not have a signal
-              </div>
-            </div>
-
-            <div style={styles.countBadge}>{scanned} SCANNED</div>
+        <section style={card}>
+          <div style={title}>STRATEGY DIAGNOSTICS</div>
+          <div style={small}>
+            Why each scanned market does or does not have a signal · {scanned} scanned
           </div>
 
           {!scanned && (
-            <div style={styles.empty}>
+            <div style={{ textAlign: "center", padding: 18, color: "#8395af" }}>
               Start the robot to see diagnostic results.
             </div>
           )}
 
           {scanned > 0 && (
-            <div style={styles.diagnosticList}>
+            <div style={{ marginTop: 14 }}>
               {Object.entries(diagnosticCounts)
                 .filter(([, count]) => count > 0)
                 .sort((a, b) => b[1] - a[1])
                 .map(([reason, count]) => (
-                  <div key={reason} style={styles.diagnosticRow}>
-                    <span style={styles.diagnosticReason}>{reason}</span>
-                    <span style={styles.diagnosticCount}>{count}</span>
+                  <div key={reason} style={diagnosticRow}>
+                    <span style={{ color: "#b9c9df", fontSize: 11 }}>{reason}</span>
+                    <strong style={{ color: "#55c9ff" }}>{count}</strong>
                   </div>
                 ))}
             </div>
           )}
 
-          <div style={styles.ruleText}>
+          <div style={{
+            marginTop: 13,
+            fontSize: 10,
+            lineHeight: 1.7,
+            color: "#a8b7cb",
+            background: "#0b1525",
+            padding: 10,
+            borderRadius: 7
+          }}>
             Diagnostics only. No EMA conditions are used.
           </div>
         </section>
 
         {/* BOTTOM SECTION 5: MARKET-BY-MARKET REASONS */}
-        <section style={styles.panel}>
-          <div style={styles.panelHeading}>
-            <div>
-              <div style={styles.panelTitle}>MARKET-BY-MARKET REASONS</div>
-              <div style={styles.smallText}>
-                Individual explanation for every market without a signal
-              </div>
-            </div>
-
-            <div style={styles.countBadge}>
-              {diagnosticMarkets.length} MARKETS
-            </div>
+        <section style={card}>
+          <div style={title}>MARKET-BY-MARKET REASONS</div>
+          <div style={small}>
+            Individual explanation for every market without a signal · {diagnosticMarkets.length} markets
           </div>
 
-          {!diagnosticMarkets.length && scanned > 0 && (
-            <div style={styles.empty}>
-              No markets currently have a NONE signal.
-            </div>
-          )}
-
           {!scanned && (
-            <div style={styles.empty}>
+            <div style={{ textAlign: "center", padding: 18, color: "#8395af" }}>
               Start the robot to see individual market reasons.
             </div>
           )}
 
           {diagnosticMarkets.map(item => (
-            <div key={item.symbol} style={styles.diagnosticMarket}>
-              <div style={styles.diagnosticMarketName}>
+            <div key={item.symbol} style={{
+              background: "#0b1525",
+              border: "1px solid #24334b",
+              padding: 10,
+              borderRadius: 7,
+              marginTop: 8
+            }}>
+              <div style={{ fontSize: 11, fontWeight: 800 }}>
                 {item.display_name || item.symbol}
               </div>
-
-              <div style={styles.smallText}>{item.symbol}</div>
-
-              <div style={styles.diagnosticReasonText}>
+              <div style={small}>{item.symbol}</div>
+              <div style={{
+                fontSize: 10,
+                color: "#f1c477",
+                marginTop: 5,
+                lineHeight: 1.5
+              }}>
                 {signals[item.symbol]?.reason || "No diagnostic available"}
               </div>
             </div>
           ))}
         </section>
 
-        <footer style={styles.footer}>
+        <footer style={{
+          textAlign: "center",
+          padding: "16px 5px 28px",
+          color: "#647893",
+          fontSize: 9,
+          letterSpacing: 1.2,
+          lineHeight: 1.8
+        }}>
           iFX BILLIONAIRE ROBOT · HLZ MOBILE
           <br/>
           Breakouts · Retests · FLIPPY
@@ -1682,405 +2118,3 @@ export default function App() {
     </div>
   );
 }
-
-const styles = {
-  app: {
-    minHeight: "100vh",
-    background: "#080d18",
-    color: "#eef4ff",
-    fontFamily: "Arial, sans-serif"
-  },
-
-  header: {
-    padding: "20px 16px",
-    background: "#101a2b",
-    borderBottom: "1px solid #24334b",
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 10
-  },
-
-  brand: {
-    fontSize: 19,
-    fontWeight: 900,
-    letterSpacing: 1.2
-  },
-
-  subtitle: {
-    fontSize: 10,
-    color: "#8293ad",
-    marginTop: 5,
-    letterSpacing: 1.5
-  },
-
-  status: {
-    borderRadius: 20,
-    padding: "8px 11px",
-    fontSize: 11,
-    fontWeight: 900,
-    display: "flex",
-    alignItems: "center",
-    gap: 7
-  },
-
-  dot: {
-    display: "inline-block",
-    width: 8,
-    height: 8,
-    borderRadius: "50%"
-  },
-
-  main: {
-    width: "100%",
-    maxWidth: 900,
-    margin: "0 auto",
-    padding: 12,
-    display: "flex",
-    flexDirection: "column",
-    gap: 12
-  },
-
-  panel: {
-    background: "#101a2b",
-    border: "1px solid #24334b",
-    borderRadius: 13,
-    padding: 14
-  },
-
-  panelTitle: {
-    fontSize: 12,
-    fontWeight: 900,
-    letterSpacing: 1,
-    color: "#dce8fb"
-  },
-
-  panelHeading: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 10
-  },
-
-  connection: {
-    marginTop: 12,
-    fontSize: 11,
-    color: "#9aaac1",
-    display: "flex",
-    alignItems: "center",
-    gap: 8
-  },
-
-  demoTag: {
-    display: "inline-block",
-    fontSize: 9,
-    color: "#f4c46a",
-    background: "#382e1d",
-    borderRadius: 5,
-    padding: "5px 7px",
-    fontWeight: 900,
-    letterSpacing: .5,
-    marginTop: 7
-  },
-
-  buttonRow: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1fr",
-    gap: 9,
-    marginTop: 15
-  },
-
-  primaryButton: {
-    border: 0,
-    borderRadius: 9,
-    background: "#138d68",
-    color: "white",
-    padding: 14,
-    fontWeight: 900
-  },
-
-  stopButton: {
-    border: 0,
-    borderRadius: 9,
-    background: "#a52d3a",
-    color: "white",
-    padding: 14,
-    fontWeight: 900
-  },
-
-  message: {
-    fontSize: 11,
-    color: "#9fb1ca",
-    marginTop: 12,
-    lineHeight: 1.5
-  },
-
-  progressTrack: {
-    height: 5,
-    background: "#26364e",
-    borderRadius: 10,
-    marginTop: 10,
-    overflow: "hidden"
-  },
-
-  progressFill: {
-    height: "100%",
-    background: "#31a8ff",
-    transition: "width .2s"
-  },
-
-  smallText: {
-    fontSize: 10,
-    color: "#8395af",
-    marginTop: 6,
-    lineHeight: 1.5
-  },
-
-  statsGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(2,minmax(0,1fr))",
-    gap: 8
-  },
-
-  stat: {
-    padding: 13,
-    background: "#101a2b",
-    border: "1px solid #24334b",
-    borderRadius: 10
-  },
-
-  statLabel: {
-    fontSize: 9,
-    color: "#8193ad",
-    fontWeight: 800,
-    letterSpacing: .7
-  },
-
-  statValue: {
-    fontSize: 23,
-    fontWeight: 900,
-    marginTop: 7
-  },
-
-  search: {
-    width: "100%",
-    marginTop: 13,
-    background: "#0a1424",
-    border: "1px solid #30435e",
-    borderRadius: 8,
-    color: "white",
-    padding: 12,
-    fontSize: 13
-  },
-
-  categoryButton: {
-    border: 0,
-    borderRadius: 20,
-    padding: "8px 12px",
-    fontSize: 10,
-    fontWeight: 800,
-    whiteSpace: "nowrap"
-  },
-
-  marketList: {
-    display: "flex",
-    flexDirection: "column",
-    gap: 7
-  },
-
-  marketCard: {
-    width: "100%",
-    background: "#0b1525",
-    border: "1px solid #24334b",
-    borderRadius: 9,
-    padding: 11,
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    textAlign: "left",
-    gap: 8,
-    color: "#edf4ff"
-  },
-
-  marketLeft: {
-    minWidth: 0,
-    flex: 1
-  },
-
-  marketName: {
-    fontSize: 12,
-    fontWeight: 800,
-    overflowWrap: "anywhere"
-  },
-
-  marketMeta: {
-    fontSize: 9,
-    color: "#8294ae",
-    marginTop: 4
-  },
-
-  signalDetail: {
-    fontSize: 9,
-    color: "#a9c9e9",
-    marginTop: 5
-  },
-
-  signalBadge: {
-    minWidth: 65,
-    textAlign: "center",
-    padding: "8px 7px",
-    borderRadius: 6,
-    fontSize: 10,
-    fontWeight: 900,
-    color: "#07111c"
-  },
-
-  empty: {
-    textAlign: "center",
-    padding: 22,
-    color: "#8395af",
-    fontSize: 12,
-    lineHeight: 1.6
-  },
-
-  settingsGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(2,minmax(0,1fr))",
-    gap: 12,
-    marginTop: 13
-  },
-
-  field: {
-    display: "flex",
-    flexDirection: "column",
-    gap: 7,
-    fontSize: 10,
-    color: "#94a8c3"
-  },
-
-  numberInput: {
-    width: "100%",
-    minWidth: 0,
-    background: "#0a1424",
-    border: "1px solid #30435e",
-    borderRadius: 7,
-    color: "white",
-    padding: 10,
-    fontSize: 13
-  },
-
-  ruleText: {
-    marginTop: 13,
-    fontSize: 10,
-    lineHeight: 1.7,
-    color: "#a8b7cb",
-    background: "#0b1525",
-    padding: 10,
-    borderRadius: 7
-  },
-
-  countBadge: {
-    background: "#203653",
-    borderRadius: 20,
-    padding: "5px 10px",
-    fontSize: 11,
-    fontWeight: 900
-  },
-
-  orderCard: {
-    background: "#0b1525",
-    border: "1px solid #2b3e58",
-    borderRadius: 9,
-    padding: 12,
-    marginTop: 10
-  },
-
-  orderGrid: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1fr",
-    gap: 12,
-    marginTop: 13,
-    fontSize: 9,
-    color: "#8395af"
-  },
-
-  lastActivated: {
-    marginTop: 12,
-    padding: 12,
-    background: "#0b1525",
-    borderRadius: 8,
-    color: "#48c9a0",
-    fontSize: 13,
-    fontWeight: 900,
-    overflowWrap: "anywhere"
-  },
-
-  diagnosticList: {
-    display: "flex",
-    flexDirection: "column",
-    gap: 7,
-    marginTop: 14
-  },
-
-  diagnosticRow: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 10,
-    background: "#0b1525",
-    padding: "10px 11px",
-    borderRadius: 7
-  },
-
-  diagnosticReason: {
-    color: "#b9c9df",
-    fontSize: 11,
-    lineHeight: 1.4
-  },
-
-  diagnosticCount: {
-    color: "#55c9ff",
-    fontSize: 13,
-    fontWeight: 900
-  },
-
-  diagnosticMarket: {
-    background: "#0b1525",
-    border: "1px solid #24334b",
-    padding: 10,
-    borderRadius: 7,
-    marginTop: 8
-  },
-
-  diagnosticMarketName: {
-    fontSize: 11,
-    fontWeight: 800,
-    color: "#edf4ff"
-  },
-
-  diagnosticReasonText: {
-    fontSize: 10,
-    color: "#f1c477",
-    marginTop: 5,
-    lineHeight: 1.5
-  },
-
-  warning: {
-    background: "#302719",
-    border: "1px solid #725b2e",
-    color: "#f4d69a",
-    padding: 13,
-    borderRadius: 10,
-    fontSize: 11,
-    lineHeight: 1.6
-  },
-
-  footer: {
-    textAlign: "center",
-    padding: "16px 5px 28px",
-    color: "#647893",
-    fontSize: 9,
-    letterSpacing: 1.2,
-    lineHeight: 1.8
-  }
-};
