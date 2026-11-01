@@ -1,10 +1,9 @@
-
 import React, { useCallback, useEffect, useRef, useState } from "react";
 
 const WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public";
+
 const TIMEFRAME = 300;
 const CANDLE_COUNT = 1200;
-const EMA_PERIODS = [35, 60, 90, 120, 200, 1068];
 const BUFFER_PIPS = 2;
 const FX_SL_PIPS = 10;
 const FX_TP_PIPS = 31;
@@ -15,25 +14,21 @@ const CATEGORIES = [
   "Synthetics", "Crypto", "Stocks", "Other"
 ];
 
-const fmt = (n, digits = 5) =>
-  Number.isFinite(n) ? Number(n).toFixed(digits) : "—";
-
 const DIAGNOSTIC_REASONS = [
-  "Insufficient EMA history",
   "Asia range unavailable",
-  "No HLZ boxes",
+  "No boxes found",
   "Waiting for breakout",
-  "Waiting for retest",
-  "Waiting for next touch",
+  "Waiting for first retest",
+  "Waiting for opposite-side breakout",
+  "Waiting for FLIPPY retest",
   "Third touch — DELETE",
-  "EMA not inside box",
-  "EMA still inside Asia range",
-  "EMA rejection missing",
-  "Neutral candle",
-  "Neutral touch candle",
+  "Neutral retest candle",
   "Signal confirmed",
   "Market data unavailable"
 ];
+
+const fmt = (n, digits = 5) =>
+  Number.isFinite(n) ? Number(n).toFixed(digits) : "—";
 
 function categoryOf(s) {
   const market = String(s.market || "").toLowerCase();
@@ -99,26 +94,9 @@ function categoryOf(s) {
 }
 
 function candleColor(c) {
-  return c.close > c.open
-    ? "BUY"
-    : c.close < c.open
-    ? "SELL"
-    : "NONE";
-}
-
-function calculateEMA(values, period) {
-  const result = new Array(values.length).fill(null);
-  if (values.length < period) return result;
-
-  const multiplier = 2 / (period + 1);
-  let ema = values[0];
-
-  for (let i = 0; i < values.length; i++) {
-    ema = values[i] * multiplier + ema * (1 - multiplier);
-    result[i] = ema;
-  }
-
-  return result;
+  if (c.close > c.open) return "GREEN";
+  if (c.close < c.open) return "RED";
+  return "NEUTRAL";
 }
 
 function pipSize(symbol, category, candles) {
@@ -140,6 +118,7 @@ function buildAsiaRange(candles) {
 
   const asia = candles.filter(c => {
     const date = new Date(c.epoch * 1000);
+
     return (
       date.toISOString().slice(0, 10) === lastDay &&
       date.getUTCHours() >= 0 &&
@@ -156,14 +135,19 @@ function buildAsiaRange(candles) {
   };
 }
 
-function createBoxes(candles) {
+// Detects only the original three candle box types.
+// FLIPPY is identified later by the failed-hold sequence.
+function createBoxes(candles, asiaDay) {
   const boxes = [];
 
   for (let i = 1; i < candles.length; i++) {
     const c = candles[i];
     const prev = candles[i - 1];
-    const date = new Date(c.epoch * 1000);
 
+    const date = new Date(c.epoch * 1000);
+    const candleDay = date.toISOString().slice(0, 10);
+
+    if (candleDay !== asiaDay) continue;
     if (date.getUTCHours() < 7) continue;
 
     const range = c.high - c.low;
@@ -176,6 +160,7 @@ function createBoxes(candles) {
     const currentBear = c.close < c.open;
     const previousBull = prev.close > prev.open;
 
+    // ENGULFED BOX
     if (
       (currentBull && previousBear &&
         c.open <= prev.close && c.close >= prev.open) ||
@@ -190,6 +175,7 @@ function createBoxes(candles) {
       });
     }
 
+    // DOJI BOX
     if (body / range <= 0.25) {
       boxes.push({
         type: "DOJI",
@@ -199,6 +185,7 @@ function createBoxes(candles) {
       });
     }
 
+    // WICK BOX
     if (currentBull) {
       const upperWick = c.high - c.close;
 
@@ -229,12 +216,40 @@ function createBoxes(candles) {
   return boxes;
 }
 
-// HLZ entry conditions remain unchanged.
-function findHLZSignal(candles, symbol, category) {
-  if (candles.length < 1070) {
+function touchesTop(candle, box) {
+  return candle.low <= box.high && candle.high >= box.high;
+}
+
+function touchesBottom(candle, box) {
+  return candle.low <= box.low && candle.high >= box.low;
+}
+
+function touchesBox(candle, box) {
+  return candle.low <= box.high && candle.high >= box.low;
+}
+
+// Exact retest direction:
+// Green candle at bottom = SELL.
+// Red candle at top = BUY.
+function getRetestDirection(candle, boundary) {
+  const color = candleColor(candle);
+
+  if (boundary === "BOTTOM" && color === "GREEN") {
+    return "SELL";
+  }
+
+  if (boundary === "TOP" && color === "RED") {
+    return "BUY";
+  }
+
+  return "NONE";
+}
+
+function findRetestSignal(candles, symbol, category) {
+  if (!candles.length) {
     return {
       direction: "NONE",
-      reason: "Insufficient EMA history"
+      reason: "Market data unavailable"
     };
   }
 
@@ -247,63 +262,47 @@ function findHLZSignal(candles, symbol, category) {
     };
   }
 
-  const boxes = createBoxes(candles).filter(box =>
-    new Date(candles[box.created].epoch * 1000)
-      .toISOString()
-      .slice(0, 10) === asia.day
-  );
+  const boxes = createBoxes(candles, asia.day);
 
   if (!boxes.length) {
     return {
       direction: "NONE",
-      reason: "No HLZ boxes"
+      reason: "No boxes found"
     };
   }
-
-  const closes = candles.map(c => c.close);
-  const emas = {};
-
-  EMA_PERIODS.forEach(period => {
-    emas[period] = calculateEMA(closes, period);
-  });
 
   const lastIndex = candles.length - 1;
   const last = candles[lastIndex];
-  const direction = candleColor(last);
-
-  if (direction === "NONE") {
-    return {
-      direction: "NONE",
-      reason: "Neutral candle"
-    };
-  }
 
   const unit = pipSize(symbol, category, candles);
-  const rejectionBuffer = unit * 10;
   const entryBuffer = unit * BUFFER_PIPS;
 
-  let best = null;
-
   let sawBreakout = false;
-  let sawRetest = false;
-  let sawFlippy = false;
+  let sawFirstRetest = false;
+  let sawOppositeBreak = false;
+  let sawFlippyRetest = false;
   let sawDeleted = false;
-  let sawNeutralTouch = false;
-  let sawEmaInsideBox = false;
-  let sawEmaOutsideAsia = false;
-  let sawRejectionFailure = false;
+  let sawNeutral = false;
+
+  let best = null;
 
   for (const box of boxes) {
     if (lastIndex <= box.created) continue;
 
+    // STEP 1: Find the first breakout after box creation.
     let breakoutIndex = -1;
+    let breakoutDirection = null;
 
     for (let i = box.created + 1; i <= lastIndex; i++) {
-      if (
-        candles[i].close > box.high ||
-        candles[i].close < box.low
-      ) {
+      if (candles[i].close > box.high) {
         breakoutIndex = i;
+        breakoutDirection = "UP";
+        break;
+      }
+
+      if (candles[i].close < box.low) {
+        breakoutIndex = i;
+        breakoutDirection = "DOWN";
         break;
       }
     }
@@ -314,174 +313,198 @@ function findHLZSignal(candles, symbol, category) {
 
     if (lastIndex <= breakoutIndex) continue;
 
-    let touchCount = 0;
-    let lastTouchIndex = -1;
+    // STEP 2: Wait for the first retest of the breakout edge.
+    const firstBoundary =
+      breakoutDirection === "UP" ? "TOP" : "BOTTOM";
+
+    const firstBoundaryPrice =
+      firstBoundary === "TOP" ? box.high : box.low;
+
+    let firstTouchIndex = -1;
 
     for (let i = breakoutIndex + 1; i <= lastIndex; i++) {
       const candle = candles[i];
 
-      const touched =
-        candle.low <= box.high &&
-        candle.high >= box.low;
+      const touched = firstBoundary === "TOP"
+        ? touchesTop(candle, box)
+        : touchesBottom(candle, box);
 
       if (touched) {
-        touchCount++;
-        lastTouchIndex = i;
+        firstTouchIndex = i;
+        break;
       }
     }
 
-    if (touchCount >= 3) {
+    if (firstTouchIndex < 0) continue;
+
+    sawFirstRetest = true;
+
+    const firstTouch = candles[firstTouchIndex];
+
+    // First retest can create a normal RETEST signal.
+    const firstDirection = getRetestDirection(
+      firstTouch,
+      firstBoundary
+    );
+
+    if (firstTouchIndex === lastIndex) {
+      if (firstDirection !== "NONE") {
+        const signal = {
+          direction: firstDirection,
+          boxType: box.type,
+          touchType: "RETEST",
+          sourceBoxType: box.type,
+          boxHigh: box.high,
+          boxLow: box.low,
+          asiaHigh: asia.high,
+          asiaLow: asia.low,
+          entry: firstDirection === "BUY"
+            ? box.high + entryBuffer
+            : box.low - entryBuffer,
+          pip: unit,
+          candleTime: last.epoch,
+          reason: "Signal confirmed"
+        };
+
+        best = signal;
+      } else {
+        sawNeutral = true;
+      }
+
+      continue;
+    }
+
+    // If the first retest does not generate a signal,
+    // wait to see whether price breaks the opposite side.
+    const oppositeBoundary =
+      firstBoundary === "TOP" ? "BOTTOM" : "TOP";
+
+    const oppositePrice =
+      oppositeBoundary === "TOP" ? box.high : box.low;
+
+    let oppositeBreakIndex = -1;
+
+    for (
+      let i = firstTouchIndex + 1;
+      i <= lastIndex;
+      i++
+    ) {
+      if (
+        firstBoundary === "TOP" &&
+        candles[i].close < box.low
+      ) {
+        oppositeBreakIndex = i;
+        break;
+      }
+
+      if (
+        firstBoundary === "BOTTOM" &&
+        candles[i].close > box.high
+      ) {
+        oppositeBreakIndex = i;
+        break;
+      }
+    }
+
+    if (oppositeBreakIndex < 0) continue;
+
+    sawOppositeBreak = true;
+
+    // STEP 3: The opposite-side breakout creates a FLIPPY setup.
+    // Now wait for price to return to the opposite box edge.
+    let flippyTouchIndex = -1;
+
+    for (
+      let i = oppositeBreakIndex + 1;
+      i <= lastIndex;
+      i++
+    ) {
+      const candle = candles[i];
+
+      const touched = oppositeBoundary === "TOP"
+        ? touchesTop(candle, box)
+        : touchesBottom(candle, box);
+
+      if (touched) {
+        flippyTouchIndex = i;
+        break;
+      }
+    }
+
+    if (flippyTouchIndex < 0) continue;
+
+    sawFlippyRetest = true;
+
+    // STEP 4: The next touch after the FLIPPY retest
+    // invalidates this box.
+    let thirdTouch = false;
+
+    for (
+      let i = flippyTouchIndex + 1;
+      i <= lastIndex;
+      i++
+    ) {
+      if (touchesBox(candles[i], box)) {
+        thirdTouch = true;
+        break;
+      }
+    }
+
+    if (thirdTouch) {
       sawDeleted = true;
       continue;
     }
 
-    if (touchCount === 0) continue;
+    if (flippyTouchIndex !== lastIndex) continue;
 
-    if (touchCount === 1) sawRetest = true;
-    if (touchCount === 2) sawFlippy = true;
+    const flippyCandle = candles[flippyTouchIndex];
 
-    if (lastTouchIndex !== lastIndex) continue;
+    const flippyDirection = getRetestDirection(
+      flippyCandle,
+      oppositeBoundary
+    );
 
-    const touchType = touchCount === 1
-      ? "RETEST"
-      : "FLIPPY";
-
-    const touchDirection = candleColor(last);
-
-    if (touchDirection === "NONE") {
-      sawNeutralTouch = true;
+    if (flippyDirection === "NONE") {
+      sawNeutral = true;
       continue;
     }
 
-    for (const period of EMA_PERIODS) {
-      const ema = emas[period][lastIndex];
-      if (!Number.isFinite(ema)) continue;
+    const signal = {
+      direction: flippyDirection,
+      boxType: "FLIPPY",
+      sourceBoxType: box.type,
+      touchType: "FLIPPY",
+      boxHigh: box.high,
+      boxLow: box.low,
+      asiaHigh: asia.high,
+      asiaLow: asia.low,
+      entry: flippyDirection === "BUY"
+        ? box.high + entryBuffer
+        : box.low - entryBuffer,
+      pip: unit,
+      candleTime: last.epoch,
+      reason: "Signal confirmed"
+    };
 
-      const emaInsideBox =
-        ema >= box.low && ema <= box.high;
-
-      const emaOutsideAsia =
-        ema < asia.low || ema > asia.high;
-
-      if (!emaInsideBox) continue;
-      sawEmaInsideBox = true;
-
-      if (!emaOutsideAsia) continue;
-      sawEmaOutsideAsia = true;
-
-      const buyRejection =
-        touchDirection === "BUY" &&
-        last.low <= ema + rejectionBuffer &&
-        last.close > ema;
-
-      const sellRejection =
-        touchDirection === "SELL" &&
-        last.high >= ema - rejectionBuffer &&
-        last.close < ema;
-
-      if (!buyRejection && !sellRejection) {
-        sawRejectionFailure = true;
-        continue;
-      }
-
-      const signal = {
-        direction: touchDirection,
-        boxType: box.type,
-        touchType,
-        touchCount,
-        emaPeriod: period,
-        ema,
-        boxHigh: box.high,
-        boxLow: box.low,
-        asiaHigh: asia.high,
-        asiaLow: asia.low,
-        entry: touchDirection === "BUY"
-          ? box.high + entryBuffer
-          : box.low - entryBuffer,
-        pip: unit,
-        candleTime: last.epoch,
-        reason: "Signal confirmed"
-      };
-
-      if (!best || signal.emaPeriod < best.emaPeriod) {
-        best = signal;
-      }
-    }
+    best = signal;
   }
 
   if (best) return best;
 
   let reason = "Waiting for breakout";
 
-  if (!sawBreakout) {
-    reason = "Waiting for breakout";
-  } else if (sawDeleted) {
+  if (sawDeleted) {
     reason = "Third touch — DELETE";
-  } else if (sawNeutralTouch) {
-    reason = "Neutral touch candle";
-  } else if (sawRejectionFailure) {
-    reason = "EMA rejection missing";
-  } else if (sawEmaInsideBox && !sawEmaOutsideAsia) {
-    reason = "EMA still inside Asia range";
-  } else if (sawRetest || sawFlippy) {
-    if (lastIndex === candles.length - 1) {
-      reason = "Waiting for next touch";
-    } else {
-      reason = "Waiting for retest";
-    }
-  } else if (!sawRetest && !sawFlippy) {
-    reason = "Waiting for retest";
-  }
-
-  if (sawRetest || sawFlippy) {
-    const latestTouchExists = boxes.some(box => {
-      if (lastIndex <= box.created) return false;
-
-      let breakoutIndex = -1;
-
-      for (let i = box.created + 1; i <= lastIndex; i++) {
-        if (
-          candles[i].close > box.high ||
-          candles[i].close < box.low
-        ) {
-          breakoutIndex = i;
-          break;
-        }
-      }
-
-      if (breakoutIndex < 0) return false;
-
-      let count = 0;
-      let touchIndex = -1;
-
-      for (let i = breakoutIndex + 1; i <= lastIndex; i++) {
-        if (
-          candles[i].low <= box.high &&
-          candles[i].high >= box.low
-        ) {
-          count++;
-          touchIndex = i;
-        }
-      }
-
-      return count > 0 && count < 3 && touchIndex === lastIndex;
-    });
-
-    if (latestTouchExists && !sawEmaInsideBox) {
-      reason = "EMA not inside box";
-    } else if (
-      latestTouchExists &&
-      sawEmaInsideBox &&
-      !sawEmaOutsideAsia
-    ) {
-      reason = "EMA still inside Asia range";
-    } else if (
-      latestTouchExists &&
-      sawEmaOutsideAsia &&
-      sawRejectionFailure
-    ) {
-      reason = "EMA rejection missing";
-    }
+  } else if (sawNeutral) {
+    reason = "Neutral retest candle";
+  } else if (sawFlippyRetest) {
+    reason = "Waiting for FLIPPY retest";
+  } else if (sawOppositeBreak) {
+    reason = "Waiting for FLIPPY retest";
+  } else if (sawFirstRetest) {
+    reason = "Waiting for opposite-side breakout";
+  } else if (sawBreakout) {
+    reason = "Waiting for first retest";
   }
 
   return {
@@ -526,7 +549,7 @@ function makeDemoOrder(
     symbol,
     category,
     direction: signal.direction,
-    source: `${signal.boxType} ${signal.touchType} EMA${signal.emaPeriod}`,
+    source: `${signal.boxType} ${signal.touchType}`,
     entry: signal.entry,
     sl,
     tp,
@@ -565,7 +588,7 @@ export default function App() {
   );
   const [lastScan, setLastScan] = useState("Not scanned");
 
-  const request = useCallback((payload) => {
+  const request = useCallback(payload => {
     return new Promise((resolve, reject) => {
       const ws = socketRef.current;
 
@@ -701,31 +724,16 @@ export default function App() {
     setSymbols(list);
 
     if (!list.length) {
-      const responseType = response.msg_type || "unknown";
-      setMessage(
-        `Deriv connected, but returned 0 usable symbols. Response type: ${responseType}.`
-      );
+      setMessage("Deriv returned 0 usable symbols.");
       return [];
     }
 
-    const categoryCounts = CATEGORIES
-      .filter(cat => cat !== "All")
-      .map(cat => {
-        const count = list.filter(item => item.category === cat).length;
-        return `${cat}: ${count}`;
-      })
-      .join(" · ");
-
-    setMessage(
-      `${list.length} active Deriv markets discovered. ${categoryCounts}`
-    );
+    setMessage(`${list.length} active Deriv markets discovered.`);
 
     return list;
   }, [request]);
 
-  // NEW: Candle response diagnostics.
-  // This records the Deriv response without changing HLZ entry conditions.
-  const scanSymbol = useCallback(async (item) => {
+  const scanSymbol = useCallback(async item => {
     const diagnostic = {
       requested: CANDLE_COUNT,
       returned: 0,
@@ -766,7 +774,7 @@ export default function App() {
         Number.isFinite(c.high) &&
         Number.isFinite(c.low) &&
         Number.isFinite(c.close)
-      );
+      ).sort((a, b) => a.epoch - b.epoch);
 
       diagnostic.valid = candles.length;
 
@@ -783,7 +791,7 @@ export default function App() {
         diagnostic.latestEpoch = closed[closed.length - 1].epoch;
       }
 
-      const signal = findHLZSignal(
+      const signal = findRetestSignal(
         closed,
         item.symbol,
         item.category
@@ -805,7 +813,7 @@ export default function App() {
     }
   }, [request]);
 
-  const scanAll = useCallback(async (list) => {
+  const scanAll = useCallback(async list => {
     if (scanLock.current || !runningRef.current) return;
 
     scanLock.current = true;
@@ -893,6 +901,7 @@ export default function App() {
       scanTimer.current = setInterval(() => {
         if (runningRef.current) scanAll(list);
       }, TIMEFRAME * 1000);
+
     } catch (error) {
       runningRef.current = false;
       setRunning(false);
@@ -996,10 +1005,6 @@ export default function App() {
     d => d.returned > 0
   ).length;
 
-  const marketsWithEnoughHistory = candleDiagnosticList.filter(
-    d => d.closed >= 1070
-  ).length;
-
   const marketsWithErrors = candleDiagnosticList.filter(
     d => d.error
   ).length;
@@ -1032,7 +1037,7 @@ export default function App() {
       <header style={styles.header}>
         <div>
           <div style={styles.brand}>iFX BILLIONAIRE</div>
-          <div style={styles.subtitle}>HLZ MOBILE ROBOT · V1</div>
+          <div style={styles.subtitle}>HLZ MOBILE ROBOT · RETEST EDITION</div>
         </div>
 
         <div style={{
@@ -1122,12 +1127,32 @@ export default function App() {
           </div>
         </section>
 
-        {/* NEW: DERIV CANDLE DATA DIAGNOSTICS */}
         <section style={styles.panel}>
-          <div style={styles.panelTitle}>DERIV CANDLE DATA DIAGNOSTICS</div>
+          <div style={styles.panelTitle}>STRATEGY RULES</div>
 
-          <div style={styles.smallText}>
-            Requested: {CANDLE_COUNT} candles per market · M5 timeframe
+          <div style={styles.ruleText}>
+            ASIA RANGE: 00:00–07:00 UTC.
+            <br />
+            BOXES: DOJI · ENGULFED · WICK.
+            <br />
+            NORMAL RETEST: Green candle at bottom = SELL.
+            Red candle at top = BUY.
+            <br />
+            FLIPPY: First retest fails, price breaks the opposite side,
+            then returns to retest that opposite boundary.
+            <br />
+            EMA: Completely removed. No EMA calculations or filters.
+          </div>
+        </section>
+
+        <section style={styles.panel}>
+          <div className="panel-heading" style={styles.panelHeading}>
+            <div>
+              <div style={styles.panelTitle}>DERIV CANDLE DATA DIAGNOSTICS</div>
+              <div style={styles.smallText}>
+                Requested: {CANDLE_COUNT} candles per market · M5 timeframe
+              </div>
+            </div>
           </div>
 
           {scanned === 0 && (
@@ -1143,7 +1168,6 @@ export default function App() {
                   ["Markets checked", scanned],
                   ["Candles requested per market", CANDLE_COUNT],
                   ["Markets with candle data", marketsWithCandleData],
-                  ["Markets with 1,070+ closed candles", marketsWithEnoughHistory],
                   ["Markets with API errors", marketsWithErrors]
                 ].map(([label, value]) => (
                   <div key={label} style={styles.diagnosticRow}>
@@ -1215,31 +1239,18 @@ export default function App() {
                           API ERROR: {d.error}
                         </div>
                       )}
-
-                      {!d.error && d.returned === 0 && (
-                        <div style={styles.diagnosticReasonText}>
-                          Deriv returned no candles. Check response format.
-                        </div>
-                      )}
                     </div>
                   );
                 })}
-
-              {symbols.filter(item => candleDiagnostics[item.symbol]).length > 30 && (
-                <div style={styles.smallText}>
-                  Showing first 30 markets. Summary above includes all scanned markets.
-                </div>
-              )}
             </>
           )}
 
           <div style={styles.ruleText}>
-            This panel measures the Deriv market-data response only.
-            It does not modify the HLZ trading strategy.
+            This panel measures Deriv market-data responses. It does not
+            change the retest entry rules.
           </div>
         </section>
 
-        {/* STRATEGY DIAGNOSTICS */}
         <section style={styles.panel}>
           <div style={styles.panelHeading}>
             <div>
@@ -1272,8 +1283,7 @@ export default function App() {
           )}
 
           <div style={styles.ruleText}>
-            These are diagnostic explanations only. They do not create,
-            remove or modify any entry conditions.
+            Diagnostics only. No EMA conditions are used.
           </div>
 
           <div style={{ ...styles.panelTitle, marginTop: 17 }}>
@@ -1297,27 +1307,18 @@ export default function App() {
               </div>
             </div>
           ))}
-
-          {diagnosticMarkets.length > 30 && (
-            <div style={styles.smallText}>
-              Showing 30 of {diagnosticMarkets.length} markets without
-              a signal.
-            </div>
-          )}
         </section>
 
         <section style={styles.panel}>
           <div style={styles.panelHeading}>
             <div>
-              <div style={styles.panelTitle}>ACTIVE HLZ SIGNALS</div>
+              <div style={styles.panelTitle}>ACTIVE RETEST SIGNALS</div>
               <div style={styles.smallText}>
                 All currently discovered Deriv markets
               </div>
             </div>
 
-            <div style={styles.smallText}>
-              M5 · EMA 35/60/90/120/200/1068
-            </div>
+            <div style={styles.smallText}>M5 · BOX RETEST ONLY</div>
           </div>
 
           <input
@@ -1389,7 +1390,7 @@ export default function App() {
 
                     {signal.direction !== "NONE" && (
                       <div style={styles.signalDetail}>
-                        {signal.boxType} · {signal.touchType} · EMA{signal.emaPeriod}
+                        {signal.boxType} · {signal.touchType}
                       </div>
                     )}
 
@@ -1530,9 +1531,9 @@ export default function App() {
         </section>
 
         <footer style={styles.footer}>
-          iFX BILLIONAIRE ROBOT · HLZ MOBILE V1
-          <br/>
-          Breakouts · Retests · EMA rejection
+          iFX BILLIONAIRE ROBOT · HLZ MOBILE
+          <br />
+          Breakouts · Retests · FLIPPY
         </footer>
       </main>
     </div>
@@ -1792,7 +1793,7 @@ const styles = {
   ruleText: {
     marginTop: 13,
     fontSize: 10,
-    lineHeight: 1.6,
+    lineHeight: 1.7,
     color: "#a8b7cb",
     background: "#0b1525",
     padding: 10,
