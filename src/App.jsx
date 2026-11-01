@@ -7,7 +7,7 @@ const CANDLE_COUNT = 1000;
 const BUFFER_PIPS = 2;
 const FX_SL_PIPS = 10;
 const FX_TP_PIPS = 31;
-const NON_FX_TP_POINTS = 1000;
+const PENDING_EXPIRY_MS = 60 * 60 * 1000;
 
 const CATEGORIES = [
   "All", "Forex", "Indices", "Metals",
@@ -18,8 +18,10 @@ const DIAGNOSTIC_REASONS = [
   "Asia range unavailable", "No boxes found",
   "Waiting for breakout", "Waiting for first retest",
   "Waiting for opposite-side breakout",
-  "Waiting for FLIPPY retest", "Third touch — DELETE",
-  "Neutral retest candle", "Signal confirmed",
+  "Waiting for FLIPPY retest",
+  "Third touch — DELETE",
+  "Neutral retest candle",
+  "Signal confirmed",
   "Market data unavailable"
 ];
 
@@ -458,17 +460,34 @@ function findRetestSignal(candles, symbol, category) {
   };
 }
 
-function makeDemoOrder(signal, symbol, category, balance, riskPct) {
+// Non-Forex SL is based on average range of the latest 14 closed M5 candles.
+// The target keeps the same 1:3.1 reward-to-risk ratio.
+function nonForexStopDistance(signal, candles) {
+  const recent = candles.slice(-14);
+  const ranges = recent
+    .map(c => c.high - c.low)
+    .filter(n => Number.isFinite(n) && n > 0);
+
+  const averageRange = ranges.length
+    ? ranges.reduce((a, b) => a + b, 0) / ranges.length
+    : signal.pip * 10;
+
+  const minimumDistance = signal.pip * 10;
+
+  return Math.max(averageRange, minimumDistance);
+}
+
+function makeDemoOrder(signal, symbol, category, balance, riskPct, candles = []) {
   const point = signal.pip;
   const isForex = category === "Forex";
 
   const slDistance = isForex
     ? FX_SL_PIPS * point
-    : 10 * point;
+    : nonForexStopDistance(signal, candles);
 
   const tpDistance = isForex
     ? FX_TP_PIPS * point
-    : NON_FX_TP_POINTS * point;
+    : slDistance * 3.1;
 
   const buy = signal.direction === "BUY";
 
@@ -485,8 +504,10 @@ function makeDemoOrder(signal, symbol, category, balance, riskPct) {
     Number.isFinite(riskPct) ? riskPct : 0
   );
 
+  const createdAtMs = Date.now();
+
   return {
-    id: `${symbol}-${signal.boxId}-${Date.now()}`,
+    id: `${symbol}-${signal.boxId}-${createdAtMs}`,
     boxId: signal.boxId,
     symbol,
     category,
@@ -495,15 +516,18 @@ function makeDemoOrder(signal, symbol, category, balance, riskPct) {
     entry: signal.entry,
     sl,
     tp,
+    slDistance,
+    tpDistance,
     riskMoney: balance * safeRisk / 100,
     status: "DEMO PENDING",
     currentPrice: null,
     floatingPnl: 0,
-    created: new Date().toLocaleTimeString()
+    created: new Date(createdAtMs).toLocaleTimeString(),
+    createdAtMs,
+    expiresAtMs: createdAtMs + PENDING_EXPIRY_MS
   };
 }
 
-// Risk-normalised demo P&L. This is not actual broker contract valuation.
 function calculateDemoPnl(trade, price) {
   const stopDistance = Math.abs(trade.entry - trade.sl);
   if (!stopDistance) return 0;
@@ -527,6 +551,19 @@ function getExitReason(trade, price) {
   return null;
 }
 
+function sendBrowserNotification(title, body) {
+  if (typeof window === "undefined" || !("Notification" in window)) {
+    return false;
+  }
+
+  if (Notification.permission === "granted") {
+    new Notification(title, { body });
+    return true;
+  }
+
+  return false;
+}
+
 export default function App() {
   const socketRef = useRef(null);
   const requestRef = useRef(0);
@@ -534,11 +571,11 @@ export default function App() {
   const scanLockRef = useRef(false);
   const runningRef = useRef(false);
   const scanTimerRef = useRef(null);
+  const expiryTimerRef = useRef(null);
 
   const subscriptionsRef = useRef(new Map());
   const subscribingRef = useRef(new Set());
   const latestPricesRef = useRef({});
-
   const ordersRef = useRef([]);
   const closedTradesRef = useRef([]);
 
@@ -549,7 +586,6 @@ export default function App() {
   const [symbols, setSymbols] = useState([]);
   const [signals, setSignals] = useState({});
   const [candleDiagnostics, setCandleDiagnostics] = useState({});
-
   const [orders, setOrders] = useState([]);
   const [closedTrades, setClosedTrades] = useState([]);
 
@@ -557,22 +593,17 @@ export default function App() {
   const [category, setCategory] = useState("All");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState(null);
-
   const [progress, setProgress] = useState(0);
   const [scanned, setScanned] = useState(0);
-
   const [balance, setBalance] = useState(10000);
   const [riskPct, setRiskPct] = useState(1);
   const [fixedLots, setFixedLots] = useState(0.10);
-
   const [message, setMessage] = useState(
     "Connect to Deriv to discover available markets."
   );
-
   const [lastScan, setLastScan] = useState("Not scanned");
   const [latestPrices, setLatestPrices] = useState({});
 
-  // Keep state and refs synchronised for incoming tick processing.
   const updateOrders = useCallback(updater => {
     const next = typeof updater === "function"
       ? updater(ordersRef.current)
@@ -613,10 +644,7 @@ export default function App() {
         timeout
       });
 
-      ws.send(JSON.stringify({
-        ...payload,
-        req_id: id
-      }));
+      ws.send(JSON.stringify({ ...payload, req_id: id }));
     });
   }, []);
 
@@ -632,8 +660,7 @@ export default function App() {
 
     const remaining = [];
     const newlyClosed = [];
-
-    let changed = false;
+    const newlyActivated = [];
 
     for (const original of ordersRef.current) {
       if (original.symbol !== symbol) {
@@ -641,23 +668,22 @@ export default function App() {
         continue;
       }
 
-      let trade = {
-        ...original,
-        currentPrice: price
-      };
+      let trade = { ...original, currentPrice: price };
 
       if (trade.status === "DEMO PENDING") {
+        if (Date.now() >= trade.expiresAtMs) {
+          continue;
+        }
+
         const activated = trade.direction === "BUY"
           ? price >= trade.entry
           : price <= trade.entry;
 
         if (!activated) {
           remaining.push(trade);
-          changed = true;
           continue;
         }
 
-        // Entry reached: automatically activate the demo trade.
         trade = {
           ...trade,
           status: "OPEN DEMO TRADE",
@@ -667,44 +693,49 @@ export default function App() {
           floatingPnl: calculateDemoPnl(trade, price)
         };
 
-        changed = true;
+        newlyActivated.push(trade);
       }
 
       const exitReason = getExitReason(trade, price);
 
       if (exitReason) {
-        const exitPrice = price;
-        const finalPnl = calculateDemoPnl(trade, exitPrice);
+        const finalPnl = calculateDemoPnl(trade, price);
 
         newlyClosed.push({
           ...trade,
           status: "CLOSED",
-          exitPrice,
+          exitPrice: price,
           exitReason,
           realisedPnl: finalPnl,
           floatingPnl: 0,
           closedAt: new Date().toLocaleTimeString()
         });
 
-        changed = true;
         continue;
       }
 
-      const floatingPnl = calculateDemoPnl(trade, price);
-
-      if (
-        trade.status === "OPEN DEMO TRADE" &&
-        trade.floatingPnl !== floatingPnl
-      ) {
-        changed = true;
-      }
-
-      trade.floatingPnl = floatingPnl;
+      trade.floatingPnl = calculateDemoPnl(trade, price);
       remaining.push(trade);
     }
 
-    if (changed) {
-      updateOrders(remaining);
+    updateOrders(remaining);
+
+    if (newlyActivated.length) {
+      newlyActivated.forEach(trade => {
+        const body =
+          `${trade.symbol} ${trade.direction} activated at ${fmt(price, 8)}.`;
+
+        const sent = sendBrowserNotification(
+          "iFX BILLIONAIRE — Pending Activated",
+          body
+        );
+
+        setMessage(
+          sent
+            ? body
+            : `${body} Allow browser notifications to receive alerts.`
+        );
+      });
     }
 
     if (newlyClosed.length) {
@@ -713,11 +744,11 @@ export default function App() {
         ...previous
       ]);
 
-      const resultText = newlyClosed.map(t =>
-        `${t.symbol} ${t.exitReason}: ${t.realisedPnl >= 0 ? "+" : ""}$${fmt(t.realisedPnl, 2)}`
-      ).join(" · ");
-
-      setMessage(`Demo trade closed: ${resultText}`);
+      setMessage(
+        newlyClosed.map(t =>
+          `${t.symbol} ${t.exitReason}: ${t.realisedPnl >= 0 ? "+" : ""}$${fmt(t.realisedPnl, 2)}`
+        ).join(" · ")
+      );
     }
   }, [updateOrders, updateClosedTrades]);
 
@@ -752,8 +783,10 @@ export default function App() {
         }
 
         if (data.msg_type === "tick" && data.tick) {
-          const tick = data.tick;
-          processTick(tick.symbol, Number(tick.quote));
+          processTick(
+            data.tick.symbol,
+            Number(data.tick.quote)
+          );
         }
 
         if (data.req_id && pendingRequestsRef.current.has(data.req_id)) {
@@ -798,7 +831,6 @@ export default function App() {
     });
   }, [processTick]);
 
-  // One live tick subscription per symbol with pending/open trades.
   const subscribeMarket = useCallback(async symbol => {
     if (subscriptionsRef.current.has(symbol)) return;
     if (subscribingRef.current.has(symbol)) return;
@@ -807,7 +839,7 @@ export default function App() {
       !socketRef.current ||
       socketRef.current.readyState !== WebSocket.OPEN
     ) {
-      setMessage(`${symbol}: cannot subscribe because Deriv is disconnected.`);
+      setMessage(`${symbol}: Deriv is disconnected.`);
       return;
     }
 
@@ -819,15 +851,13 @@ export default function App() {
         subscribe: 1
       });
 
-      const subscriptionId = response.subscription?.id || null;
-
-      if (subscriptionId) {
-        subscriptionsRef.current.set(symbol, subscriptionId);
-      } else {
-        subscriptionsRef.current.set(symbol, "SUBSCRIBED");
+      if (response.error) {
+        throw new Error(response.error.message);
       }
 
-      // The subscription response normally contains its first tick.
+      const subscriptionId = response.subscription?.id || "SUBSCRIBED";
+      subscriptionsRef.current.set(symbol, subscriptionId);
+
       if (response.tick) {
         processTick(
           response.tick.symbol || symbol,
@@ -837,7 +867,7 @@ export default function App() {
 
       setMessage(`${symbol}: live price monitoring active.`);
     } catch (error) {
-      setMessage(`${symbol}: live price subscription failed: ${error.message}`);
+      setMessage(`${symbol}: subscription failed: ${error.message}`);
     } finally {
       subscribingRef.current.delete(symbol);
     }
@@ -956,9 +986,9 @@ export default function App() {
 
       return {
         ...signal,
+        _candles: closed,
         _candleData: diagnostic
       };
-
     } catch (error) {
       diagnostic.error = error.message || "Unknown Deriv API error";
 
@@ -966,6 +996,7 @@ export default function App() {
         direction: "NONE",
         reason: "Market data unavailable",
         deletedBoxIds: [],
+        _candles: [],
         _candleData: diagnostic
       };
     }
@@ -1010,35 +1041,48 @@ export default function App() {
     };
 
     try {
-      await Promise.all([
-        worker(),
-        worker()
-      ]);
+      await Promise.all([worker(), worker()]);
 
       setSignals(previous => ({
         ...previous,
         ...results
       }));
 
-      // Third-touch deletion cancels pending orders for that box only.
-      // Open trades remain active and can still reach their SL or TP.
-      const deletedOrders = ordersRef.current.filter(order => {
-        if (order.status !== "DEMO PENDING") return false;
+      const cancelledIds = new Set();
+      const cancellationReasons = [];
+
+      for (const order of ordersRef.current) {
+        if (order.status !== "DEMO PENDING") continue;
 
         const result = results[order.symbol];
-        return result &&
-          (result.deletedBoxIds || []).includes(order.boxId);
-      });
+        if (!result) continue;
 
-      if (deletedOrders.length) {
-        const deletedIds = new Set(deletedOrders.map(o => o.id));
+        if ((result.deletedBoxIds || []).includes(order.boxId)) {
+          cancelledIds.add(order.id);
+          cancellationReasons.push(`${order.symbol}: box deleted`);
+          continue;
+        }
 
+        // Cancel only when a valid opposite-direction signal is detected
+        // before this pending order has activated.
+        if (
+          result.direction !== "NONE" &&
+          result.direction !== order.direction
+        ) {
+          cancelledIds.add(order.id);
+          cancellationReasons.push(
+            `${order.symbol}: opposite ${result.direction} signal`
+          );
+        }
+      }
+
+      if (cancelledIds.size) {
         updateOrders(previous =>
-          previous.filter(order => !deletedIds.has(order.id))
+          previous.filter(order => !cancelledIds.has(order.id))
         );
 
         setMessage(
-          `${deletedOrders.length} pending order(s) cancelled because their box reached the third touch.`
+          `Cancelled ${cancelledIds.size} pending order(s): ${cancellationReasons.join(" · ")}`
         );
       } else {
         setMessage(
@@ -1049,16 +1093,57 @@ export default function App() {
       }
 
       setLastScan(new Date().toLocaleTimeString());
-
     } finally {
       scanLockRef.current = false;
     }
   }, [scanSymbol, updateOrders]);
 
+  // Expire pending orders after one hour, even if no new price tick arrives.
+  useEffect(() => {
+    expiryTimerRef.current = setInterval(() => {
+      const now = Date.now();
+
+      const expired = ordersRef.current.filter(order =>
+        order.status === "DEMO PENDING" &&
+        now >= order.expiresAtMs
+      );
+
+      if (!expired.length) return;
+
+      const expiredIds = new Set(expired.map(order => order.id));
+
+      updateOrders(previous =>
+        previous.filter(order => !expiredIds.has(order.id))
+      );
+
+      setMessage(
+        `${expired.length} pending order(s) expired after one hour without activation.`
+      );
+    }, 5000);
+
+    return () => {
+      if (expiryTimerRef.current) {
+        clearInterval(expiryTimerRef.current);
+      }
+    };
+  }, [updateOrders]);
+
   const startRobot = async () => {
     if (runningRef.current) return;
 
     try {
+      if (
+        typeof window !== "undefined" &&
+        "Notification" in window &&
+        Notification.permission === "default"
+      ) {
+        try {
+          await Notification.requestPermission();
+        } catch {
+          // Notifications may be blocked by the browser.
+        }
+      }
+
       setMessage("Connecting to Deriv...");
       await connect();
 
@@ -1090,7 +1175,6 @@ export default function App() {
           scanAll(list);
         }
       }, TIMEFRAME * 1000);
-
     } catch (error) {
       runningRef.current = false;
       setRunning(false);
@@ -1107,7 +1191,6 @@ export default function App() {
       scanTimerRef.current = null;
     }
 
-    // Close every open demo trade using the latest known price.
     const now = new Date().toLocaleTimeString();
     const closedNow = [];
 
@@ -1119,14 +1202,12 @@ export default function App() {
         order.currentPrice ??
         order.entry;
 
-      const pnl = calculateDemoPnl(order, price);
-
       closedNow.push({
         ...order,
         status: "CLOSED",
         exitPrice: price,
         exitReason: "ROBOT STOPPED",
-        realisedPnl: pnl,
+        realisedPnl: calculateDemoPnl(order, price),
         floatingPnl: 0,
         closedAt: now
       });
@@ -1139,26 +1220,20 @@ export default function App() {
       ]);
     }
 
-    // Remove all pending orders and open orders from the active list.
     updateOrders([]);
 
-    // Forget active Deriv tick subscriptions.
     const ws = socketRef.current;
 
     if (ws && ws.readyState === WebSocket.OPEN) {
       subscriptionsRef.current.forEach(subscriptionId => {
-        if (
-          subscriptionId &&
-          subscriptionId !== "SUBSCRIBED" &&
-          subscriptionId !== "REQUESTING"
-        ) {
+        if (subscriptionId && subscriptionId !== "SUBSCRIBED") {
           try {
             ws.send(JSON.stringify({
               forget: subscriptionId,
               req_id: ++requestRef.current
             }));
           } catch {
-            // The socket may already be closing.
+            // Socket may already be closing.
           }
         }
       });
@@ -1168,7 +1243,7 @@ export default function App() {
     subscribingRef.current.clear();
 
     setMessage(
-      `STOPPED. ${closedNow.length} open demo trade(s) closed. All pending orders cancelled.`
+      `STOPPED. ${closedNow.length} open demo trade(s) closed. Pending orders cancelled.`
     );
   };
 
@@ -1207,22 +1282,19 @@ export default function App() {
       item.symbol,
       item.category,
       balance,
-      riskPct
+      riskPct,
+      signal._candles || []
     );
 
-    updateOrders(previous => [
-      order,
-      ...previous
-    ]);
+    updateOrders(previous => [order, ...previous]);
 
     setSelected(item);
     setLastActivated(order.source);
 
     setMessage(
-      `${item.symbol}: ${signal.direction} demo pending order created at ${fmt(order.entry, 8)}. Waiting for live price to reach entry.`
+      `${item.symbol}: ${signal.direction} pending order created. It expires in 1 hour if not activated.`
     );
 
-    // Start monitoring this market immediately.
     subscribeMarket(item.symbol);
   };
 
@@ -1232,6 +1304,10 @@ export default function App() {
 
       if (scanTimerRef.current) {
         clearInterval(scanTimerRef.current);
+      }
+
+      if (expiryTimerRef.current) {
+        clearInterval(expiryTimerRef.current);
       }
 
       if (socketRef.current) {
@@ -1482,11 +1558,8 @@ export default function App() {
         margin: "0 auto",
         padding: 12
       }}>
-
-        {/* ROBOT CONTROL */}
         <section style={card}>
           <div style={title}>ROBOT CONTROL</div>
-
           <div style={small}>
             ● {connectionText}
             <span style={{
@@ -1560,7 +1633,6 @@ export default function App() {
           </div>
         </section>
 
-        {/* SUMMARY */}
         <section style={{
           display: "grid",
           gridTemplateColumns: "repeat(2,minmax(0,1fr))",
@@ -1571,64 +1643,45 @@ export default function App() {
             <div style={statLabel}>MARKETS FOUND</div>
             <div style={statValue}>{symbols.length}</div>
           </div>
-
           <div style={stat}>
             <div style={statLabel}>BUY SIGNALS</div>
             <div style={{ ...statValue, color: "#16c784" }}>{buyCount}</div>
           </div>
-
           <div style={stat}>
             <div style={statLabel}>SELL SIGNALS</div>
             <div style={{ ...statValue, color: "#ea5455" }}>{sellCount}</div>
           </div>
-
           <div style={stat}>
             <div style={statLabel}>OPEN DEMO TRADES</div>
             <div style={statValue}>{openTrades.length}</div>
           </div>
-
           <div style={stat}>
             <div style={statLabel}>PENDING ORDERS</div>
             <div style={statValue}>{pendingOrders.length}</div>
           </div>
-
           <div style={stat}>
             <div style={statLabel}>FLOATING P&L</div>
-            <div style={{
-              ...statValue,
-              color: moneyColor(floatingPnl)
-            }}>
+            <div style={{ ...statValue, color: moneyColor(floatingPnl) }}>
               {floatingPnl >= 0 ? "+" : ""}${fmt(floatingPnl, 2)}
             </div>
           </div>
-
           <div style={stat}>
             <div style={statLabel}>REALISED P&L</div>
-            <div style={{
-              ...statValue,
-              color: moneyColor(realisedPnl)
-            }}>
+            <div style={{ ...statValue, color: moneyColor(realisedPnl) }}>
               {realisedPnl >= 0 ? "+" : ""}${fmt(realisedPnl, 2)}
             </div>
           </div>
-
           <div style={stat}>
             <div style={statLabel}>TOTAL P&L</div>
-            <div style={{
-              ...statValue,
-              color: moneyColor(totalPnl)
-            }}>
+            <div style={{ ...statValue, color: moneyColor(totalPnl) }}>
               {totalPnl >= 0 ? "+" : ""}${fmt(totalPnl, 2)}
             </div>
           </div>
         </section>
 
-        {/* ACTIVE SIGNALS */}
         <section style={card}>
           <div style={title}>ACTIVE RETEST SIGNALS</div>
-          <div style={small}>
-            All currently discovered Deriv markets · M5
-          </div>
+          <div style={small}>All discovered Deriv markets · M5</div>
 
           <input
             value={search}
@@ -1715,13 +1768,9 @@ export default function App() {
                   }}
                 >
                   <div style={{ minWidth: 0, flex: 1 }}>
-                    <div style={{
-                      fontSize: 12,
-                      fontWeight: 800
-                    }}>
+                    <div style={{ fontSize: 12, fontWeight: 800 }}>
                       {item.display_name || item.symbol}
                     </div>
-
                     <div style={small}>
                       {item.symbol} · {item.category}
                     </div>
@@ -1783,7 +1832,6 @@ export default function App() {
           </div>
         </section>
 
-        {/* TRADE SETTINGS */}
         <section style={card}>
           <div style={title}>TRADE SETTINGS</div>
 
@@ -1834,19 +1882,20 @@ export default function App() {
             padding: 10,
             borderRadius: 7
           }}>
-            Forex demo: 10-pip SL / 31-pip TP.
+            FOREX: 10-pip SL / 31-pip TP.
             <br/>
-            Non-Forex demo: 10-point SL / 1,000-point TP.
+            NON-FOREX: SL based on average range of the latest 14 closed M5 candles.
             <br/>
-            Non-Forex distances remain provisional test values.
+            NON-FOREX TP: 3.1 times the calculated SL distance.
+            <br/>
+            Pending order expiry: 1 hour.
           </div>
         </section>
 
-        {/* PENDING ORDERS */}
         <section style={card}>
           <div style={title}>DEMO PENDING ORDERS</div>
           <div style={small}>
-            Waiting for the live price to reach entry
+            Automatically activate at entry · Expire after one hour
           </div>
 
           {!pendingOrders.length && (
@@ -1907,6 +1956,12 @@ export default function App() {
                     ${fmt(order.riskMoney, 2)}
                   </b>
                 </div>
+                <div>
+                  EXPIRES
+                  <b style={{ display: "block", color: "white" }}>
+                    {new Date(order.expiresAtMs).toLocaleTimeString()}
+                  </b>
+                </div>
               </div>
 
               <div style={{
@@ -1925,12 +1980,9 @@ export default function App() {
           ))}
         </section>
 
-        {/* OPEN DEMO TRADES */}
         <section style={card}>
           <div style={title}>OPEN DEMO TRADES</div>
-          <div style={small}>
-            Live price monitoring · Floating P&L
-          </div>
+          <div style={small}>Live price monitoring · Floating P&L</div>
 
           {!openTrades.length && (
             <div style={{
@@ -1938,7 +1990,7 @@ export default function App() {
               padding: 18,
               color: "#8395af"
             }}>
-              No open demo trades. Pending orders will appear here after entry is reached.
+              No open demo trades.
             </div>
           )}
 
@@ -2007,12 +2059,9 @@ export default function App() {
           ))}
         </section>
 
-        {/* CLOSED TRADES */}
         <section style={card}>
           <div style={title}>CLOSED DEMO TRADES</div>
-          <div style={small}>
-            Results recorded after SL, TP or robot stop
-          </div>
+          <div style={small}>Results after SL, TP or robot stop</div>
 
           {!closedTrades.length && (
             <div style={{
@@ -2049,7 +2098,6 @@ export default function App() {
           ))}
         </section>
 
-        {/* LAST ACTIVATED */}
         <section style={card}>
           <div style={title}>LAST ACTIVATED</div>
           <div style={{
@@ -2067,7 +2115,6 @@ export default function App() {
           <div style={small}>Last scan: {lastScan}</div>
         </section>
 
-        {/* EXECUTION WARNING */}
         <section style={{
           background: "#302719",
           border: "1px solid #725b2e",
@@ -2079,36 +2126,35 @@ export default function App() {
           marginBottom: 12
         }}>
           <strong>IMPORTANT — EXECUTION STATUS</strong>
-
           <p>
             This build uses Deriv public market data and simulated demo orders.
             It does not place or manage real broker trades.
           </p>
-
           <p>
-            A pending BUY activates when the live price reaches or exceeds
-            its entry. A pending SELL activates when the live price reaches
-            or falls below its entry.
+            A pending BUY activates when live price reaches or exceeds entry.
+            A pending SELL activates when live price reaches or falls below entry.
           </p>
-
           <p>
-            Open demo trades are monitored using live Deriv tick subscriptions.
-            Their floating P&L updates as new ticks arrive. Reaching SL or TP
-            closes the simulated trade and records realised P&L.
+            Pending orders are cancelled after one hour if not activated,
+            when an opposite-direction signal is detected, or when their box
+            reaches its third-touch deletion condition.
           </p>
-
           <p>
-            P&L is risk-normalised using the configured risk amount and stop
-            distance. It is not actual Deriv contract valuation. Fixed lots
-            are display-only.
+            Browser notifications must be permitted for activation alerts.
+            Notifications may not arrive if the browser or app is closed.
           </p>
-
           <p>
-            Asia session is calculated using UTC candle timestamps.
+            Non-Forex SL uses recent M5 candle range and TP uses 3.1 times
+            that distance. These are simulated distances, not broker-specific
+            contract or tick-value calculations.
           </p>
+          <p>
+            P&L is risk-normalised using configured risk and stop distance.
+            It is not actual Deriv contract valuation. Fixed lots are display-only.
+          </p>
+          <p>Asia session is calculated using UTC candle timestamps.</p>
         </section>
 
-        {/* CANDLE DATA DIAGNOSTICS */}
         <section style={card}>
           <div style={title}>DERIV CANDLE DATA DIAGNOSTICS</div>
           <div style={small}>
@@ -2157,7 +2203,6 @@ export default function App() {
           </div>
         </section>
 
-        {/* STRATEGY RULES */}
         <section style={card}>
           <div style={title}>STRATEGY RULES</div>
           <div style={{
@@ -2185,15 +2230,16 @@ export default function App() {
             ENTRY: BUY above box high or SELL below box low,
             using a 2-pip buffer.
             <br/>
+            PENDING: One-hour expiry or cancellation on opposite signal.
+            <br/>
             EMA: Completely removed. No EMA calculations or filters.
           </div>
         </section>
 
-        {/* INDIVIDUAL MARKET DATA */}
         <section style={card}>
           <div style={title}>INDIVIDUAL MARKET DATA</div>
           <div style={small}>
-            Candle history returned by Deriv for each market · {candleDiagnosticList.length} markets
+            Candle history returned by Deriv · {candleDiagnosticList.length} markets
           </div>
 
           {scanned === 0 && (
@@ -2251,7 +2297,6 @@ export default function App() {
             })}
         </section>
 
-        {/* STRATEGY DIAGNOSTICS */}
         <section style={card}>
           <div style={title}>STRATEGY DIAGNOSTICS</div>
           <div style={small}>
@@ -2297,7 +2342,6 @@ export default function App() {
           </div>
         </section>
 
-        {/* MARKET-BY-MARKET REASONS */}
         <section style={card}>
           <div style={title}>MARKET-BY-MARKET REASONS</div>
           <div style={small}>
