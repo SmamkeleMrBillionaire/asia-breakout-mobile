@@ -1,4 +1,3 @@
-
 import React, { useCallback, useEffect, useRef, useState } from "react";
 
 const WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public";
@@ -7,7 +6,6 @@ const CANDLE_COUNT = 1000;
 const BUFFER_PIPS = 2;
 const FX_SL_PIPS = 10;
 const FX_TP_PIPS = 31;
-const PENDING_EXPIRY_MS = 60 * 60 * 1000;
 
 const CATEGORIES = [
   "All", "Forex", "Indices", "Metals",
@@ -126,6 +124,7 @@ function createBoxes(candles, asiaDay) {
 
     const range = c.high - c.low;
     const body = Math.abs(c.close - c.open);
+
     if (range <= 0) continue;
 
     const currentBull = c.close > c.open;
@@ -158,6 +157,7 @@ function createBoxes(candles, asiaDay) {
 
     if (currentBull) {
       const upperWick = c.high - c.close;
+
       if (upperWick >= body * 0.20) {
         boxes.push({
           type: "WICK",
@@ -170,6 +170,7 @@ function createBoxes(candles, asiaDay) {
 
     if (currentBear) {
       const lowerWick = c.close - c.low;
+
       if (lowerWick >= body * 0.20) {
         boxes.push({
           type: "WICK",
@@ -213,6 +214,8 @@ function makeBoxId(box, asiaDay) {
   ].join("-");
 }
 
+// Only a qualifying touch on the latest CLOSED M5 candle
+// can generate an actionable signal.
 function findRetestSignal(candles, symbol, category) {
   const empty = {
     direction: "NONE",
@@ -270,7 +273,9 @@ function findRetestSignal(candles, symbol, category) {
     }
 
     if (breakoutIndex < 0) continue;
+
     sawBreakout = true;
+
     if (lastIndex <= breakoutIndex) continue;
 
     const firstBoundary =
@@ -290,6 +295,7 @@ function findRetestSignal(candles, symbol, category) {
     }
 
     if (firstTouchIndex < 0) continue;
+
     sawFirstRetest = true;
 
     const firstDirection = getRetestDirection(
@@ -298,12 +304,17 @@ function findRetestSignal(candles, symbol, category) {
     );
 
     if (firstDirection !== "NONE") {
+
+      // Normal retest must be the latest closed candle.
+      if (firstTouchIndex !== lastIndex) continue;
+
       let touchCount = 1;
       let deleted = false;
 
       for (let i = firstTouchIndex + 1; i <= lastIndex; i++) {
         if (touchesBox(candles[i], box)) {
           touchCount++;
+
           if (touchCount >= 3) {
             deleted = true;
             break;
@@ -385,7 +396,11 @@ function findRetestSignal(candles, symbol, category) {
     }
 
     if (flippyTouchIndex < 0) continue;
+
     sawFlippyRetest = true;
+
+    // FLIPPY retest must also be the latest closed candle.
+    if (flippyTouchIndex !== lastIndex) continue;
 
     let touchCount = 2;
     let deleted = false;
@@ -393,6 +408,7 @@ function findRetestSignal(candles, symbol, category) {
     for (let i = flippyTouchIndex + 1; i <= lastIndex; i++) {
       if (touchesBox(candles[i], box)) {
         touchCount++;
+
         if (touchCount >= 3) {
           deleted = true;
           break;
@@ -440,7 +456,12 @@ function findRetestSignal(candles, symbol, category) {
 
   if (best) {
     const { created, ...signal } = best;
-    return { ...signal, deletedBoxIds, reason: "Signal confirmed" };
+
+    return {
+      ...signal,
+      deletedBoxIds,
+      reason: "Signal confirmed"
+    };
   }
 
   let reason = "Waiting for breakout";
@@ -460,10 +481,11 @@ function findRetestSignal(candles, symbol, category) {
   };
 }
 
-// Non-Forex SL is based on average range of the latest 14 closed M5 candles.
-// The target keeps the same 1:3.1 reward-to-risk ratio.
+// Non-Forex SL uses average range of latest 14 closed M5 candles.
+// TP maintains the 3.1:1 reward-to-risk ratio.
 function nonForexStopDistance(signal, candles) {
   const recent = candles.slice(-14);
+
   const ranges = recent
     .map(c => c.high - c.low)
     .filter(n => Number.isFinite(n) && n > 0);
@@ -512,24 +534,26 @@ function makeDemoOrder(signal, symbol, category, balance, riskPct, candles = [])
     symbol,
     category,
     direction: signal.direction,
-    source: `${signal.boxType} ${signal.touchType}`,
+    source: `${signal.boxType} ${signal.touchType} · MARKET EXECUTION`,
     entry: signal.entry,
     sl,
     tp,
     slDistance,
     tpDistance,
     riskMoney: balance * safeRisk / 100,
-    status: "DEMO PENDING",
-    currentPrice: null,
+    status: "OPEN DEMO TRADE",
+    currentPrice: signal.entry,
     floatingPnl: 0,
+    fillPrice: signal.entry,
+    filledAt: new Date(createdAtMs).toLocaleTimeString(),
     created: new Date(createdAtMs).toLocaleTimeString(),
-    createdAtMs,
-    expiresAtMs: createdAtMs + PENDING_EXPIRY_MS
+    createdAtMs
   };
 }
 
 function calculateDemoPnl(trade, price) {
   const stopDistance = Math.abs(trade.entry - trade.sl);
+
   if (!stopDistance) return 0;
 
   const priceMove = trade.direction === "BUY"
@@ -571,7 +595,6 @@ export default function App() {
   const scanLockRef = useRef(false);
   const runningRef = useRef(false);
   const scanTimerRef = useRef(null);
-  const expiryTimerRef = useRef(null);
 
   const subscriptionsRef = useRef(new Map());
   const subscribingRef = useRef(new Set());
@@ -660,41 +683,20 @@ export default function App() {
 
     const remaining = [];
     const newlyClosed = [];
-    const newlyActivated = [];
 
     for (const original of ordersRef.current) {
-      if (original.symbol !== symbol) {
+      if (
+        original.symbol !== symbol ||
+        original.status !== "OPEN DEMO TRADE"
+      ) {
         remaining.push(original);
         continue;
       }
 
-      let trade = { ...original, currentPrice: price };
-
-      if (trade.status === "DEMO PENDING") {
-        if (Date.now() >= trade.expiresAtMs) {
-          continue;
-        }
-
-        const activated = trade.direction === "BUY"
-          ? price >= trade.entry
-          : price <= trade.entry;
-
-        if (!activated) {
-          remaining.push(trade);
-          continue;
-        }
-
-        trade = {
-          ...trade,
-          status: "OPEN DEMO TRADE",
-          filledAt: new Date().toLocaleTimeString(),
-          fillPrice: price,
-          currentPrice: price,
-          floatingPnl: calculateDemoPnl(trade, price)
-        };
-
-        newlyActivated.push(trade);
-      }
+      const trade = {
+        ...original,
+        currentPrice: price
+      };
 
       const exitReason = getExitReason(trade, price);
 
@@ -719,24 +721,6 @@ export default function App() {
     }
 
     updateOrders(remaining);
-
-    if (newlyActivated.length) {
-      newlyActivated.forEach(trade => {
-        const body =
-          `${trade.symbol} ${trade.direction} activated at ${fmt(price, 8)}.`;
-
-        const sent = sendBrowserNotification(
-          "iFX BILLIONAIRE — Pending Activated",
-          body
-        );
-
-        setMessage(
-          sent
-            ? body
-            : `${body} Allow browser notifications to receive alerts.`
-        );
-      });
-    }
 
     if (newlyClosed.length) {
       updateClosedTrades(previous => [
@@ -832,15 +816,18 @@ export default function App() {
   }, [processTick]);
 
   const subscribeMarket = useCallback(async symbol => {
-    if (subscriptionsRef.current.has(symbol)) return;
-    if (subscribingRef.current.has(symbol)) return;
+    if (subscriptionsRef.current.has(symbol)) return true;
+
+    if (subscribingRef.current.has(symbol)) {
+      return false;
+    }
 
     if (
       !socketRef.current ||
       socketRef.current.readyState !== WebSocket.OPEN
     ) {
       setMessage(`${symbol}: Deriv is disconnected.`);
-      return;
+      return false;
     }
 
     subscribingRef.current.add(symbol);
@@ -856,6 +843,7 @@ export default function App() {
       }
 
       const subscriptionId = response.subscription?.id || "SUBSCRIBED";
+
       subscriptionsRef.current.set(symbol, subscriptionId);
 
       if (response.tick) {
@@ -866,8 +854,10 @@ export default function App() {
       }
 
       setMessage(`${symbol}: live price monitoring active.`);
+      return true;
     } catch (error) {
       setMessage(`${symbol}: subscription failed: ${error.message}`);
+      return false;
     } finally {
       subscribingRef.current.delete(symbol);
     }
@@ -1048,85 +1038,17 @@ export default function App() {
         ...results
       }));
 
-      const cancelledIds = new Set();
-      const cancellationReasons = [];
-
-      for (const order of ordersRef.current) {
-        if (order.status !== "DEMO PENDING") continue;
-
-        const result = results[order.symbol];
-        if (!result) continue;
-
-        if ((result.deletedBoxIds || []).includes(order.boxId)) {
-          cancelledIds.add(order.id);
-          cancellationReasons.push(`${order.symbol}: box deleted`);
-          continue;
-        }
-
-        // Cancel only when a valid opposite-direction signal is detected
-        // before this pending order has activated.
-        if (
-          result.direction !== "NONE" &&
-          result.direction !== order.direction
-        ) {
-          cancelledIds.add(order.id);
-          cancellationReasons.push(
-            `${order.symbol}: opposite ${result.direction} signal`
-          );
-        }
-      }
-
-      if (cancelledIds.size) {
-        updateOrders(previous =>
-          previous.filter(order => !cancelledIds.has(order.id))
-        );
-
-        setMessage(
-          `Cancelled ${cancelledIds.size} pending order(s): ${cancellationReasons.join(" · ")}`
-        );
-      } else {
-        setMessage(
-          runningRef.current
-            ? `Scan complete: ${completed} of ${list.length} symbols checked.`
-            : "Scanning stopped."
-        );
-      }
+      setMessage(
+        runningRef.current
+          ? `Scan complete: ${completed} of ${list.length} symbols checked.`
+          : "Scanning stopped."
+      );
 
       setLastScan(new Date().toLocaleTimeString());
     } finally {
       scanLockRef.current = false;
     }
-  }, [scanSymbol, updateOrders]);
-
-  // Expire pending orders after one hour, even if no new price tick arrives.
-  useEffect(() => {
-    expiryTimerRef.current = setInterval(() => {
-      const now = Date.now();
-
-      const expired = ordersRef.current.filter(order =>
-        order.status === "DEMO PENDING" &&
-        now >= order.expiresAtMs
-      );
-
-      if (!expired.length) return;
-
-      const expiredIds = new Set(expired.map(order => order.id));
-
-      updateOrders(previous =>
-        previous.filter(order => !expiredIds.has(order.id))
-      );
-
-      setMessage(
-        `${expired.length} pending order(s) expired after one hour without activation.`
-      );
-    }, 5000);
-
-    return () => {
-      if (expiryTimerRef.current) {
-        clearInterval(expiryTimerRef.current);
-      }
-    };
-  }, [updateOrders]);
+  }, [scanSymbol]);
 
   const startRobot = async () => {
     if (runningRef.current) return;
@@ -1140,7 +1062,7 @@ export default function App() {
         try {
           await Notification.requestPermission();
         } catch {
-          // Notifications may be blocked by the browser.
+          // Notifications may be blocked.
         }
       }
 
@@ -1243,11 +1165,12 @@ export default function App() {
     subscribingRef.current.clear();
 
     setMessage(
-      `STOPPED. ${closedNow.length} open demo trade(s) closed. Pending orders cancelled.`
+      `STOPPED. ${closedNow.length} open demo trade(s) closed.`
     );
   };
 
-  const activateSignal = item => {
+  // Click BUY or SELL to execute immediately at the current live price.
+  const activateSignal = async item => {
     const signal = signals[item.symbol];
 
     if (!signal || signal.direction === "NONE") return;
@@ -1263,7 +1186,7 @@ export default function App() {
     );
 
     if (duplicate) {
-      setMessage(`${item.symbol}: an order already exists for this box.`);
+      setMessage(`${item.symbol}: this box already has a trade.`);
       return;
     }
 
@@ -1277,8 +1200,39 @@ export default function App() {
       return;
     }
 
+    // Ensure a live price subscription exists before execution.
+    const subscribed = await subscribeMarket(item.symbol);
+
+    if (!subscribed) {
+      setMessage(`${item.symbol}: could not obtain live price. Try again.`);
+      return;
+    }
+
+    const currentPrice = latestPricesRef.current[item.symbol];
+
+    if (!Number.isFinite(currentPrice)) {
+      setMessage(`${item.symbol}: waiting for live price. Try again.`);
+      return;
+    }
+
+    // Recheck duplicate after awaiting the live-price subscription.
+    const duplicateAfterSubscription = ordersRef.current.some(order =>
+      order.symbol === item.symbol &&
+      order.boxId === signal.boxId
+    );
+
+    if (duplicateAfterSubscription) {
+      setMessage(`${item.symbol}: this box already has a trade.`);
+      return;
+    }
+
+    const executionSignal = {
+      ...signal,
+      entry: currentPrice
+    };
+
     const order = makeDemoOrder(
-      signal,
+      executionSignal,
       item.symbol,
       item.category,
       balance,
@@ -1289,13 +1243,18 @@ export default function App() {
     updateOrders(previous => [order, ...previous]);
 
     setSelected(item);
-    setLastActivated(order.source);
-
-    setMessage(
-      `${item.symbol}: ${signal.direction} pending order created. It expires in 1 hour if not activated.`
+    setLastActivated(
+      `${signal.direction} · ${signal.boxType} · MARKET EXECUTION`
     );
 
-    subscribeMarket(item.symbol);
+    setMessage(
+      `${item.symbol}: ${signal.direction} OPENED IMMEDIATELY at ${fmt(currentPrice, 8)}.`
+    );
+
+    sendBrowserNotification(
+      "iFX BILLIONAIRE — Trade Opened",
+      `${item.symbol} ${signal.direction} at ${fmt(currentPrice, 8)}`
+    );
   };
 
   useEffect(() => {
@@ -1304,10 +1263,6 @@ export default function App() {
 
       if (scanTimerRef.current) {
         clearInterval(scanTimerRef.current);
-      }
-
-      if (expiryTimerRef.current) {
-        clearInterval(expiryTimerRef.current);
       }
 
       if (socketRef.current) {
@@ -1681,7 +1636,9 @@ export default function App() {
 
         <section style={card}>
           <div style={title}>ACTIVE RETEST SIGNALS</div>
-          <div style={small}>All discovered Deriv markets · M5</div>
+          <div style={small}>
+            All discovered Deriv markets · M5 · Latest closed candle only
+          </div>
 
           <input
             value={search}
@@ -1789,7 +1746,7 @@ export default function App() {
                           color: "#a9c9e9",
                           marginTop: 5
                         }}>
-                          Entry: {fmt(signal.entry, 8)}
+                          Execution: CURRENT MARKET PRICE
                         </div>
                         {hasOrder && (
                           <div style={{
@@ -1797,7 +1754,7 @@ export default function App() {
                             color: "#f4c46a",
                             marginTop: 5
                           }}>
-                            DEMO ORDER ALREADY CREATED
+                            THIS BOX ALREADY TRADED
                           </div>
                         )}
                       </>
@@ -1882,20 +1839,22 @@ export default function App() {
             padding: 10,
             borderRadius: 7
           }}>
+            EXECUTION: Immediate demo market execution at the live price.
+            <br/>
             FOREX: 10-pip SL / 31-pip TP.
             <br/>
             NON-FOREX: SL based on average range of the latest 14 closed M5 candles.
             <br/>
             NON-FOREX TP: 3.1 times the calculated SL distance.
             <br/>
-            Pending order expiry: 1 hour.
+            NO PENDING ORDERS OR EXPIRY.
           </div>
         </section>
 
         <section style={card}>
-          <div style={title}>DEMO PENDING ORDERS</div>
+          <div style={title}>MARKET EXECUTION</div>
           <div style={small}>
-            Automatically activate at entry · Expire after one hour
+            Trades open immediately at the current live price when you click a valid signal.
           </div>
 
           {!pendingOrders.length && (
@@ -1904,80 +1863,9 @@ export default function App() {
               padding: 18,
               color: "#8395af"
             }}>
-              No demo pending orders.
+              No pending orders. All new signals use immediate market execution.
             </div>
           )}
-
-          {pendingOrders.map(order => (
-            <div key={order.id} style={orderCard}>
-              <div style={{
-                display: "flex",
-                justifyContent: "space-between",
-                gap: 10
-              }}>
-                <strong>{order.symbol}</strong>
-                <strong style={{
-                  color: order.direction === "BUY" ? "#16c784" : "#ea5455"
-                }}>
-                  {order.direction}
-                </strong>
-              </div>
-
-              <div style={small}>{order.source}</div>
-
-              <div style={orderGrid}>
-                <div>
-                  ENTRY
-                  <b style={{ display: "block", color: "white" }}>
-                    {fmt(order.entry, 8)}
-                  </b>
-                </div>
-                <div>
-                  LIVE PRICE
-                  <b style={{ display: "block", color: "white" }}>
-                    {fmt(latestPrices[order.symbol], 8)}
-                  </b>
-                </div>
-                <div>
-                  STOP LOSS
-                  <b style={{ display: "block", color: "white" }}>
-                    {fmt(order.sl, 8)}
-                  </b>
-                </div>
-                <div>
-                  TAKE PROFIT
-                  <b style={{ display: "block", color: "white" }}>
-                    {fmt(order.tp, 8)}
-                  </b>
-                </div>
-                <div>
-                  RISK
-                  <b style={{ display: "block", color: "white" }}>
-                    ${fmt(order.riskMoney, 2)}
-                  </b>
-                </div>
-                <div>
-                  EXPIRES
-                  <b style={{ display: "block", color: "white" }}>
-                    {new Date(order.expiresAtMs).toLocaleTimeString()}
-                  </b>
-                </div>
-              </div>
-
-              <div style={{
-                display: "inline-block",
-                fontSize: 9,
-                color: "#f4c46a",
-                background: "#382e1d",
-                borderRadius: 5,
-                padding: "5px 7px",
-                fontWeight: 900,
-                marginTop: 9
-              }}>
-                {order.status}
-              </div>
-            </div>
-          ))}
         </section>
 
         <section style={card}>
@@ -2131,16 +2019,19 @@ export default function App() {
             It does not place or manage real broker trades.
           </p>
           <p>
-            A pending BUY activates when live price reaches or exceeds entry.
-            A pending SELL activates when live price reaches or falls below entry.
+            A qualifying BUY or SELL opens immediately at the current live
+            market price when its market card is clicked.
           </p>
           <p>
-            Pending orders are cancelled after one hour if not activated,
-            when an opposite-direction signal is detected, or when their box
-            reaches its third-touch deletion condition.
+            Signals require a qualifying touch on the latest closed M5 candle.
+            Green candle touching the box bottom = SELL. Red candle touching
+            the box top = BUY.
           </p>
           <p>
-            Browser notifications must be permitted for activation alerts.
+            No pending orders or pending-order expiry are used.
+          </p>
+          <p>
+            Browser notifications must be permitted for trade alerts.
             Notifications may not arrive if the browser or app is closed.
           </p>
           <p>
@@ -2227,10 +2118,9 @@ export default function App() {
             BOX LIFECYCLE: First retest → Second retest/FLIPPY
             → Third touch DELETE.
             <br/>
-            ENTRY: BUY above box high or SELL below box low,
-            using a 2-pip buffer.
+            EXECUTION: Click BUY or SELL to open immediately at current price.
             <br/>
-            PENDING: One-hour expiry or cancellation on opposite signal.
+            SL/TP: Forex 10-pip SL / 31-pip TP.
             <br/>
             EMA: Completely removed. No EMA calculations or filters.
           </div>
@@ -2392,7 +2282,7 @@ export default function App() {
         }}>
           iFX BILLIONAIRE ROBOT · HLZ MOBILE
           <br/>
-          Breakouts · Retests · FLIPPY
+          Breakouts · Retests · FLIPPY · Immediate Market Execution
         </footer>
       </main>
     </div>
