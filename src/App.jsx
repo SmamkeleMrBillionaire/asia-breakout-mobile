@@ -27,13 +27,21 @@ const fmt = (n, digits = 5) =>
 function categoryOf(s) {
   const market = String(s.market || "").toLowerCase();
   const sub = String(s.submarket || "").toLowerCase();
+  const subgroup = String(s.subgroup || "").toLowerCase();
   const name = String(s.display_name || "").toLowerCase();
   const symbol = String(s.symbol || "").toLowerCase();
+  const type = String(s.symbol_type || "").toLowerCase();
 
-  if (market.includes("forex")) return "Forex";
+  if (
+    market.includes("forex") ||
+    sub.includes("forex") ||
+    type.includes("forex")
+  ) return "Forex";
+
   if (
     market.includes("synthetic") ||
     sub.includes("synthetic") ||
+    subgroup.includes("synthetic") ||
     symbol.startsWith("1hz") ||
     symbol.startsWith("r_") ||
     symbol.includes("volatility") ||
@@ -45,39 +53,36 @@ function categoryOf(s) {
   if (
     market.includes("crypt") ||
     sub.includes("crypt") ||
+    subgroup.includes("crypt") ||
     name.includes("bitcoin") ||
-    name.includes("ethereum")
+    name.includes("ethereum") ||
+    type.includes("crypt")
   ) return "Crypto";
 
   if (
     market.includes("stock") ||
     sub.includes("stock") ||
-    market.includes("share")
+    subgroup.includes("stock") ||
+    market.includes("share") ||
+    type.includes("stock")
   ) return "Stocks";
 
   if (
     market.includes("index") ||
-    sub.includes("index")
+    sub.includes("index") ||
+    subgroup.includes("index") ||
+    type.includes("index")
   ) return "Indices";
 
   if (
     market.includes("commodit") ||
     sub.includes("metal") ||
+    subgroup.includes("metal") ||
     name.includes("gold") ||
     name.includes("silver") ||
     name.includes("platinum") ||
     name.includes("palladium")
-  ) {
-    if (
-      name.includes("gold") ||
-      name.includes("silver") ||
-      name.includes("platinum") ||
-      name.includes("palladium") ||
-      sub.includes("metal")
-    ) return "Metals";
-
-    return "Other";
-  }
+  ) return "Metals";
 
   return "Other";
 }
@@ -128,6 +133,7 @@ function buildAsiaRange(candles) {
     const date = new Date(c.epoch * 1000);
     const day = date.toISOString().slice(0, 10);
     const hour = date.getUTCHours();
+
     return day === lastDay && hour >= 0 && hour < 7;
   });
 
@@ -218,21 +224,32 @@ function createBoxes(candles) {
 
 function findHLZSignal(candles, symbol, category) {
   if (candles.length < 1070) {
-    return { direction: "NONE", reason: "Insufficient EMA history" };
+    return {
+      direction: "NONE",
+      reason: "Insufficient EMA history"
+    };
   }
 
   const asia = buildAsiaRange(candles);
 
   if (!asia) {
-    return { direction: "NONE", reason: "Asia range unavailable" };
+    return {
+      direction: "NONE",
+      reason: "Asia range unavailable"
+    };
   }
 
   const boxes = createBoxes(candles).filter(box =>
-  new Date(candles[box.created].epoch * 1000)
-    .toISOString().slice(0, 10) === asia.day
-);
+    new Date(candles[box.created].epoch * 1000)
+      .toISOString()
+      .slice(0, 10) === asia.day
+  );
+
   if (!boxes.length) {
-    return { direction: "NONE", reason: "No HLZ boxes" };
+    return {
+      direction: "NONE",
+      reason: "No HLZ boxes"
+    };
   }
 
   const closes = candles.map(c => c.close);
@@ -247,7 +264,10 @@ function findHLZSignal(candles, symbol, category) {
   const direction = candleColor(last);
 
   if (direction === "NONE") {
-    return { direction: "NONE", reason: "Neutral candle" };
+    return {
+      direction: "NONE",
+      reason: "Neutral candle"
+    };
   }
 
   const unit = pipSize(symbol, category, candles);
@@ -276,7 +296,7 @@ function findHLZSignal(candles, symbol, category) {
       continue;
     }
 
-    // Count only touches after the breakout.
+    // Count touches only after the breakout.
     let touchCount = 0;
     let lastTouchIndex = -1;
 
@@ -365,7 +385,13 @@ function findHLZSignal(candles, symbol, category) {
   };
 }
 
-function makeDemoOrder(signal, symbol, category, balance, riskPct) {
+function makeDemoOrder(
+  signal,
+  symbol,
+  category,
+  balance,
+  riskPct
+) {
   const point = signal.pip;
   const isForex = category === "Forex";
 
@@ -493,6 +519,7 @@ export default function App() {
 
         if (data.req_id && pendingRef.current.has(data.req_id)) {
           const pending = pendingRef.current.get(data.req_id);
+
           clearTimeout(pending.timeout);
           pendingRef.current.delete(data.req_id);
 
@@ -523,24 +550,95 @@ export default function App() {
     });
   }, []);
 
+  // UPDATED: Deriv's current API uses underlying_symbol,
+  // underlying_symbol_name, underlying_symbol_type and pip_size.
   const discoverMarkets = useCallback(async () => {
+    setMessage("Requesting active markets from Deriv...");
+
     const response = await request({
       active_symbols: "full"
     });
 
-    const list = (response.active_symbols || [])
-      .filter(s => s.symbol && !s.is_trading_suspended)
+    const rawList =
+      response.active_symbols ||
+      response.data?.active_symbols ||
+      [];
+
+    if (!Array.isArray(rawList)) {
+      throw new Error(
+        "Deriv responded, but the active-symbol list was not an array."
+      );
+    }
+
+    const list = rawList
+      .map(s => {
+        const symbol =
+          s.underlying_symbol ||
+          s.symbol ||
+          "";
+
+        const displayName =
+          s.underlying_symbol_name ||
+          s.display_name ||
+          symbol;
+
+        return {
+          ...s,
+
+          // Normalise the new API fields for the existing app.
+          symbol,
+          display_name: displayName,
+
+          symbol_type:
+            s.underlying_symbol_type ||
+            s.symbol_type ||
+            "",
+
+          pip:
+            s.pip_size ??
+            s.pip ??
+            null
+        };
+      })
+      .filter(s =>
+        s.symbol &&
+        Number(s.is_trading_suspended || 0) !== 1
+      )
       .map(s => ({
         ...s,
         category: categoryOf(s)
       }))
       .sort((a, b) =>
-        a.display_name.localeCompare(b.display_name)
+        String(a.display_name).localeCompare(
+          String(b.display_name)
+        )
       );
 
     setSymbols(list);
+
+    if (list.length === 0) {
+      const responseType = response.msg_type || "unknown";
+
+      setMessage(
+        `Deriv connected, but returned 0 usable symbols. Response type: ${responseType}.`
+      );
+
+      return [];
+    }
+
+    const categoryCounts = CATEGORIES
+      .filter(cat => cat !== "All")
+      .map(cat => {
+        const count = list.filter(
+          item => item.category === cat
+        ).length;
+
+        return `${cat}: ${count}`;
+      })
+      .join(" · ");
+
     setMessage(
-      `${list.length} active Deriv symbols discovered.`
+      `${list.length} active Deriv markets discovered. ${categoryCounts}`
     );
 
     return list;
@@ -571,6 +669,7 @@ export default function App() {
 
       // Ignore the still-forming candle.
       const now = Math.floor(Date.now() / 1000);
+
       const closed = candles.filter(c =>
         c.epoch + TIMEFRAME <= now
       );
@@ -609,6 +708,7 @@ export default function App() {
         results[item.symbol] = await scanSymbol(item);
 
         completed++;
+
         setScanned(completed);
         setProgress(
           Math.round(completed / list.length * 100)
@@ -635,6 +735,7 @@ export default function App() {
     }));
 
     setLastScan(new Date().toLocaleTimeString());
+
     setMessage(
       runningRef.current
         ? `Scan complete: ${completed} of ${list.length} symbols checked.`
@@ -658,6 +759,9 @@ export default function App() {
         setMessage("No active markets returned by Deriv.");
         return;
       }
+
+      setScanned(0);
+      setProgress(0);
 
       await scanAll(list);
 
@@ -688,6 +792,7 @@ export default function App() {
 
     // Demo-only STOP: clear all simulated orders.
     setOrders([]);
+
     setMessage(
       "STOPPED. All simulated pending orders cleared."
     );
@@ -709,6 +814,7 @@ export default function App() {
     setOrders(previous => [order, ...previous]);
     setSelected(item);
     setLastActivated(order.source);
+
     setMessage(
       `${item.symbol}: simulated pending stop created.`
     );
@@ -732,10 +838,16 @@ export default function App() {
     const matchesCategory =
       category === "All" || item.category === category;
 
+    const searchTerm = search.toLowerCase();
+
     const matchesSearch =
-      !search ||
-      item.display_name.toLowerCase().includes(search.toLowerCase()) ||
-      item.symbol.toLowerCase().includes(search.toLowerCase());
+      !searchTerm ||
+      String(item.display_name || "")
+        .toLowerCase()
+        .includes(searchTerm) ||
+      String(item.symbol || "")
+        .toLowerCase()
+        .includes(searchTerm);
 
     return matchesCategory && matchesSearch;
   });
@@ -852,18 +964,27 @@ export default function App() {
             <div style={styles.statLabel}>MARKETS FOUND</div>
             <div style={styles.statValue}>{symbols.length}</div>
           </div>
+
           <div style={styles.stat}>
             <div style={styles.statLabel}>BUY SIGNALS</div>
-            <div style={{...styles.statValue, color:"#16c784"}}>
+            <div style={{
+              ...styles.statValue,
+              color: "#16c784"
+            }}>
               {buyCount}
             </div>
           </div>
+
           <div style={styles.stat}>
             <div style={styles.statLabel}>SELL SIGNALS</div>
-            <div style={{...styles.statValue, color:"#ea5455"}}>
+            <div style={{
+              ...styles.statValue,
+              color: "#ea5455"
+            }}>
               {sellCount}
             </div>
           </div>
+
           <div style={styles.stat}>
             <div style={styles.statLabel}>OPEN DEMO ORDERS</div>
             <div style={styles.statValue}>{orders.length}</div>
@@ -878,6 +999,7 @@ export default function App() {
                 All currently discovered Deriv markets
               </div>
             </div>
+
             <div style={styles.smallText}>
               M5 · EMA 35/60/90/120/200/1068
             </div>
@@ -897,8 +1019,12 @@ export default function App() {
                 onClick={() => setCategory(cat)}
                 style={{
                   ...styles.categoryButton,
-                  background: category === cat ? "#1677d2" : "#18243a",
-                  color: category === cat ? "#fff" : "#aab7cc"
+                  background: category === cat
+                    ? "#1677d2"
+                    : "#18243a",
+                  color: category === cat
+                    ? "#fff"
+                    : "#aab7cc"
                 }}
               >
                 {cat}
@@ -938,16 +1064,20 @@ export default function App() {
                   }}
                   style={{
                     ...styles.marketCard,
-                    borderColor: isSelected ? "#31a8ff" : "#24334b"
+                    borderColor: isSelected
+                      ? "#31a8ff"
+                      : "#24334b"
                   }}
                 >
                   <div style={styles.marketLeft}>
                     <div style={styles.marketName}>
                       {item.display_name || item.symbol}
                     </div>
+
                     <div style={styles.marketMeta}>
                       {item.symbol} · {item.category}
                     </div>
+
                     {signal.direction !== "NONE" && (
                       <div style={styles.signalDetail}>
                         {signal.boxType} · {signal.touchType} · EMA{signal.emaPeriod}
@@ -1032,24 +1162,31 @@ export default function App() {
                 Orders created by tapping a valid signal
               </div>
             </div>
+
             <div style={styles.countBadge}>{orders.length}</div>
           </div>
 
           {!orders.length && (
-            <div style={styles.empty}>No demo pending orders.</div>
+            <div style={styles.empty}>
+              No demo pending orders.
+            </div>
           )}
 
           {orders.map(order => (
             <div key={order.id} style={styles.orderCard}>
               <div style={styles.panelHeading}>
                 <strong>{order.symbol}</strong>
+
                 <span style={{
-                  color: order.direction === "BUY" ? "#16c784" : "#ea5455",
-                  fontWeight:800
+                  color: order.direction === "BUY"
+                    ? "#16c784"
+                    : "#ea5455",
+                  fontWeight: 800
                 }}>
                   {order.direction}
                 </span>
               </div>
+
               <div style={styles.smallText}>{order.source}</div>
 
               <div style={styles.orderGrid}>
@@ -1066,7 +1203,11 @@ export default function App() {
 
         <section style={styles.panel}>
           <div style={styles.panelTitle}>LAST ACTIVATED</div>
-          <div style={styles.lastActivated}>{lastActivated}</div>
+
+          <div style={styles.lastActivated}>
+            {lastActivated}
+          </div>
+
           <div style={styles.smallText}>
             Last scan: {lastScan}
           </div>
@@ -1074,12 +1215,14 @@ export default function App() {
 
         <section style={styles.warning}>
           <strong>IMPORTANT — EXECUTION STATUS</strong>
+
           <p>
             Deriv public market data is connected separately from broker
-            execution. This build scans real Deriv candles but creates
+            execution. This build scans Deriv market data but creates
             simulated orders only. It does not send real pending orders,
             close real positions or manage a live account.
           </p>
+
           <p>
             Asia session is calculated using UTC candle timestamps.
             Confirm the session timezone against the original EA before
@@ -1104,6 +1247,7 @@ const styles = {
     color: "#eef4ff",
     fontFamily: "Arial, sans-serif"
   },
+
   header: {
     padding: "20px 16px",
     background: "#101a2b",
@@ -1113,17 +1257,20 @@ const styles = {
     alignItems: "center",
     gap: 10
   },
+
   brand: {
     fontSize: 19,
     fontWeight: 900,
     letterSpacing: 1.2
   },
+
   subtitle: {
     fontSize: 10,
     color: "#8293ad",
     marginTop: 5,
     letterSpacing: 1.5
   },
+
   status: {
     borderRadius: 20,
     padding: "8px 11px",
@@ -1133,12 +1280,14 @@ const styles = {
     alignItems: "center",
     gap: 7
   },
+
   dot: {
     display: "inline-block",
     width: 8,
     height: 8,
     borderRadius: "50%"
   },
+
   main: {
     width: "100%",
     maxWidth: 900,
@@ -1148,24 +1297,28 @@ const styles = {
     flexDirection: "column",
     gap: 12
   },
+
   panel: {
     background: "#101a2b",
     border: "1px solid #24334b",
     borderRadius: 13,
     padding: 14
   },
+
   panelTitle: {
     fontSize: 12,
     fontWeight: 900,
     letterSpacing: 1,
     color: "#dce8fb"
   },
+
   panelHeading: {
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
     gap: 10
   },
+
   connection: {
     marginTop: 12,
     fontSize: 11,
@@ -1174,6 +1327,7 @@ const styles = {
     alignItems: "center",
     gap: 8
   },
+
   demoTag: {
     display: "inline-block",
     fontSize: 9,
@@ -1185,12 +1339,14 @@ const styles = {
     letterSpacing: .5,
     marginTop: 7
   },
+
   buttonRow: {
     display: "grid",
     gridTemplateColumns: "1fr 1fr",
     gap: 9,
     marginTop: 15
   },
+
   primaryButton: {
     border: 0,
     borderRadius: 9,
@@ -1199,6 +1355,7 @@ const styles = {
     padding: 14,
     fontWeight: 900
   },
+
   stopButton: {
     border: 0,
     borderRadius: 9,
@@ -1207,12 +1364,14 @@ const styles = {
     padding: 14,
     fontWeight: 900
   },
+
   message: {
     fontSize: 11,
     color: "#9fb1ca",
     marginTop: 12,
     lineHeight: 1.5
   },
+
   progressTrack: {
     height: 5,
     background: "#26364e",
@@ -1220,39 +1379,46 @@ const styles = {
     marginTop: 10,
     overflow: "hidden"
   },
+
   progressFill: {
     height: "100%",
     background: "#31a8ff",
     transition: "width .2s"
   },
+
   smallText: {
     fontSize: 10,
     color: "#8395af",
     marginTop: 6,
     lineHeight: 1.5
   },
+
   statsGrid: {
     display: "grid",
     gridTemplateColumns: "repeat(2,minmax(0,1fr))",
     gap: 8
   },
+
   stat: {
     padding: 13,
     background: "#101a2b",
     border: "1px solid #24334b",
     borderRadius: 10
   },
+
   statLabel: {
     fontSize: 9,
     color: "#8193ad",
     fontWeight: 800,
     letterSpacing: .7
   },
+
   statValue: {
     fontSize: 23,
     fontWeight: 900,
     marginTop: 7
   },
+
   search: {
     width: "100%",
     marginTop: 13,
@@ -1263,6 +1429,7 @@ const styles = {
     padding: 12,
     fontSize: 13
   },
+
   categoryButton: {
     border: 0,
     borderRadius: 20,
@@ -1271,11 +1438,13 @@ const styles = {
     fontWeight: 800,
     whiteSpace: "nowrap"
   },
+
   marketList: {
     display: "flex",
     flexDirection: "column",
     gap: 7
   },
+
   marketCard: {
     width: "100%",
     background: "#0b1525",
@@ -1289,25 +1458,30 @@ const styles = {
     gap: 8,
     color: "#edf4ff"
   },
+
   marketLeft: {
     minWidth: 0,
     flex: 1
   },
+
   marketName: {
     fontSize: 12,
     fontWeight: 800,
     overflowWrap: "anywhere"
   },
+
   marketMeta: {
     fontSize: 9,
     color: "#8294ae",
     marginTop: 4
   },
+
   signalDetail: {
     fontSize: 9,
     color: "#a9c9e9",
     marginTop: 5
   },
+
   signalBadge: {
     minWidth: 65,
     textAlign: "center",
@@ -1317,6 +1491,7 @@ const styles = {
     fontWeight: 900,
     color: "#07111c"
   },
+
   empty: {
     textAlign: "center",
     padding: 22,
@@ -1324,12 +1499,14 @@ const styles = {
     fontSize: 12,
     lineHeight: 1.6
   },
+
   settingsGrid: {
     display: "grid",
     gridTemplateColumns: "repeat(2,minmax(0,1fr))",
     gap: 12,
     marginTop: 13
   },
+
   field: {
     display: "flex",
     flexDirection: "column",
@@ -1337,6 +1514,7 @@ const styles = {
     fontSize: 10,
     color: "#94a8c3"
   },
+
   numberInput: {
     width: "100%",
     minWidth: 0,
@@ -1347,6 +1525,7 @@ const styles = {
     padding: 10,
     fontSize: 13
   },
+
   ruleText: {
     marginTop: 13,
     fontSize: 10,
@@ -1356,6 +1535,7 @@ const styles = {
     padding: 10,
     borderRadius: 7
   },
+
   countBadge: {
     background: "#203653",
     borderRadius: 20,
@@ -1363,6 +1543,7 @@ const styles = {
     fontSize: 11,
     fontWeight: 900
   },
+
   orderCard: {
     background: "#0b1525",
     border: "1px solid #2b3e58",
@@ -1370,6 +1551,7 @@ const styles = {
     padding: 12,
     marginTop: 10
   },
+
   orderGrid: {
     display: "grid",
     gridTemplateColumns: "1fr 1fr",
@@ -1378,6 +1560,7 @@ const styles = {
     fontSize: 9,
     color: "#8395af"
   },
+
   lastActivated: {
     marginTop: 12,
     padding: 12,
@@ -1388,6 +1571,7 @@ const styles = {
     fontWeight: 900,
     overflowWrap: "anywhere"
   },
+
   warning: {
     background: "#302719",
     border: "1px solid #725b2e",
@@ -1397,6 +1581,7 @@ const styles = {
     fontSize: 11,
     lineHeight: 1.6
   },
+
   footer: {
     textAlign: "center",
     padding: "16px 5px 28px",
