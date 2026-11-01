@@ -2,11 +2,19 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 
 const WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public";
-const TIMEFRAME = 300;
+const DEFAULT_TIMEFRAME = 300;
 const CANDLE_COUNT = 1000;
 const BUFFER_PIPS = 2;
 const FX_SL_PIPS = 10;
 const FX_TP_PIPS = 31;
+
+const TIMEFRAMES = [
+  { label: "M1", seconds: 60 },
+  { label: "M5", seconds: 300 },
+  { label: "M15", seconds: 900 },
+  { label: "M30", seconds: 1800 },
+  { label: "H1", seconds: 3600 }
+];
 
 const CATEGORIES = [
   "All", "Forex", "Indices", "Metals",
@@ -26,6 +34,10 @@ const DIAGNOSTIC_REASONS = [
 
 const fmt = (n, digits = 5) =>
   Number.isFinite(Number(n)) ? Number(n).toFixed(digits) : "—";
+
+function timeframeName(seconds) {
+  return TIMEFRAMES.find(t => t.seconds === seconds)?.label || "M5";
+}
 
 function categoryOf(s) {
   const market = String(s.market || "").toLowerCase();
@@ -211,8 +223,6 @@ function getRetestDirection(candle, boundary) {
   return "NONE";
 }
 
-// Stable identity: uses the box candle's actual timestamp,
-// not its changing position in the downloaded candle array.
 function makeBoxId(box, asiaDay) {
   return [
     asiaDay,
@@ -223,8 +233,6 @@ function makeBoxId(box, asiaDay) {
   ].join("-");
 }
 
-// A box allows one RETEST and one separate FLIPPY trade.
-// A repeat of the same trade type from that box is blocked.
 function boxTradeAlreadyTaken(trades, symbol, boxId, touchType) {
   return trades.some(trade => {
     if (
@@ -244,8 +252,6 @@ function boxTradeAlreadyTaken(trades, symbol, boxId, touchType) {
   });
 }
 
-// Only a qualifying touch on the latest CLOSED M5 candle
-// can generate an actionable signal.
 function findRetestSignal(candles, symbol, category) {
   const empty = {
     direction: "NONE",
@@ -508,8 +514,6 @@ function findRetestSignal(candles, symbol, category) {
   };
 }
 
-// Non-Forex SL uses average range of latest 14 closed M5 candles.
-// TP maintains the 3.1:1 reward-to-risk ratio.
 function nonForexStopDistance(signal, candles) {
   const recent = candles.slice(-14);
 
@@ -526,7 +530,17 @@ function nonForexStopDistance(signal, candles) {
   return Math.max(averageRange, minimumDistance);
 }
 
-function makeDemoOrder(signal, symbol, category, balance, riskPct, candles = []) {
+function makeDemoOrder(
+  signal,
+  symbol,
+  category,
+  balance,
+  riskPct,
+  sizingMode,
+  fixedLots,
+  candles = [],
+  timeframe = DEFAULT_TIMEFRAME
+) {
   const point = signal.pip;
   const isForex = category === "Forex";
 
@@ -548,10 +562,14 @@ function makeDemoOrder(signal, symbol, category, balance, riskPct, candles = [])
     ? signal.entry + tpDistance
     : signal.entry - tpDistance;
 
-  const safeRisk = Math.max(
-    0,
-    Number.isFinite(riskPct) ? riskPct : 0
-  );
+  // Fixed-lot mode uses 0.10 lots as a 1% risk-normalised
+  // simulation baseline. This is not a broker contract calculation.
+  const safeLots = Math.max(0, Number(fixedLots) || 0);
+  const safeRiskPct = Math.max(0, Number(riskPct) || 0);
+
+  const riskMoney = sizingMode === "FIXED_LOTS"
+    ? balance * 0.01 * (safeLots / 0.10)
+    : balance * safeRiskPct / 100;
 
   const createdAtMs = Date.now();
 
@@ -564,12 +582,15 @@ function makeDemoOrder(signal, symbol, category, balance, riskPct, candles = [])
     category,
     direction: signal.direction,
     source: `${signal.boxType} ${signal.touchType} · MARKET EXECUTION`,
+    timeframe,
+    sizingMode,
+    fixedLots: sizingMode === "FIXED_LOTS" ? safeLots : null,
     entry: signal.entry,
     sl,
     tp,
     slDistance,
     tpDistance,
-    riskMoney: balance * safeRisk / 100,
+    riskMoney,
     status: "OPEN DEMO TRADE",
     currentPrice: signal.entry,
     floatingPnl: 0,
@@ -610,8 +631,12 @@ function sendBrowserNotification(title, body) {
   }
 
   if (Notification.permission === "granted") {
-    new Notification(title, { body });
-    return true;
+    try {
+      new Notification(title, { body });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   return false;
@@ -623,6 +648,8 @@ export default function App() {
   const requestRef = useRef(0);
   const pendingRequestsRef = useRef(new Map());
   const scanLockRef = useRef(false);
+  const rescanRequestedRef = useRef(false);
+  const queuedScanListRef = useRef(null);
   const runningRef = useRef(false);
   const scanTimerRef = useRef(null);
 
@@ -636,6 +663,8 @@ export default function App() {
   const latestPricesRef = useRef({});
   const ordersRef = useRef([]);
   const closedTradesRef = useRef([]);
+
+  const timeframeRef = useRef(DEFAULT_TIMEFRAME);
 
   const [connected, setConnected] = useState(false);
   const [running, setRunning] = useState(false);
@@ -656,6 +685,15 @@ export default function App() {
   const [balance, setBalance] = useState(10000);
   const [riskPct, setRiskPct] = useState(1);
   const [fixedLots, setFixedLots] = useState(0.10);
+  const [sizingMode, setSizingMode] = useState("RISK_PERCENT");
+  const [timeframe, setTimeframe] = useState(DEFAULT_TIMEFRAME);
+
+  const [notificationPermission, setNotificationPermission] = useState(
+    typeof window !== "undefined" && "Notification" in window
+      ? Notification.permission
+      : "unsupported"
+  );
+
   const [message, setMessage] = useState(
     "Connect to Deriv to discover available markets."
   );
@@ -679,6 +717,30 @@ export default function App() {
     closedTradesRef.current = next;
     setClosedTrades(next);
   }, []);
+
+  const requestNotificationPermission = async () => {
+    if (
+      typeof window === "undefined" ||
+      !("Notification" in window)
+    ) {
+      setNotificationPermission("unsupported");
+      return;
+    }
+
+    try {
+      const permission = await Notification.requestPermission();
+      setNotificationPermission(permission);
+
+      setMessage(
+        permission === "granted"
+          ? "Browser notifications enabled."
+          : "Notifications were not enabled. You can change browser permissions."
+      );
+    } catch {
+      setNotificationPermission(Notification.permission);
+      setMessage("Could not request notification permission.");
+    }
+  };
 
   const request = useCallback(payload => {
     return new Promise((resolve, reject) => {
@@ -769,6 +831,17 @@ export default function App() {
         ...previous
       ]);
 
+      newlyClosed.forEach(trade => {
+        const isTP = trade.exitReason === "TAKE PROFIT";
+
+        sendBrowserNotification(
+          isTP
+            ? "iFX BILLIONAIRE — TAKE PROFIT HIT"
+            : "iFX BILLIONAIRE — STOP LOSS HIT",
+          `${trade.symbol} ${trade.direction} · ${trade.exitReason} · ${trade.realisedPnl >= 0 ? "+" : ""}$${fmt(trade.realisedPnl, 2)}`
+        );
+      });
+
       setMessage(
         newlyClosed.map(t =>
           `${t.symbol} ${t.exitReason}: ${t.realisedPnl >= 0 ? "+" : ""}$${fmt(t.realisedPnl, 2)}`
@@ -793,8 +866,6 @@ export default function App() {
     }, 5000);
   }, []);
 
-  // Share an existing connection attempt instead of creating
-  // multiple WebSockets during overlapping recovery events.
   const connect = useCallback(() => {
     const existing = socketRef.current;
 
@@ -802,11 +873,7 @@ export default function App() {
       return Promise.resolve();
     }
 
-    if (
-      existing &&
-      existing.readyState === WebSocket.CONNECTING &&
-      connectionPromiseRef.current
-    ) {
+    if (connectionPromiseRef.current) {
       return connectionPromiseRef.current;
     }
 
@@ -906,11 +973,10 @@ export default function App() {
           reject(new Error("Could not connect to Deriv."));
         }
 
-        // Force the close handler to complete cleanup and recovery.
         try {
           ws.close();
         } catch {
-          // The socket may already be closed.
+          // Socket may already be closed.
         }
       };
 
@@ -937,8 +1003,6 @@ export default function App() {
         if (runningRef.current) {
           setMessage("Deriv connection lost. Robot will attempt to reconnect.");
           scheduleReconnect();
-        } else {
-          setConnectionText("DISCONNECTED");
         }
 
         if (!settled) {
@@ -1050,8 +1114,11 @@ export default function App() {
   }, [request]);
 
   const scanSymbol = useCallback(async item => {
+    const activeTimeframe = timeframeRef.current;
+
     const diagnostic = {
       requestedMaximum: CANDLE_COUNT,
+      timeframe: timeframeName(activeTimeframe),
       returned: 0,
       valid: 0,
       closed: 0,
@@ -1067,7 +1134,7 @@ export default function App() {
         count: CANDLE_COUNT,
         end: "latest",
         style: "candles",
-        granularity: TIMEFRAME
+        granularity: activeTimeframe
       });
 
       diagnostic.responseType = response.msg_type || "Unknown";
@@ -1098,7 +1165,7 @@ export default function App() {
       const now = Math.floor(Date.now() / 1000);
 
       const closed = candles.filter(c =>
-        c.epoch + TIMEFRAME <= now
+        c.epoch + activeTimeframe <= now
       );
 
       diagnostic.closed = closed.length;
@@ -1133,11 +1200,17 @@ export default function App() {
   }, [request]);
 
   const scanAll = useCallback(async list => {
-    if (scanLockRef.current || !runningRef.current) return;
+    if (!runningRef.current) return;
     if (!list || !list.length) return;
 
+    if (scanLockRef.current) {
+      rescanRequestedRef.current = true;
+      queuedScanListRef.current = list;
+      return;
+    }
+
     scanLockRef.current = true;
-    setMessage("Scanning all available Deriv markets...");
+    setMessage(`Scanning all available Deriv markets on ${timeframeName(timeframeRef.current)}...`);
 
     const results = {};
     let completed = 0;
@@ -1181,17 +1254,60 @@ export default function App() {
 
       setMessage(
         runningRef.current
-          ? `Scan complete: ${completed} of ${list.length} symbols checked.`
+          ? `Scan complete: ${completed} of ${list.length} symbols checked on ${timeframeName(timeframeRef.current)}.`
           : "Scanning stopped."
       );
 
       setLastScan(new Date().toLocaleTimeString());
     } finally {
       scanLockRef.current = false;
+
+      if (rescanRequestedRef.current && runningRef.current) {
+        rescanRequestedRef.current = false;
+
+        const queuedList = queuedScanListRef.current || marketsRef.current;
+        queuedScanListRef.current = null;
+
+        setTimeout(() => {
+          if (runningRef.current) scanAll(queuedList);
+        }, 0);
+      }
     }
   }, [scanSymbol]);
 
-  // Background recovery and foreground resume.
+  const handleTimeframeChange = value => {
+    const nextTimeframe = Number(value);
+
+    if (!TIMEFRAMES.some(t => t.seconds === nextTimeframe)) return;
+
+    timeframeRef.current = nextTimeframe;
+    setTimeframe(nextTimeframe);
+
+    setSignals({});
+    setCandleDiagnostics({});
+    setScanned(0);
+    setProgress(0);
+
+    if (scanTimerRef.current) {
+      clearInterval(scanTimerRef.current);
+      scanTimerRef.current = null;
+    }
+
+    setMessage(
+      `Timeframe changed to ${timeframeName(nextTimeframe)}. Previous signals cleared.`
+    );
+
+    if (runningRef.current) {
+      scanAll(marketsRef.current);
+
+      scanTimerRef.current = setInterval(() => {
+        if (runningRef.current) {
+          scanAll(marketsRef.current);
+        }
+      }, nextTimeframe * 1000);
+    }
+  };
+
   useEffect(() => {
     const recoverRobot = async () => {
       if (!runningRef.current) return;
@@ -1231,7 +1347,6 @@ export default function App() {
 
         for (const symbol of openSymbols) {
           if (!runningRef.current) break;
-
           await subscribeMarket(symbol);
         }
 
@@ -1260,9 +1375,7 @@ export default function App() {
       }
     };
 
-    const handleReconnect = () => {
-      recoverRobot();
-    };
+    const handleReconnect = () => recoverRobot();
 
     const handleOnline = () => {
       if (runningRef.current) {
@@ -1315,11 +1428,7 @@ export default function App() {
         "Notification" in window &&
         Notification.permission === "default"
       ) {
-        try {
-          await Notification.requestPermission();
-        } catch {
-          // Notifications may be blocked.
-        }
+        await requestNotificationPermission();
       }
 
       setMessage("Connecting to Deriv...");
@@ -1355,7 +1464,7 @@ export default function App() {
         if (runningRef.current) {
           scanAll(marketsRef.current);
         }
-      }, TIMEFRAME * 1000);
+      }, timeframeRef.current * 1000);
     } catch (error) {
       runningRef.current = false;
       setRunning(false);
@@ -1366,6 +1475,8 @@ export default function App() {
   const stopRobot = () => {
     runningRef.current = false;
     setRunning(false);
+    rescanRequestedRef.current = false;
+    queuedScanListRef.current = null;
 
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current);
@@ -1434,8 +1545,6 @@ export default function App() {
     );
   };
 
-  // Immediate demo market execution.
-  // A lock prevents simultaneous clicks from bypassing duplicate checks.
   const activateSignal = async item => {
     const signal = signals[item.symbol];
 
@@ -1523,14 +1632,17 @@ export default function App() {
         item.category,
         balance,
         riskPct,
-        signal._candles || []
+        sizingMode,
+        fixedLots,
+        signal._candles || [],
+        timeframeRef.current
       );
 
       updateOrders(previous => [order, ...previous]);
 
       setSelected(item);
       setLastActivated(
-        `${signal.direction} · ${signal.boxType} · ${touchType} · MARKET EXECUTION`
+        `${signal.direction} · ${signal.boxType} · ${touchType} · ${timeframeName(timeframeRef.current)} · MARKET EXECUTION`
       );
 
       setMessage(
@@ -1739,6 +1851,17 @@ export default function App() {
     fontSize: 13
   };
 
+  const fieldStyle = {
+    width: "100%",
+    minWidth: 0,
+    background: "#0a1424",
+    border: "1px solid #30435e",
+    borderRadius: 7,
+    color: "white",
+    padding: 10,
+    fontSize: 13
+  };
+
   return (
     <div style={{
       minHeight: "100vh",
@@ -1749,7 +1872,7 @@ export default function App() {
       <style>{`
         * { box-sizing: border-box; }
         body { margin: 0; background: #080d18; }
-        button, input { font: inherit; }
+        button, input, select { font: inherit; }
         button { cursor: pointer; }
         .market-scroll {
           display:flex; gap:7px; overflow-x:auto;
@@ -1759,7 +1882,7 @@ export default function App() {
         .market-card:active { transform:scale(.99); }
         .market-card { transition:transform .12s ease; }
         .market-card:disabled { opacity:.55; cursor:not-allowed; }
-        input:focus { outline:1px solid #31a8ff; }
+        input:focus, select:focus { outline:1px solid #31a8ff; }
       `}</style>
 
       <header style={{
@@ -1931,7 +2054,7 @@ export default function App() {
         <section style={card}>
           <div style={title}>ACTIVE RETEST SIGNALS</div>
           <div style={small}>
-            All discovered Deriv markets · M5 · Latest closed candle only
+            All discovered Deriv markets · {timeframeName(timeframe)} · Latest closed candle only
           </div>
 
           <input
@@ -1988,10 +2111,7 @@ export default function App() {
 
               const hasOrder = signal.boxId
                 ? boxTradeAlreadyTaken(
-                    [
-                      ...orders,
-                      ...closedTrades
-                    ],
+                    [...orders, ...closedTrades],
                     item.symbol,
                     signal.boxId,
                     touchType
@@ -2056,7 +2176,7 @@ export default function App() {
                             color: "#f4c46a",
                             marginTop: 5
                           }}>
-                            THIS {touchType} FROM THIS BOX ALREADY TRADED
+                            TRADED ALREADY — NO NEW ENTRY
                           </div>
                         )}
                       </>
@@ -2100,36 +2220,102 @@ export default function App() {
             gap: 12,
             marginTop: 13
           }}>
-            {[
-              ["Demo balance ($)", balance, setBalance],
-              ["Risk per trade (%)", riskPct, setRiskPct],
-              ["Fixed lots (display only)", fixedLots, setFixedLots]
-            ].map(([label, value, setter]) => (
-              <label key={label} style={{
+            <label style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 7,
+              fontSize: 10,
+              color: "#94a8c3"
+            }}>
+              <span>Timeframe</span>
+              <select
+                value={timeframe}
+                onChange={e => handleTimeframeChange(e.target.value)}
+                style={fieldStyle}
+              >
+                {TIMEFRAMES.map(t => (
+                  <option key={t.seconds} value={t.seconds}>
+                    {t.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 7,
+              fontSize: 10,
+              color: "#94a8c3"
+            }}>
+              <span>Position sizing mode</span>
+              <select
+                value={sizingMode}
+                onChange={e => setSizingMode(e.target.value)}
+                style={fieldStyle}
+              >
+                <option value="RISK_PERCENT">Risk percentage</option>
+                <option value="FIXED_LOTS">Fixed lot size</option>
+              </select>
+            </label>
+
+            <label style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 7,
+              fontSize: 10,
+              color: "#94a8c3"
+            }}>
+              <span>Demo balance ($)</span>
+              <input
+                type="number"
+                min="0"
+                value={balance}
+                onChange={e => setBalance(Math.max(0, Number(e.target.value)))}
+                style={fieldStyle}
+              />
+            </label>
+
+            {sizingMode === "RISK_PERCENT" && (
+              <label style={{
                 display: "flex",
                 flexDirection: "column",
                 gap: 7,
                 fontSize: 10,
                 color: "#94a8c3"
               }}>
-                <span>{label}</span>
+                <span>Risk per trade (%)</span>
                 <input
                   type="number"
-                  value={value}
-                  onChange={e => setter(Number(e.target.value))}
-                  style={{
-                    width: "100%",
-                    minWidth: 0,
-                    background: "#0a1424",
-                    border: "1px solid #30435e",
-                    borderRadius: 7,
-                    color: "white",
-                    padding: 10,
-                    fontSize: 13
-                  }}
+                  min="0"
+                  max="100"
+                  step="0.1"
+                  value={riskPct}
+                  onChange={e => setRiskPct(Math.max(0, Math.min(100, Number(e.target.value))))}
+                  style={fieldStyle}
                 />
               </label>
-            ))}
+            )}
+
+            {sizingMode === "FIXED_LOTS" && (
+              <label style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 7,
+                fontSize: 10,
+                color: "#94a8c3"
+              }}>
+                <span>Fixed lot size</span>
+                <input
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  value={fixedLots}
+                  onChange={e => setFixedLots(Math.max(0.01, Number(e.target.value)))}
+                  style={fieldStyle}
+                />
+              </label>
+            )}
           </div>
 
           <div style={{
@@ -2141,15 +2327,88 @@ export default function App() {
             padding: 10,
             borderRadius: 7
           }}>
-            EXECUTION: Immediate demo market execution at the live price.
+            ACTIVE TIMEFRAME: {timeframeName(timeframe)}.
+            <br/>
+            POSITION SIZING: {sizingMode === "RISK_PERCENT"
+              ? `${fmt(riskPct, 2)}% of demo balance per trade.`
+              : `${fmt(fixedLots, 2)} fixed simulated lots.`}
             <br/>
             FOREX: 10-pip SL / 31-pip TP.
             <br/>
-            NON-FOREX: SL based on average range of the latest 14 closed M5 candles.
+            NON-FOREX: SL based on average range of the latest 14 closed candles on the selected timeframe.
             <br/>
             NON-FOREX TP: 3.1 times the calculated SL distance.
             <br/>
             NO PENDING ORDERS OR EXPIRY.
+            <br/>
+            Settings apply to new trades. Existing trades retain their original settings.
+          </div>
+
+          {sizingMode === "FIXED_LOTS" && (
+            <div style={{
+              marginTop: 9,
+              fontSize: 10,
+              lineHeight: 1.6,
+              color: "#f4d69a",
+              background: "#302719",
+              padding: 10,
+              borderRadius: 7
+            }}>
+              SIMULATION NOTE: 0.10 lots represents a 1% risk-normalised
+              baseline. Other lot sizes scale simulated P&L proportionally.
+              This is not the actual contract valuation used by a broker.
+            </div>
+          )}
+        </section>
+
+        <section style={card}>
+          <div style={title}>ALERT NOTIFICATIONS</div>
+          <div style={small}>
+            Browser permission: {notificationPermission.toUpperCase()}
+          </div>
+
+          <button
+            onClick={requestNotificationPermission}
+            style={{
+              width: "100%",
+              marginTop: 12,
+              border: 0,
+              borderRadius: 8,
+              background: "#1677d2",
+              color: "white",
+              padding: 12,
+              fontWeight: 900
+            }}
+          >
+            ENABLE / CHECK NOTIFICATIONS
+          </button>
+
+          <div style={small}>
+            The robot sends a browser notification when a simulated trade
+            reaches TP or SL. Android and browser notification permissions
+            must be enabled. Notifications are not guaranteed if Android
+            suspends or closes the browser.
+          </div>
+        </section>
+
+        <section style={card}>
+          <div style={title}>BROKER CONNECTION</div>
+          <div style={small}>
+            Current data provider: DERIV PUBLIC MARKET DATA
+          </div>
+          <div style={{
+            marginTop: 10,
+            padding: 11,
+            borderRadius: 7,
+            background: "#0b1525",
+            color: "#a8b7cb",
+            fontSize: 10,
+            lineHeight: 1.7
+          }}>
+            This version does not have a broker login or real-account
+            execution connection. It uses Deriv public market data and
+            simulated demo trades only. Another broker cannot be selected
+            from this dashboard.
           </div>
         </section>
 
@@ -2202,6 +2461,11 @@ export default function App() {
               <div style={small}>
                 {trade.source} · {trade.status}
               </div>
+              <div style={small}>
+                {timeframeName(trade.timeframe)} · {trade.sizingMode === "FIXED_LOTS"
+                  ? `${fmt(trade.fixedLots, 2)} lots`
+                  : "Percentage risk"}
+              </div>
 
               <div style={orderGrid}>
                 <div>
@@ -2229,7 +2493,7 @@ export default function App() {
                   </b>
                 </div>
                 <div>
-                  RISK
+                  SIMULATED RISK
                   <b style={{ display: "block", color: "white" }}>
                     ${fmt(trade.riskMoney, 2)}
                   </b>
@@ -2282,7 +2546,7 @@ export default function App() {
               </div>
 
               <div style={small}>
-                {trade.touchType || "RETEST"} · Entry: {fmt(trade.entry, 8)} · Exit: {fmt(trade.exitPrice, 8)}
+                {trade.touchType || "RETEST"} · {timeframeName(trade.timeframe)} · Entry: {fmt(trade.entry, 8)} · Exit: {fmt(trade.exitPrice, 8)}
               </div>
             </div>
           ))}
@@ -2325,25 +2589,27 @@ export default function App() {
             market price when its market card is clicked.
           </p>
           <p>
-            Signals require a qualifying touch on the latest closed M5 candle.
-            Green candle touching the box bottom = SELL. Red candle touching
-            the box top = BUY.
+            Signals require a qualifying touch on the latest closed candle
+            of the selected timeframe. Green candle touching the box bottom
+            = SELL. Red candle touching the box top = BUY.
           </p>
           <p>
             No pending orders or pending-order expiry are used.
           </p>
           <p>
-            Browser notifications must be permitted for trade alerts.
-            Notifications may not arrive if the browser or app is closed.
+            Browser notifications are requested when starting the robot.
+            TP and SL alerts are sent when browser permission is granted.
+            Notifications may not arrive if the browser is closed or suspended.
           </p>
           <p>
-            Non-Forex SL uses recent M5 candle range and TP uses 3.1 times
-            that distance. These are simulated distances, not broker-specific
-            contract or tick-value calculations.
+            Non-Forex SL uses recent candle range on the selected timeframe
+            and TP uses 3.1 times that distance. These are simulated distances,
+            not broker-specific contract or tick-value calculations.
           </p>
           <p>
-            P&L is risk-normalised using configured risk and stop distance.
-            It is not actual Deriv contract valuation. Fixed lots are display-only.
+            Percentage-risk P&L is risk-normalised. Fixed-lot mode uses
+            0.10 lots as a 1% risk-normalised simulation baseline.
+            Neither mode calculates actual Deriv contract valuation.
           </p>
           <p>Asia session is calculated using UTC candle timestamps.</p>
           <p>
@@ -2364,7 +2630,7 @@ export default function App() {
         <section style={card}>
           <div style={title}>DERIV CANDLE DATA DIAGNOSTICS</div>
           <div style={small}>
-            Maximum request: {CANDLE_COUNT} candles · M5
+            Maximum request: {CANDLE_COUNT} candles · {timeframeName(timeframe)}
           </div>
 
           {scanned === 0 && (
@@ -2422,6 +2688,8 @@ export default function App() {
           }}>
             ASIA RANGE: 00:00–07:00 UTC.
             <br/>
+            TIMEFRAME: {timeframeName(timeframe)}.
+            <br/>
             BOXES: DOJI · ENGULFED · WICK.
             <br/>
             NORMAL RETEST: Green candle at bottom = SELL.
@@ -2477,6 +2745,7 @@ export default function App() {
                     {item.display_name || item.symbol}
                   </div>
                   <div style={small}>Symbol: {item.symbol}</div>
+                  <div style={small}>Timeframe: {d.timeframe}</div>
                   <div style={small}>Maximum requested: {d.requestedMaximum}</div>
                   <div style={small}>Returned by Deriv: {d.returned}</div>
                   <div style={small}>Valid candles: {d.valid}</div>
