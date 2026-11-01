@@ -1,36 +1,59 @@
 
 import React, { useMemo, useState } from "react";
 
+// ==================================================
 // ASIA BREAKOUT MOBILE
-// v6.11 strategy port
-// Demo candle replay only. No broker connection.
+// V6.11 - EXACT 10-STEP STRATEGY PORT
+// DEMO CANDLE REPLAY ONLY - NO BROKER CONNECTION
+// ==================================================
 
 const DEFAULTS = {
   asiaStart: 0,
   asiaEnd: 7,
-  tradeStart: 8,
-  tradeEnd: 20,
+  tradeStart: 9,
+  tradeEnd: 19,
+  tradeOnlyAfterAsia: true,
+
   riskPct: 1,
-  fixedSL: 11,
-  rr: 2,
+  useRiskPercent: true,
+  fixedLots: 0.10,
+
+  fixedSL: 10,
+  forexTP: 31,
+  otherTPPoints: 1000,
+
   pendingBuffer: 2,
+  pendingExpiryMinutes: 60,
+
   maxTrades: 1,
   oneDirectionOnly: true,
+  oneTradePerSignal: true,
+
   useEmaFilter: true,
-  useFiboTouch: true,
-  fibLevels: [50, 68, 90],
-  fibMaxTouches: 3,
+  emaPeriods: [35, 60, 90, 200, 120, 1068],
+  emaDistancePoints: 10,
+
+  useRSIFilter: false,
+  rsiPeriod: 14,
+
   wickPercent: 20,
   dojiBodyPercent: 25,
-  flippyDeleteOnTouch: 3,
-  useOverlapFilter: false,
-  emaPeriods: [35, 60, 90, 200, 120, 1068],
-  emaDistancePips: 10
+  maxBoxes: 3,
+  deleteOnTouch: 3,
+
+  breakevenPips: 25,
+  spreadPips: 1.5,
+  trailingExtraPips: 10
 };
 
 const PAIRS = [
-  "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF",
-  "AUD/USD", "NZD/USD", "USD/CAD"
+  "EUR/USD",
+  "GBP/USD",
+  "USD/JPY",
+  "USD/CHF",
+  "AUD/USD",
+  "NZD/USD",
+  "USD/CAD"
 ];
 
 const BASE = {
@@ -45,13 +68,47 @@ const BASE = {
 
 const fmt = (n, pair) =>
   Number.isFinite(n)
-    ? n.toFixed(pair && pair.includes("JPY") ? 3 : 5)
+    ? n.toFixed(pair?.includes("JPY") ? 3 : 5)
     : "—";
 
-const pipSize = pair => pair.includes("JPY") ? 0.01 : 0.0001;
+const pipSize = pair =>
+  pair?.includes("JPY") ? 0.01 : 0.0001;
+
+const pointSize = pair => pipSize(pair) / 10;
 
 const money = n =>
   (n < 0 ? "−" : "") + "$" + Math.abs(n).toFixed(2);
+
+const hourOf = t => new Date(t).getHours();
+
+const inHours = (t, start, end) => {
+  const h = hourOf(t);
+  return start <= end
+    ? h >= start && h < end
+    : h >= start || h < end;
+};
+
+const candleDir = (fallback, c) =>
+  c.close > c.open ? true :
+  c.close < c.open ? false : fallback;
+
+const isBullEngulf = (c, p) =>
+  c.close > c.open &&
+  p.close < p.open &&
+  c.close >= p.open &&
+  c.open <= p.close;
+
+const isBearEngulf = (c, p) =>
+  c.close < c.open &&
+  p.close > p.open &&
+  c.close <= p.open &&
+  c.open >= p.close;
+
+const isDoji = (c, percent = 25) => {
+  const range = c.high - c.low;
+  return range > 0 &&
+    Math.abs(c.close - c.open) <= range * percent / 100;
+};
 
 const emaAt = (bars, period, index) => {
   if (index + 1 < period) return null;
@@ -66,42 +123,31 @@ const emaAt = (bars, period, index) => {
   return value;
 };
 
+const rsiAt = (bars, period, index) => {
+  if (index < period) return null;
+
+  let gains = 0;
+  let losses = 0;
+
+  for (let i = index - period + 1; i <= index; i++) {
+    const change = bars[i].close - bars[i - 1].close;
+    if (change > 0) gains += change;
+    else losses -= change;
+  }
+
+  const avgGain = gains / period;
+  const avgLoss = losses / period;
+
+  if (avgLoss === 0) return 100;
+  return 100 - 100 / (1 + avgGain / avgLoss);
+};
+
 const overlaps = (a, b) =>
   a.top >= b.bot && a.bot <= b.top;
 
-const candleDir = (fallback, c) =>
-  c.close > c.open ? false :
-  c.close < c.open ? true : fallback;
-
-const isDoji = c =>
-  c.high > c.low &&
-  Math.abs(c.close - c.open) <=
-  (c.high - c.low) * 0.25;
-
-const isBullEngulf = (c, p) =>
-  c.close > c.open &&
-  p.close < p.open &&
-  c.close >= p.open &&
-  c.open <= p.close;
-
-const isBearEngulf = (c, p) =>
-  c.close < c.open &&
-  p.close > p.open &&
-  c.close <= p.open &&
-  c.open >= p.close;
-
-const hourOf = t => new Date(t).getHours();
-
-const inHours = (t, start, end) => {
-  const h = hourOf(t);
-  return start <= end
-    ? h >= start && h < end
-    : h >= start || h < end;
-};
-
-// --------------------------------------------------
+// ==================================================
 // SIMULATED CANDLE GENERATOR
-// --------------------------------------------------
+// ==================================================
 
 function makeReplay(pair, scenario, timeframe) {
   const step = timeframe * 60000;
@@ -138,7 +184,6 @@ function makeReplay(pair, scenario, timeframe) {
   for (let i = historyCount; i > 0; i--) {
     const drift = (rnd() - 0.5) * pip * 2.4;
     const o = price;
-
     price += drift;
 
     bars.push({
@@ -150,15 +195,13 @@ function makeReplay(pair, scenario, timeframe) {
     });
   }
 
-  const start = day;
-
-  // Asia session: 00:00–07:00
+  // Asia session
   for (let i = 0; i < Math.ceil(7 * 60 / timeframe); i++) {
     const o = price;
     price += (rnd() - 0.5) * pip * 1.7;
 
     bars.push({
-      time: start + i * step,
+      time: day + i * step,
       open: o,
       high: Math.max(o, price) + rnd() * pip * 0.25,
       low: Math.min(o, price) - rnd() * pip * 0.25,
@@ -166,7 +209,7 @@ function makeReplay(pair, scenario, timeframe) {
     });
   }
 
-  // London and later simulated candles
+  // Post-Asia session
   for (let i = 0; i < Math.ceil(13 * 60 / timeframe); i++) {
     const o = price;
     let drift = (rnd() - 0.5) * pip * 1.5;
@@ -187,14 +230,14 @@ function makeReplay(pair, scenario, timeframe) {
       drift -= pip * 0.85;
     }
 
-    if (scenario === "range") {
-      drift *= 0.25;
-    }
+    if (scenario === "range") drift *= 0.25;
 
     price += drift;
 
+    const index = Math.ceil(7 * 60 / timeframe) + i;
+
     bars.push({
-      time: start + (Math.ceil(7 * 60 / timeframe) + i) * step,
+      time: day + index * step,
       open: o,
       high: Math.max(o, price) + rnd() * pip * 0.55,
       low: Math.min(o, price) - rnd() * pip * 0.55,
@@ -205,420 +248,473 @@ function makeReplay(pair, scenario, timeframe) {
   return bars;
 }
 
-// --------------------------------------------------
-// ASIA BREAKOUT EA v6.11 STRATEGY ENGINE
-// --------------------------------------------------
+// ==================================================
+// BOX CREATION
+// ==================================================
 
-function runV611(bars, pair, cfg, startingBalance, timeframe) {
+function createBox(c, p, cfg) {
+  const body = Math.abs(c.close - c.open);
+  const upper = c.high - Math.max(c.open, c.close);
+  const lower = Math.min(c.open, c.close) - c.low;
+
+  // ENGULFED BOX
+  if (isBullEngulf(c, p) || isBearEngulf(c, p)) {
+    return {
+      id: "ENG-" + c.time,
+      type: "ENGULFED",
+      top: Math.max(c.open, c.close),
+      bot: Math.min(c.open, c.close),
+      createdTime: c.time,
+      isBuyBox: c.close > c.open,
+      touches: 0,
+      broken: false,
+      breakoutTime: 0,
+      active: true
+    };
+  }
+
+  // WICK BOX
+  if (body > 0) {
+    if (
+      c.close > c.open &&
+      upper >= body * cfg.wickPercent / 100
+    ) {
+      return {
+        id: "WICK-" + c.time,
+        type: "WICK",
+        top: c.high,
+        bot: Math.max(c.open, c.close),
+        createdTime: c.time,
+        isBuyBox: false,
+        touches: 0,
+        broken: false,
+        breakoutTime: 0,
+        active: true
+      };
+    }
+
+    if (
+      c.close < c.open &&
+      lower >= body * cfg.wickPercent / 100
+    ) {
+      return {
+        id: "WICK-" + c.time,
+        type: "WICK",
+        top: Math.min(c.open, c.close),
+        bot: c.low,
+        createdTime: c.time,
+        isBuyBox: true,
+        touches: 0,
+        broken: false,
+        breakoutTime: 0,
+        active: true
+      };
+    }
+  }
+
+  // DOJI BOX
+  if (isDoji(c, cfg.dojiBodyPercent)) {
+    return {
+      id: "DOJI-" + c.time,
+      type: "DOJI",
+      top: c.high,
+      bot: c.low,
+      createdTime: c.time,
+      isBuyBox: c.close >= c.open,
+      touches: 0,
+      broken: false,
+      breakoutTime: 0,
+      active: true
+    };
+  }
+
+  return null;
+}
+
+// ==================================================
+// EMA REJECTION FILTER
+// ==================================================
+
+function checkEMARejection(bars, index, isBuy, asia, boxes, pair, cfg) {
+  if (!cfg.useEmaFilter) return true;
+
+  const c = bars[index];
+  const distance = cfg.emaDistancePoints * pointSize(pair);
+
+  const validBox = boxes.some(b =>
+    b.active &&
+    b.touches <= 3 &&
+    c.time > b.createdTime &&
+    c.high >= b.bot &&
+    c.low <= b.top
+  );
+
+  if (!validBox) return false;
+
+  for (const period of cfg.emaPeriods) {
+    const ema = emaAt(bars, period, index);
+
+    if (ema == null) continue;
+
+    // EMA must be outside the Asia range.
+    if (ema >= asia.low && ema <= asia.high) continue;
+
+    let rejected = false;
+
+    if (isBuy) {
+      rejected =
+        c.close < c.open &&
+        c.open > ema + distance &&
+        c.low <= ema + distance &&
+        c.close > ema;
+    } else {
+      rejected =
+        c.close > c.open &&
+        c.open < ema - distance &&
+        c.high >= ema - distance &&
+        c.close < ema;
+    }
+
+    if (rejected) return true;
+  }
+
+  return false;
+}
+
+// ==================================================
+// ASIA BREAKOUT V6.11 ENGINE
+// ==================================================
+
+function runV611(bars, pair, cfg, startingBalance) {
   const pip = pipSize(pair);
 
   const boxes = [];
   const signals = [];
-  const pending = [];
   const trades = [];
+  const pending = [];
 
-  const dayBars = bars.filter(
-    b =>
-      new Date(b.time).toDateString() ===
-      new Date(bars[bars.length - 1].time).toDateString()
+  let open = null;
+  let balance = startingBalance;
+  let peak = startingBalance;
+  let drawdown = 0;
+
+  let lastSignal = "WAIT FOR SETUP";
+  let lastActivated = null;
+  let lastNotification = "";
+
+  let directionLock = null;
+  const usedSignals = new Set();
+
+  const lastBar = bars[bars.length - 1];
+  const today = new Date(lastBar.time).toDateString();
+
+  const todayBars = bars.filter(
+    b => new Date(b.time).toDateString() === today
   );
 
-  const today = dayBars.filter(
+  const asiaBars = todayBars.filter(
     b =>
       hourOf(b.time) >= cfg.asiaStart &&
       hourOf(b.time) < cfg.asiaEnd
   );
 
-  if (!today.length) {
+  if (!asiaBars.length) {
     return {
-      boxes,
-      signals,
-      pending,
-      trades,
       asia: null,
-      balance: startingBalance,
+      boxes: [],
+      signals: [],
+      trades: [],
+      pending: [],
+      open: null,
+      balance,
       drawdown: 0,
-      lastSignal: "WAITING FOR ASIA DATA"
+      lastSignal: "WAITING FOR ASIA DATA",
+      lastActivated: null,
+      lastNotification: ""
     };
   }
 
   const asia = {
-    high: Math.max(...today.map(b => b.high)),
-    low: Math.min(...today.map(b => b.low))
+    high: Math.max(...asiaBars.map(b => b.high)),
+    low: Math.min(...asiaBars.map(b => b.low))
   };
 
-  const sessionBars = bars.filter(
-    b => b.time >= today[0].time
+  const asiaRangePips = (asia.high - asia.low) / pip;
+
+  const firstAsiaTime = asiaBars[0].time;
+  const lastAsiaTime = asiaBars[asiaBars.length - 1].time;
+
+  const startIndex = bars.findIndex(
+    b => b.time >= firstAsiaTime
   );
 
-  const lastIndex = bars.length - 1;
+  // Approximate USD pip value for demo sizing.
+  // Actual lot sizing depends on broker and instrument.
+  const pipValuePerLot = 10;
 
-  const currentDayStart = new Date(bars[lastIndex].time);
-  currentDayStart.setHours(0, 0, 0, 0);
+  const placePending = (isBuy, box, source, candle, index) => {
+    const direction = isBuy ? "BUY" : "SELL";
 
-  const prevDay = bars.filter(
-    b => b.time < currentDayStart.getTime()
-  );
+    const signalKey = box.id + "-" + box.touches;
 
-  const prevDayBars = prevDay.filter(
-    b =>
-      b.time >=
-      currentDayStart.getTime() - 24 * 60 * 60 * 1000
-  );
-
-  const yHigh = prevDayBars.length
-    ? Math.max(...prevDayBars.map(b => b.high))
-    : asia.high;
-
-  const yLow = prevDayBars.length
-    ? Math.min(...prevDayBars.map(b => b.low))
-    : asia.low;
-
-  const tHigh = Math.max(...sessionBars.map(b => b.high));
-  const tLow = Math.min(...sessionBars.map(b => b.low));
-
-  let fibDir = 0;
-  let f0 = yHigh;
-  let f100 = yLow;
-
-  if (tHigh > yHigh) {
-    fibDir = 1;
-    f0 = tHigh;
-    f100 = yLow;
-  } else if (tLow < yLow) {
-    fibDir = -1;
-    f0 = tLow;
-    f100 = yHigh;
-  }
-
-  const fib = p =>
-    fibDir === -1
-      ? f0 + (f100 - f0) * p / 100
-      : f0 - (f0 - f100) * p / 100;
-
-  const active = [];
-
-  // Rebuild v6.11 pattern families from closed candles.
-  for (
-    let i = Math.max(1, bars.length - 1200);
-    i < bars.length;
-    i++
-  ) {
-    const c = bars[i];
-    const p = bars[i - 1];
-
-    if (
-      c.time < today[0].time ||
-      hourOf(c.time) < cfg.asiaEnd
-    ) continue;
-
-    const previousInsideAsia =
-      p.close > asia.low &&
-      p.close < asia.high &&
-      c.time - p.time < 86400000;
-
-    const currentInsideAsia =
-      c.close > asia.low &&
-      c.close < asia.high &&
-      c.time - p.time < 86400000;
-
-    // ENGULFED BOX
-    if (
-      !previousInsideAsia &&
-      (isBullEngulf(c, p) || isBearEngulf(c, p))
-    ) {
-      const b = {
-        id: "ENG-" + p.time,
-        type: "ENGULFED",
-        createdTime: c.time,
-        top: p.high,
-        bot: p.low,
-        isBuyBox: !(p.close > p.open),
-        touches: 0,
-        active: true,
-        broken: false,
-        breakoutTime: 0,
-        wasInside: false
-      };
-
-      if (
-        !cfg.useOverlapFilter ||
-        !active.some(x => x.active && overlaps(x, b))
-      ) {
-        active.push(b);
-      }
+    if (cfg.oneTradePerSignal && usedSignals.has(signalKey)) {
+      return false;
     }
 
-    // WICK BOX
-    const body = Math.abs(c.close - c.open);
-
-    if (!currentInsideAsia && body > 0) {
-      const upper = c.high - Math.max(c.open, c.close);
-      const lower = Math.min(c.open, c.close) - c.low;
-
-      if (
-        c.close > c.open &&
-        upper >= body * cfg.wickPercent / 100
-      ) {
-        const b = {
-          id: "WICK-" + c.time,
-          type: "WICK",
-          createdTime: c.time,
-          top: c.high,
-          bot: c.close,
-          isBuyBox: false,
-          touches: 0,
-          active: true,
-          broken: false,
-          breakoutTime: 0,
-          wasInside: false
-        };
-
-        if (
-          !cfg.useOverlapFilter ||
-          !active.some(x => x.active && overlaps(x, b))
-        ) {
-          active.push(b);
-        }
-      } else if (
-        c.close < c.open &&
-        lower >= body * cfg.wickPercent / 100
-      ) {
-        const b = {
-          id: "WICK-" + c.time,
-          type: "WICK",
-          createdTime: c.time,
-          top: c.close,
-          bot: c.low,
-          isBuyBox: true,
-          touches: 0,
-          active: true,
-          broken: false,
-          breakoutTime: 0,
-          wasInside: false
-        };
-
-        if (
-          !cfg.useOverlapFilter ||
-          !active.some(x => x.active && overlaps(x, b))
-        ) {
-          active.push(b);
-        }
-      }
+    if (cfg.oneDirectionOnly && directionLock &&
+        directionLock !== direction) {
+      return false;
     }
 
-    // DOJI BOX
-    if (!currentInsideAsia && isDoji(c)) {
-      const b = {
-        id: "DOJI-" + c.time,
-        type: "DOJI",
-        createdTime: c.time,
-        top: c.high,
-        bot: c.low,
-        isBuyBox: !(c.close >= c.open),
-        touches: 0,
-        active: true,
-        broken: false,
-        breakoutTime: 0,
-        wasInside: false
-      };
-
-      if (
-        !cfg.useOverlapFilter ||
-        !active.some(x => x.active && overlaps(x, b))
-      ) {
-        active.push(b);
-      }
-    }
-  }
-
-  // EMA rejection confirmation
-  const emaReject = (idx, isBuy, period) => {
-    const c = bars[idx];
-    const e = emaAt(bars, period, idx);
-
-    if (e == null) return false;
-
-    const d = cfg.emaDistancePips * pip;
-
-    return isBuy
-      ? c.close < c.open &&
-        c.open > e + d &&
-        c.low <= e + d &&
-        c.close > e
-      : c.close > c.open &&
-        c.open < e - d &&
-        c.high >= e - d &&
-        c.close < e;
-  };
-
-  const filterPass = (idx, isBuy) => {
-    if (!cfg.useEmaFilter) return true;
-
-    const rejects = cfg.emaPeriods.filter(
-      p => emaReject(idx, isBuy, p)
+    // Same-direction pending blocks another order.
+    const samePending = pending.find(
+      p => p.direction === direction
     );
 
-    if (!rejects.length) return false;
+    if (samePending) return false;
 
-    const outside = rejects.some(p => {
-      const e = emaAt(bars, p, idx);
-      return e > asia.high || e < asia.low;
-    });
+    // Opposite pending is deleted.
+    for (let i = pending.length - 1; i >= 0; i--) {
+      if (pending[i].direction !== direction) {
+        pending.splice(i, 1);
+      }
+    }
 
-    const c = bars[idx];
+    // Opposite open position closes at current candle close.
+    if (open && open.direction !== direction) {
+      const priceMove = open.direction === "BUY"
+        ? candle.close - open.entry
+        : open.entry - candle.close;
 
-    const inBox = active.some(
-      b =>
-        b.active &&
-        c.time > b.createdTime &&
-        c.high >= b.bot &&
-        c.low <= b.top &&
-        b.touches >= 0 &&
-        b.touches <= 3
-    );
+      const pipsMoved = priceMove / pip;
+      const profit = pipsMoved * open.lots * pipValuePerLot;
 
-    return outside && inBox;
-  };
+      balance += profit;
+      peak = Math.max(peak, balance);
 
-  let balance = startingBalance;
-  let peak = startingBalance;
-  let drawdown = 0;
-  let lastSignal = "WAIT FOR SETUP";
+      trades.unshift({
+        id: candle.time + "-OPPOSITE",
+        time: candle.time,
+        direction: open.direction,
+        source: open.source,
+        entry: open.entry,
+        exit: candle.close,
+        result: profit >= 0 ? "WIN" : "LOSS",
+        profit,
+        risk: open.risk,
+        exitReason: "OPPOSITE SIGNAL"
+      });
 
-  let open = null;
-  let openedThisBar = false;
+      open = null;
+    }
 
-  let asiaCombinedDone = false;
-  let londonTopDone = false;
-  let londonBottomDone = false;
-  let asiaTopDone = false;
-  let asiaBottomDone = false;
+    // Maximum active positions.
+    if (open || pending.length >= cfg.maxTrades) return false;
 
-  const pushSignal = (name, direction, bar, entry, box) => {
-    signals.push({
-      name,
-      direction,
-      time: bar.time,
-      entry,
-      box
-    });
-  };
+    if (cfg.tradeOnlyAfterAsia && candle.time <= lastAsiaTime) {
+      return false;
+    }
 
-  // Pending order placement
-  const placePending = (
-    isBuy,
-    box,
-    source,
-    bar,
-    combined = false
-  ) => {
-    // One active trade or pending order at a time.
-    // Opposite signals cannot replace an existing trade.
-    if (open || pending.length) return false;
+    if (!inHours(candle.time, cfg.tradeStart, cfg.tradeEnd)) {
+      return false;
+    }
 
+    // RSI filter (optional).
+    if (cfg.useRSIFilter) {
+      const rsi = rsiAt(bars, cfg.rsiPeriod, index);
+      if (rsi == null) return false;
+
+      if (isBuy && rsi <= 50) return false;
+      if (!isBuy && rsi >= 50) return false;
+    }
+
+    // EMA rejection filter.
     if (
-      !combined &&
-      !filterPass(bars.indexOf(bar), isBuy)
+      !checkEMARejection(
+        bars, index, isBuy, asia, boxes, pair, cfg
+      )
     ) {
       return false;
     }
 
-    const entry = combined
-      ? bar.close + (isBuy ? 1 : -1) * cfg.pendingBuffer * pip
-      : (
-          (isBuy ? box.top : box.bot) +
-          (isBuy ? 1 : -1) * cfg.pendingBuffer * pip
-        );
+    const entry = isBuy
+      ? box.top + cfg.pendingBuffer * pip
+      : box.bot - cfg.pendingBuffer * pip;
 
-    const sl =
-      entry + (isBuy ? -1 : 1) * cfg.fixedSL * pip;
+    const sl = entry + (isBuy ? -1 : 1) * cfg.fixedSL * pip;
 
-    const tp =
-      entry + (isBuy ? 1 : -1) *
-      cfg.fixedSL * cfg.rr * pip;
+    const tpDistance = cfg.forexTP * pip;
 
-    const risk = balance * cfg.riskPct / 100;
+    const tp = entry + (isBuy ? 1 : -1) * tpDistance;
+
+    const risk = cfg.useRiskPercent
+      ? balance * cfg.riskPct / 100
+      : cfg.fixedSL * cfg.fixedLots * pipValuePerLot;
+
+    const lots = cfg.useRiskPercent
+      ? risk / (cfg.fixedSL * pipValuePerLot)
+      : cfg.fixedLots;
 
     pending.push({
-      direction: isBuy ? "BUY" : "SELL",
+      direction,
       entry,
       sl,
       tp,
       risk,
+      lots,
       source,
-      created: bar.time,
-      boxId: box ? box.id : "ASIA"
+      created: candle.time,
+      boxId: box.id,
+      signalKey
     });
+
+    usedSignals.add(signalKey);
+
+    if (!directionLock) directionLock = direction;
 
     lastSignal = source;
 
-    pushSignal(
-      source,
-      isBuy ? "BUY" : "SELL",
-      bar,
+    signals.unshift({
+      name: source,
+      direction,
+      time: candle.time,
       entry,
-      box ? box.id : "ASIA"
-    );
+      box: box.id
+    });
 
     return true;
   };
 
-  // Process closed candles chronologically
-  for (let i = 1; i < bars.length; i++) {
+  // ==================================================
+  // CHRONOLOGICAL CANDLE PROCESSING
+  // ==================================================
+
+  for (let i = Math.max(1, startIndex); i < bars.length; i++) {
     const c = bars[i];
+    const p = bars[i - 1];
 
-    if (c.time < today[0].time) continue;
+    if (new Date(c.time).toDateString() !== today) continue;
 
-    openedThisBar = false;
+    const h = hourOf(c.time);
 
-    // Pending orders have NO timed expiry.
-    if (pending.length) {
-      const p = pending[0];
+    // No trading during Asia.
+    if (h >= cfg.asiaStart && h < cfg.asiaEnd) continue;
 
-      const hit =
-        p.direction === "BUY"
-          ? c.high >= p.entry
-          : c.low <= p.entry;
+    // Only create boxes after Asia.
+    if (h >= cfg.asiaEnd) {
+      const newBox = createBox(c, p, cfg);
 
-      if (hit) {
-        open = {
-          ...p,
-          entryTime: c.time
-        };
+      if (newBox) {
+        boxes.push(newBox);
 
-        pending.length = 0;
-        openedThisBar = true;
+        // Maximum 3 visible boxes.
+        const visible = boxes.filter(b => b.active);
+
+        while (visible.length > cfg.maxBoxes) {
+          const oldest = visible.shift();
+          oldest.active = false;
+        }
       }
     }
 
-    // SL / TP execution
+    // ----------------------------------------------
+    // PENDING ORDER EXPIRY
+    // ----------------------------------------------
+
+    for (let j = pending.length - 1; j >= 0; j--) {
+      const order = pending[j];
+
+      if (
+        c.time - order.created >=
+        cfg.pendingExpiryMinutes * 60000
+      ) {
+        pending.splice(j, 1);
+        lastNotification = "PENDING EXPIRED: " + order.direction;
+      }
+    }
+
+    // ----------------------------------------------
+    // PENDING ORDER ACTIVATION
+    // ----------------------------------------------
+
+    let activatedThisBar = false;
+
+    for (let j = pending.length - 1; j >= 0; j--) {
+      const order = pending[j];
+
+      const hit = order.direction === "BUY"
+        ? c.high >= order.entry
+        : c.low <= order.entry;
+
+      if (!hit) continue;
+
+      if (open) continue;
+
+      open = {
+        ...order,
+        entryTime: c.time,
+        originalSL: order.sl,
+        breakevenDone: false,
+        trailingActive: false
+      };
+
+      pending.splice(j, 1);
+
+      lastActivated = {
+        direction: order.direction,
+        source: order.source,
+        entry: order.entry,
+        time: c.time
+      };
+
+      lastNotification =
+        "PENDING ACTIVATED: " + order.direction +
+        " " + order.source;
+
+      activatedThisBar = true;
+      break;
+    }
+
+    // Do not assume intrabar price sequence after activation.
+    if (activatedThisBar) continue;
+
+    // ----------------------------------------------
+    // OPEN TRADE MANAGEMENT
+    // ----------------------------------------------
+
     if (open) {
-      const stop =
-        open.direction === "BUY"
-          ? c.low <= open.sl
-          : c.high >= open.sl;
+      const isBuy = open.direction === "BUY";
 
-      const take =
-        open.direction === "BUY"
-          ? c.high >= open.tp
-          : c.low <= open.tp;
+      const stopHit = isBuy
+        ? c.low <= open.sl
+        : c.high >= open.sl;
 
-      if (stop || take) {
-        // Conservative: SL wins if both are touched.
-        const won = take && !stop;
+      const targetHit = isBuy
+        ? c.high >= open.tp
+        : c.low <= open.tp;
+
+      // Conservative execution: SL wins if both touched.
+      if (stopHit || targetHit) {
+        const won = targetHit && !stopHit;
 
         const profit = won
-          ? open.risk * cfg.rr
-          : -open.risk;
+          ? open.risk * (cfg.forexTP / cfg.fixedSL)
+          : open.sl === open.entry + (isBuy ? -1 : 1) *
+            cfg.fixedSL * pip
+            ? -open.risk
+            : (
+                (isBuy
+                  ? open.sl - open.entry
+                  : open.entry - open.sl
+                ) / (cfg.fixedSL * pip)
+              ) * open.risk;
 
         balance += profit;
-
         peak = Math.max(peak, balance);
 
         drawdown = Math.max(
           drawdown,
-          (peak - balance) / peak * 100
+          peak > 0 ? (peak - balance) / peak * 100 : 0
         );
 
         trades.unshift({
@@ -632,242 +728,153 @@ function runV611(bars, pair, cfg, startingBalance, timeframe) {
           tp: open.tp,
           result: won ? "WIN" : "LOSS",
           profit,
-          risk: open.risk
+          risk: open.risk,
+          exitReason: won ? "TAKE PROFIT" : "STOP LOSS"
         });
 
         open = null;
+        continue;
+      }
+
+      // BREAKEVEN: open price + spread.
+      const favorablePips = isBuy
+        ? (c.close - open.entry) / pip
+        : (open.entry - c.close) / pip;
+
+      if (
+        !open.breakevenDone &&
+        favorablePips >= cfg.breakevenPips
+      ) {
+        const be = open.entry +
+          (isBuy ? 1 : -1) * cfg.spreadPips * pip;
+
+        if (isBuy) open.sl = Math.max(open.sl, be);
+        else open.sl = Math.min(open.sl, be);
+
+        open.breakevenDone = true;
+      }
+
+      // EMA 60 TRAILING STOP.
+      // Activates after Asia range + extra 10 pips.
+      const trailingTrigger =
+        asiaRangePips + cfg.trailingExtraPips;
+
+      if (favorablePips >= trailingTrigger) {
+        open.trailingActive = true;
+
+        const ema60 = emaAt(bars, 60, i);
+
+        if (ema60 != null) {
+          if (isBuy && ema60 < c.close) {
+            open.sl = Math.max(open.sl, ema60);
+          }
+
+          if (!isBuy && ema60 > c.close) {
+            open.sl = Math.min(open.sl, ema60);
+          }
+        }
       }
     }
 
-    // Do not enter another trade on the same candle
-    // that filled or closed the previous trade.
-    if (openedThisBar) continue;
+    // ----------------------------------------------
+    // TRADING HOURS
+    // ----------------------------------------------
 
     if (
       open ||
-      pending.length ||
+      pending.length >= cfg.maxTrades ||
       !inHours(c.time, cfg.tradeStart, cfg.tradeEnd)
     ) {
       continue;
     }
 
-    // BOX BREAKOUT AND RETEST LOGIC
-    for (const b of active) {
+    if (cfg.tradeOnlyAfterAsia && c.time <= lastAsiaTime) {
+      continue;
+    }
+
+    // ----------------------------------------------
+    // BOX BREAKOUT DETECTION AND RETEST TOUCHES
+    // ----------------------------------------------
+
+    for (const b of boxes) {
       if (!b.active || c.time <= b.createdTime) continue;
 
+      // Detect breakout and save its time.
       if (!b.broken) {
-        if (c.high > b.top || c.low < b.bot) {
+        if (c.high > b.top) {
           b.broken = true;
+          b.breakoutDirection = "UP";
           b.breakoutTime = c.time;
-          b.wasInside = false;
+        } else if (c.low < b.bot) {
+          b.broken = true;
+          b.breakoutDirection = "DOWN";
+          b.breakoutTime = c.time;
         }
+
         continue;
       }
+
+      // Touch must happen on a later candle.
+      if (c.time <= b.breakoutTime) continue;
 
       const touched =
         c.high >= b.bot &&
         c.low <= b.top;
 
-      if (!touched) {
-        b.wasInside = false;
-        continue;
-      }
+      if (!touched) continue;
 
-      if (c.time <= b.breakoutTime) {
-        b.wasInside = true;
-        continue;
-      }
+      // Each candle can count only once.
+      if (b.lastTouchTime === c.time) continue;
 
-      if (b.wasInside) continue;
-
+      b.lastTouchTime = c.time;
       b.touches++;
 
-      const direction = candleDir(b.isBuyBox, c);
+      const isBuy = candleDir(b.isBuyBox, c);
 
-      const stage =
-        b.touches === 1
-          ? "RETEST"
-          : b.touches < cfg.flippyDeleteOnTouch
-            ? "FLIPPY"
-            : "DELETE";
+      const stage = b.touches === 1
+        ? "RETEST"
+        : b.touches < cfg.deleteOnTouch
+          ? "FLIPPY"
+          : "DELETE";
 
-      const enabled =
-        b.type === "ENGULFED" ||
-        b.type === "WICK" ||
-        b.type === "DOJI";
+      const source = b.type + " " + stage;
 
-      if (enabled) {
-        const ok = placePending(
-          direction,
-          b,
-          b.type + " " + stage,
-          c
-        );
-
-        if (ok) {
-          openedThisBar = true;
-
-          if (stage === "DELETE") {
-            b.active = false;
-          }
-        }
+      // Third touch deletes the box.
+      if (b.touches >= cfg.deleteOnTouch) {
+        b.active = false;
       }
 
-      b.wasInside = true;
+      placePending(isBuy, b, source, c, i);
 
-      if (openedThisBar) break;
-    }
-
-    if (openedThisBar || open || pending.length) {
-      continue;
-    }
-
-    // FIBONACCI FIRST-TOUCH ENTRIES
-    if (cfg.useFiboTouch) {
-      for (const level of cfg.fibLevels) {
-        const price = fib(level);
-
-        const box = active.find(
-          b =>
-            b.active &&
-            b.touches <= cfg.fibMaxTouches &&
-            price <= b.top &&
-            price >= b.bot
-        );
-
-        if (!box || !(c.high >= price && c.low <= price)) {
-          continue;
-        }
-
-        const key = "fib" + level;
-
-        if (
-          !signals.some(
-            s => s.name === "FIBO " + level + " TOUCH"
-          )
-        ) {
-          const ok = placePending(
-            box.isBuyBox,
-            box,
-            "FIBO " + level + " TOUCH",
-            c
-          );
-
-          if (ok) {
-            openedThisBar = true;
-            break;
-          }
-        }
-      }
-    }
-
-    if (openedThisBar || open || pending.length) {
-      continue;
-    }
-
-    // ASIA / LONDON COMBINED SIGNALS
-    const touchesAsia =
-      c.high >= asia.low &&
-      c.low <= asia.high;
-
-    const fib68 = fib(68);
-    const fib50 = fib(50);
-
-    if (touchesAsia) {
-      let direction = null;
-      let source = "";
-
-      if (!asiaCombinedDone) {
-        if (
-          !londonTopDone &&
-          c.close > asia.high &&
-          c.open < asia.high &&
-          c.close > fib68
-        ) {
-          londonTopDone = true;
-          direction = false;
-          source = "ASIA LONDON TOP BREAKOUT SELL";
-
-        } else if (
-          !londonBottomDone &&
-          c.close < asia.low &&
-          c.open > asia.low &&
-          c.close < fib68
-        ) {
-          londonBottomDone = true;
-          direction = true;
-          source = "ASIA LONDON BOTTOM BREAKOUT BUY";
-        }
-      }
-
-      if (direction === null && !asiaCombinedDone) {
-        if (
-          !asiaTopDone &&
-          c.close > asia.high &&
-          c.close < fib50
-        ) {
-          asiaTopDone = true;
-          direction = true;
-          source = "ASIA RETEST TOP BUY";
-
-        } else if (
-          !asiaBottomDone &&
-          c.close < asia.low &&
-          c.close > fib50
-        ) {
-          asiaBottomDone = true;
-          direction = false;
-          source = "ASIA RETEST BOTTOM SELL";
-        }
-      }
-
-      if (direction !== null) {
-        const ok = placePending(
-          direction,
-          null,
-          source,
-          c,
-          true
-        );
-
-        if (ok) {
-          openedThisBar = true;
-          asiaCombinedDone = true;
-        }
-      }
+      if (open || pending.length) break;
     }
   }
 
-  const allBoxes = active.filter(b => b.active);
-
   return {
     asia,
-    boxes: allBoxes,
-    signals: signals.slice(-20).reverse(),
+    boxes: boxes.filter(b => b.active),
+    allBoxes: boxes,
+    signals: signals.slice(0, 30).reverse(),
+    trades,
     pending,
     open,
-    trades,
     balance,
     drawdown,
     lastSignal,
-
-    ema: cfg.emaPeriods.map(p => ({
-      period: p,
-      value: emaAt(bars, p, bars.length - 1)
+    lastActivated,
+    lastNotification,
+    asiaRangePips,
+    ema: cfg.emaPeriods.map(period => ({
+      period,
+      value: emaAt(bars, period, bars.length - 1)
     })),
-
-    fib: [50, 68, 90].map(p => ({
-      level: p,
-      value: fib(p)
-    })),
-
     bars: bars.slice(-80)
   };
 }
 
-// --------------------------------------------------
+// ==================================================
 // MOBILE INTERFACE
-// --------------------------------------------------
+// ==================================================
 
 const panel = {
   background: "#121c2d",
@@ -916,15 +923,14 @@ export default function App() {
   const [tab, setTab] = useState("overview");
 
   const result = useMemo(
-    () =>
-      replay
-        ? runV611(replay, pair, cfg, balance, timeframe)
-        : null,
-    [replay, pair, cfg, balance, timeframe]
+    () => replay
+      ? runV611(replay, pair, cfg, balance)
+      : null,
+    [replay, pair, cfg, balance]
   );
 
-  const update = (k, v) =>
-    setCfg(s => ({ ...s, [k]: v }));
+  const update = (key, value) =>
+    setCfg(s => ({ ...s, [key]: value }));
 
   const run = (type = scenario) => {
     setScenario(type);
@@ -991,6 +997,7 @@ export default function App() {
           </span>
         </header>
 
+        {/* MARKET SETUP */}
         <section style={panel}>
           <h3 style={{ marginTop: 0 }}>Market setup</h3>
 
@@ -1009,9 +1016,7 @@ export default function App() {
                 }}
                 style={field}
               >
-                {PAIRS.map(p => (
-                  <option key={p}>{p}</option>
-                ))}
+                {PAIRS.map(p => <option key={p}>{p}</option>)}
               </select>
             </label>
 
@@ -1047,9 +1052,11 @@ export default function App() {
             </label>
 
             <label>
-              <span style={label}>Risk per trade</span>
+              <span style={label}>Position sizing</span>
               <input
-                value={cfg.riskPct + "%"}
+                value={cfg.useRiskPercent
+                  ? cfg.riskPct + "% risk"
+                  : cfg.fixedLots + " lots"}
                 readOnly
                 style={field}
               />
@@ -1062,24 +1069,15 @@ export default function App() {
             gap: 8,
             marginTop: 14
           }}>
-            <button
-              style={btn("#334155")}
-              onClick={() => run("range")}
-            >
+            <button style={btn("#334155")} onClick={() => run("range")}>
               RANGE TEST
             </button>
 
-            <button
-              style={btn("#166534")}
-              onClick={() => run("bullish")}
-            >
+            <button style={btn("#166534")} onClick={() => run("bullish")}>
               BULLISH TEST
             </button>
 
-            <button
-              style={btn("#991b1b")}
-              onClick={() => run("bearish")}
-            >
+            <button style={btn("#991b1b")} onClick={() => run("bearish")}>
               BEARISH TEST
             </button>
           </div>
@@ -1090,17 +1088,11 @@ export default function App() {
             gap: 8,
             marginTop: 8
           }}>
-            <button
-              style={btn("#075985")}
-              onClick={() => run("retest")}
-            >
-              BREAKOUT / RETEST TEST
+            <button style={btn("#075985")} onClick={() => run("retest")}>
+              BREAKOUT TEST
             </button>
 
-            <button
-              style={btn("#475569")}
-              onClick={reset}
-            >
+            <button style={btn("#475569")} onClick={reset}>
               CLEAR REPLAY
             </button>
           </div>
@@ -1111,11 +1103,12 @@ export default function App() {
             lineHeight: 1.5,
             marginBottom: 0
           }}>
-            These are deterministic test candles, not live prices.
-            Use historical broker OHLC data for proper strategy validation.
+            Deterministic test candles only. These are not live
+            market prices or broker historical data.
           </p>
         </section>
 
+        {/* NAVIGATION */}
         <nav style={{
           display: "flex",
           gap: 8,
@@ -1136,6 +1129,7 @@ export default function App() {
           ))}
         </nav>
 
+        {/* OVERVIEW */}
         {tab === "overview" && (
           <>
             <section style={panel}>
@@ -1147,30 +1141,13 @@ export default function App() {
                   gridTemplateColumns: "1fr 1fr",
                   gap: 12
                 }}>
-                  <Metric
-                    title="ASIA HIGH"
-                    value={fmt(result.asia.high, pair)}
-                  />
-
-                  <Metric
-                    title="ASIA LOW"
-                    value={fmt(result.asia.low, pair)}
-                  />
-
+                  <Metric title="ASIA HIGH" value={fmt(result.asia.high, pair)} />
+                  <Metric title="ASIA LOW" value={fmt(result.asia.low, pair)} />
                   <Metric
                     title="RANGE"
-                    value={
-                      (
-                        (result.asia.high - result.asia.low) /
-                        pipSize(pair)
-                      ).toFixed(1) + " pips"
-                    }
+                    value={result.asiaRangePips.toFixed(1) + " pips"}
                   />
-
-                  <Metric
-                    title="TIME WINDOW"
-                    value="00:00–07:00"
-                  />
+                  <Metric title="TIME WINDOW" value="00:00–07:00" />
                 </div>
               ) : (
                 <p style={{ color: "#91a4bd" }}>
@@ -1183,7 +1160,7 @@ export default function App() {
               <h3 style={{ marginTop: 0 }}>Strategy status</h3>
 
               <div style={{
-                fontSize: 22,
+                fontSize: 19,
                 fontWeight: 900,
                 color: result?.pending?.length
                   ? "#fbbf24"
@@ -1193,31 +1170,22 @@ export default function App() {
               </div>
 
               <p style={{ color: "#91a4bd", fontSize: 12 }}>
-                Pending orders: {result?.pending?.length || 0} ·
-                Active trade: {result?.open
-                  ? result.open.direction
-                  : "None"}
+                Pending: {result?.pending?.length || 0} ·
+                Open trade: {result?.open?.direction || "None"}
               </p>
 
               {result?.pending?.map((p, i) => (
-                <div
-                  key={i}
-                  style={{
-                    borderTop: "1px solid #29384d",
-                    paddingTop: 10,
-                    marginTop: 10
-                  }}
-                >
+                <div key={i} style={{
+                  borderTop: "1px solid #29384d",
+                  paddingTop: 10,
+                  marginTop: 10
+                }}>
                   <b>{p.direction} STOP · {p.source}</b>
-
-                  <p style={{
-                    margin: "5px 0",
-                    fontSize: 12,
-                    color: "#a9b9cd"
-                  }}>
+                  <p style={{ fontSize: 12, color: "#a9b9cd" }}>
                     Entry {fmt(p.entry, pair)} ·
                     SL {fmt(p.sl, pair)} ·
                     TP {fmt(p.tp, pair)} ·
+                    Lots {p.lots.toFixed(2)} ·
                     Risk {money(p.risk)}
                   </p>
                 </div>
@@ -1230,17 +1198,75 @@ export default function App() {
                   marginTop: 10
                 }}>
                   <b>OPEN {result.open.direction}</b>
-
-                  <p style={{
-                    fontSize: 12,
-                    color: "#a9b9cd"
-                  }}>
+                  <p style={{ fontSize: 12, color: "#a9b9cd" }}>
                     Entry {fmt(result.open.entry, pair)} ·
                     SL {fmt(result.open.sl, pair)} ·
                     TP {fmt(result.open.tp, pair)}
                   </p>
+                  <p style={{ fontSize: 11, color: "#91a4bd" }}>
+                    Breakeven: {result.open.breakevenDone ? "ACTIVE" : "WAITING"} ·
+                    EMA trailing: {result.open.trailingActive ? "ACTIVE" : "WAITING"}
+                  </p>
                 </div>
               )}
+            </section>
+
+            <section style={panel}>
+              <h3 style={{ marginTop: 0 }}>LAST ACTIVATED</h3>
+
+              {result?.lastActivated ? (
+                <>
+                  <b style={{ color: "#4ade80" }}>
+                    {result.lastActivated.direction} · {result.lastActivated.source}
+                  </b>
+                  <p style={{ fontSize: 12, color: "#a9b9cd" }}>
+                    Entry: {fmt(result.lastActivated.entry, pair)}
+                  </p>
+                  <p style={{ fontSize: 11, color: "#91a4bd" }}>
+                    {new Date(result.lastActivated.time).toLocaleString()}
+                  </p>
+                </>
+              ) : (
+                <p style={{ color: "#91a4bd", fontSize: 12 }}>
+                  No pending order has activated in this replay.
+                </p>
+              )}
+
+              {result?.lastNotification && (
+                <p style={{
+                  color: "#fbbf24",
+                  fontSize: 12,
+                  borderTop: "1px solid #29384d",
+                  paddingTop: 10
+                }}>
+                  {result.lastNotification}
+                </p>
+              )}
+            </section>
+
+            <section style={panel}>
+              <h3 style={{ marginTop: 0 }}>Visible boxes</h3>
+
+              {!result?.boxes?.length ? (
+                <p style={{ color: "#91a4bd", fontSize: 12 }}>
+                  No active boxes detected.
+                </p>
+              ) : result.boxes.map(b => (
+                <div key={b.id} style={{
+                  borderTop: "1px solid #29384d",
+                  padding: "10px 0"
+                }}>
+                  <b>{b.type} · {b.isBuyBox ? "BUY BOX" : "SELL BOX"}</b>
+                  <p style={{ fontSize: 12, color: "#a9b9cd" }}>
+                    Top: {fmt(b.top, pair)} ·
+                    Bottom: {fmt(b.bot, pair)}
+                  </p>
+                  <p style={{ fontSize: 11, color: "#91a4bd" }}>
+                    {b.broken ? "BROKEN " + b.breakoutDirection : "NOT BROKEN"} ·
+                    Touches: {b.touches}
+                  </p>
+                </div>
+              ))}
             </section>
 
             <section style={panel}>
@@ -1251,21 +1277,9 @@ export default function App() {
                 gridTemplateColumns: "repeat(2,minmax(0,1fr))",
                 gap: 12
               }}>
-                <Metric
-                  title="BALANCE"
-                  value={money(result?.balance ?? balance)}
-                />
-
-                <Metric
-                  title="CLOSED TRADES"
-                  value={total}
-                />
-
-                <Metric
-                  title="WIN RATE"
-                  value={winRate + "%"}
-                />
-
+                <Metric title="BALANCE" value={money(result?.balance ?? balance)} />
+                <Metric title="CLOSED TRADES" value={total} />
+                <Metric title="WIN RATE" value={winRate + "%"} />
                 <Metric
                   title="MAX DRAWDOWN"
                   value={(result?.drawdown || 0).toFixed(2) + "%"}
@@ -1275,45 +1289,47 @@ export default function App() {
           </>
         )}
 
+        {/* STRATEGY */}
         {tab === "strategy" && (
           <section style={panel}>
-            <h3 style={{ marginTop: 0 }}>
-              v6.11 entry engine
-            </h3>
+            <h3 style={{ marginTop: 0 }}>V6.11 strategy rules</h3>
 
             <ol style={{
               paddingLeft: 20,
               lineHeight: 1.8,
               color: "#d6e2f1"
             }}>
-              <li>Build the 00:00–07:00 Asia high and low.</li>
+              <li>Build Asia high and low from 00:00–07:00.</li>
+              <li>No trading during Asia.</li>
               <li>
-                Detect engulfing, wick (20% minimum) and doji
-                (25% maximum body) boxes.
+                Create ENGULFED, WICK and DOJI boxes after Asia.
+              </li>
+              <li>Keep a maximum of 3 visible boxes.</li>
+              <li>Save breakout direction and breakout time.</li>
+              <li>
+                Count later touches: RETEST, FLIPPY, DELETE.
+              </li>
+              <li>Determine trade direction from touch candle colour.</li>
+              <li>
+                Require at least one valid rejection from EMA 35,
+                60, 90, 200, 120 or 1068.
               </li>
               <li>
-                Wait for price to break a box high or low,
-                then a later candle must retest the box.
+                Trade only between 09:00 and 19:00.
               </li>
               <li>
-                Count touches: first RETEST, second FLIPPY,
-                third DELETE.
+                Place BUY STOP or SELL STOP at box boundary
+                plus/minus 2 pips.
               </li>
               <li>
-                Apply the six-EMA rejection filter
-                (35, 60, 90, 200, 120, 1068).
+                Apply 10-pip SL and 31-pip Forex TP.
               </li>
               <li>
-                Check Fibonacci 50%, 68%, 90% first touches
-                inside active boxes.
+                Expire pending orders after 60 minutes.
               </li>
               <li>
-                Check Asia/London combined breakout and
-                flipped retest conditions.
-              </li>
-              <li>
-                Place simulated stop entries and close only
-                at SL or TP. No timed expiry.
+                Breakeven after 25 pips; follow EMA 60 after
+                Asia range plus 10 pips.
               </li>
             </ol>
 
@@ -1321,44 +1337,22 @@ export default function App() {
               borderTop: "1px solid #29384d",
               paddingTop: 12
             }}>
-              <b>EMA values (latest replay candle)</b>
+              <b>EMA values</b>
 
               {(result?.ema || []).map(e => (
-                <p
-                  key={e.period}
-                  style={{
-                    margin: "7px 0",
-                    color: "#a9b9cd",
-                    fontSize: 13
-                  }}
-                >
+                <p key={e.period} style={{
+                  margin: "7px 0",
+                  color: "#a9b9cd",
+                  fontSize: 13
+                }}>
                   EMA {e.period}: {fmt(e.value, pair)}
-                </p>
-              ))}
-            </div>
-
-            <div style={{
-              borderTop: "1px solid #29384d",
-              paddingTop: 12
-            }}>
-              <b>Fibonacci levels</b>
-
-              {(result?.fib || []).map(f => (
-                <p
-                  key={f.level}
-                  style={{
-                    margin: "7px 0",
-                    color: "#a9b9cd",
-                    fontSize: 13
-                  }}
-                >
-                  {f.level}%: {fmt(f.value, pair)}
                 </p>
               ))}
             </div>
           </section>
         )}
 
+        {/* JOURNAL */}
         {tab === "journal" && (
           <section style={panel}>
             <h3 style={{ marginTop: 0 }}>Trade journal</h3>
@@ -1367,52 +1361,44 @@ export default function App() {
               <p style={{ color: "#91a4bd" }}>
                 No completed demo trades in this replay.
               </p>
-            ) : (
-              result.trades.map(t => (
-                <div
-                  key={t.id}
-                  style={{
-                    borderTop: "1px solid #29384d",
-                    padding: "12px 0"
-                  }}
-                >
-                  <b style={{
-                    color: t.result === "WIN"
-                      ? "#4ade80"
-                      : "#fb7185"
-                  }}>
-                    {t.result} · {t.direction} · {t.source}
-                  </b>
+            ) : result.trades.map(t => (
+              <div key={t.id} style={{
+                borderTop: "1px solid #29384d",
+                padding: "12px 0"
+              }}>
+                <b style={{
+                  color: t.result === "WIN" ? "#4ade80" : "#fb7185"
+                }}>
+                  {t.result} · {t.direction} · {t.source}
+                </b>
 
-                  <p style={{
-                    fontSize: 12,
-                    color: "#a9b9cd",
-                    margin: "5px 0"
-                  }}>
-                    {new Date(t.time).toLocaleString()}
-                  </p>
+                <p style={{
+                  fontSize: 12,
+                  color: "#a9b9cd",
+                  margin: "5px 0"
+                }}>
+                  {new Date(t.time).toLocaleString()}
+                </p>
 
-                  <p style={{
-                    fontSize: 12,
-                    margin: "5px 0"
-                  }}>
-                    Entry {fmt(t.entry, pair)} ·
-                    Exit {fmt(t.exit, pair)} ·
-                    Risk {money(t.risk)}
-                  </p>
+                <p style={{ fontSize: 12, margin: "5px 0" }}>
+                  Entry {fmt(t.entry, pair)} ·
+                  Exit {fmt(t.exit, pair)} ·
+                  Risk {money(t.risk)}
+                </p>
 
-                  <b>{money(t.profit)}</b>
-                </div>
-              ))
-            )}
+                <b>{money(t.profit)}</b>
+                <p style={{ fontSize: 11, color: "#91a4bd" }}>
+                  Exit: {t.exitReason}
+                </p>
+              </div>
+            ))}
           </section>
         )}
 
+        {/* SETTINGS */}
         {tab === "settings" && (
           <section style={panel}>
-            <h3 style={{ marginTop: 0 }}>
-              Execution & risk settings
-            </h3>
+            <h3 style={{ marginTop: 0 }}>Execution & risk settings</h3>
 
             <div style={{
               display: "grid",
@@ -1420,65 +1406,143 @@ export default function App() {
               gap: 12
             }}>
               <Setting
-                label="Fixed stop loss (pips)"
+                label="Fixed SL (pips)"
                 value={cfg.fixedSL}
-                onChange={v =>
-                  update("fixedSL", Math.max(1, +v || 1))
-                }
+                onChange={v => update("fixedSL", Math.max(1, +v || 1))}
               />
 
               <Setting
-                label="Risk : reward"
-                value={"1 : " + cfg.rr}
-                onChange={v =>
-                  update(
-                    "rr",
-                    Math.max(
-                      1,
-                      +String(v).replace("1 : ", "") || 2
-                    )
-                  )
-                }
+                label="Forex TP (pips)"
+                value={cfg.forexTP}
+                onChange={v => update("forexTP", Math.max(1, +v || 1))}
               />
 
               <Setting
                 label="Pending buffer (pips)"
                 value={cfg.pendingBuffer}
-                onChange={v =>
-                  update("pendingBuffer", Math.max(0, +v || 0))
-                }
+                onChange={v => update("pendingBuffer", Math.max(0, +v || 0))}
+              />
+
+              <Setting
+                label="Pending expiry (minutes)"
+                value={cfg.pendingExpiryMinutes}
+                onChange={v => update("pendingExpiryMinutes", Math.max(1, +v || 1))}
               />
 
               <Setting
                 label="Risk (%)"
                 value={cfg.riskPct}
-                onChange={v =>
-                  update(
-                    "riskPct",
-                    Math.max(0.1, Math.min(1, +v || 1))
-                  )
-                }
+                onChange={v => update("riskPct", Math.max(0.1, Math.min(100, +v || 1)))}
+              />
+
+              <Setting
+                label="Fixed lots"
+                value={cfg.fixedLots}
+                onChange={v => update("fixedLots", Math.max(0.01, +v || 0.01))}
+              />
+
+              <Setting
+                label="Breakeven trigger (pips)"
+                value={cfg.breakevenPips}
+                onChange={v => update("breakevenPips", Math.max(1, +v || 1))}
+              />
+
+              <Setting
+                label="Trailing extra trigger (pips)"
+                value={cfg.trailingExtraPips}
+                onChange={v => update("trailingExtraPips", Math.max(0, +v || 0))}
+              />
+
+              <Setting
+                label="EMA distance (points)"
+                value={cfg.emaDistancePoints}
+                onChange={v => update("emaDistancePoints", Math.max(0, +v || 0))}
+              />
+
+              <Setting
+                label="Wick threshold (%)"
+                value={cfg.wickPercent}
+                onChange={v => update("wickPercent", Math.max(1, Math.min(100, +v || 20)))}
+              />
+
+              <Setting
+                label="Doji body maximum (%)"
+                value={cfg.dojiBodyPercent}
+                onChange={v => update("dojiBodyPercent", Math.max(1, Math.min(100, +v || 25)))}
+              />
+            </div>
+
+            <div style={{
+              borderTop: "1px solid #29384d",
+              marginTop: 16,
+              paddingTop: 14
+            }}>
+              <b>Position sizing</b>
+
+              <Toggle
+                label="Use risk percentage sizing"
+                checked={cfg.useRiskPercent}
+                onChange={v => update("useRiskPercent", v)}
+              />
+
+              <Toggle
+                label="One direction only"
+                checked={cfg.oneDirectionOnly}
+                onChange={v => update("oneDirectionOnly", v)}
+              />
+
+              <Toggle
+                label="One trade per signal"
+                checked={cfg.oneTradePerSignal}
+                onChange={v => update("oneTradePerSignal", v)}
+              />
+
+              <Toggle
+                label="Trade only after Asia"
+                checked={cfg.tradeOnlyAfterAsia}
+                onChange={v => update("tradeOnlyAfterAsia", v)}
+              />
+
+              <Toggle
+                label="Enable six-EMA rejection filter"
+                checked={cfg.useEmaFilter}
+                onChange={v => update("useEmaFilter", v)}
+              />
+
+              <Toggle
+                label="Enable RSI filter"
+                checked={cfg.useRSIFilter}
+                onChange={v => update("useRSIFilter", v)}
               />
             </div>
 
             <p style={{
               fontSize: 12,
-              color: "#91a4bd"
+              color: "#91a4bd",
+              lineHeight: 1.6
             }}>
-              Default: 1% risk, 11-pip fixed SL,
-              1:2 target (22 pips), one active trade,
-              and no time-based pending-order expiry.
+              Trading window: 09:00–19:00. Maximum active
+              trades: 1. Maximum visible boxes: 3.
+              Forex TP: 31 pips. SL: 10 pips.
             </p>
+
+            <button
+              style={btn("#334155")}
+              onClick={() => setCfg(DEFAULTS)}
+            >
+              RESTORE DEFAULT SETTINGS
+            </button>
           </section>
         )}
 
+        {/* DISCLAIMER */}
         <section style={{
           ...panel,
           borderColor: "#6b4c1e",
           background: "#17170f"
         }}>
           <b style={{ color: "#ffce79" }}>
-            Important simulation limitation
+            Simulation limitations
           </b>
 
           <p style={{
@@ -1487,12 +1551,14 @@ export default function App() {
             lineHeight: 1.6,
             marginBottom: 0
           }}>
-            This application ports v6.11 rule families into
-            browser candle replay. It is not byte-for-byte MT4
-            execution. Broker server time, tick-by-tick pending
-            fills, spread, commission, swap, margin and the full
-            MT4 order-management layer are not available.
-            No live trades are placed.
+            This is a browser-based strategy simulator, not an
+            MT4 execution engine. It uses generated OHLC candles.
+            Spread, commissions, broker execution, slippage and
+            actual account notifications are not connected.
+            The lot-sizing calculation uses an approximate
+            $10 per pip per standard lot assumption. Gold and
+            indices require their own contract specifications
+            before their 1,000-point TP can be tested accurately.
           </p>
         </section>
 
@@ -1502,18 +1568,16 @@ export default function App() {
           fontSize: 11,
           padding: "20px 0"
         }}>
-          ASIA BREAKOUT MOBILE · v6.11 RULESET ·
-          SIMULATED EXECUTION ONLY
+          ASIA BREAKOUT MOBILE · V6.11 · DEMO ONLY
         </footer>
-
       </div>
     </main>
   );
 }
 
-// --------------------------------------------------
-// REUSABLE UI COMPONENTS
-// --------------------------------------------------
+// ==================================================
+// REUSABLE COMPONENTS
+// ==================================================
 
 function Metric({ title, value }) {
   return (
@@ -1556,10 +1620,32 @@ function Setting({ label, value, onChange }) {
       </span>
 
       <input
+        type="number"
         value={value}
         onChange={e => onChange(e.target.value)}
         style={field}
       />
+    </label>
+  );
+}
+
+function Toggle({ label, checked, onChange }) {
+  return (
+    <label style={{
+      display: "flex",
+      alignItems: "center",
+      gap: 10,
+      padding: "10px 0",
+      borderBottom: "1px solid #29384d",
+      fontSize: 13,
+      color: "#d6e2f1"
+    }}>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={e => onChange(e.target.checked)}
+      />
+      {label}
     </label>
   );
 }
