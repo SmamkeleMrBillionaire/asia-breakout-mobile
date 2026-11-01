@@ -1,3 +1,4 @@
+
 import React, { useCallback, useEffect, useRef, useState } from "react";
 
 const WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public";
@@ -142,7 +143,8 @@ function createBoxes(candles, asiaDay) {
         type: "ENGULFED",
         high: prev.high,
         low: prev.low,
-        created: i
+        created: i,
+        createdEpoch: c.epoch
       });
     }
 
@@ -151,7 +153,8 @@ function createBoxes(candles, asiaDay) {
         type: "DOJI",
         high: c.high,
         low: c.low,
-        created: i
+        created: i,
+        createdEpoch: c.epoch
       });
     }
 
@@ -163,7 +166,8 @@ function createBoxes(candles, asiaDay) {
           type: "WICK",
           high: c.high,
           low: c.close,
-          created: i
+          created: i,
+          createdEpoch: c.epoch
         });
       }
     }
@@ -176,7 +180,8 @@ function createBoxes(candles, asiaDay) {
           type: "WICK",
           high: c.close,
           low: c.low,
-          created: i
+          created: i,
+          createdEpoch: c.epoch
         });
       }
     }
@@ -206,9 +211,13 @@ function getRetestDirection(candle, boundary) {
   return "NONE";
 }
 
+// Stable identity: uses the box candle's actual timestamp,
+// not its changing position in the downloaded candle array.
 function makeBoxId(box, asiaDay) {
   return [
-    asiaDay, box.type, box.created,
+    asiaDay,
+    box.type,
+    box.createdEpoch,
     box.high.toPrecision(12),
     box.low.toPrecision(12)
   ].join("-");
@@ -610,16 +619,17 @@ function sendBrowserNotification(title, body) {
 
 export default function App() {
   const socketRef = useRef(null);
+  const connectionPromiseRef = useRef(null);
   const requestRef = useRef(0);
   const pendingRequestsRef = useRef(new Map());
   const scanLockRef = useRef(false);
   const runningRef = useRef(false);
   const scanTimerRef = useRef(null);
 
-  // Automatic recovery refs
   const reconnectTimerRef = useRef(null);
   const reconnectingRef = useRef(false);
   const marketsRef = useRef([]);
+  const activationLocksRef = useRef(new Set());
 
   const subscriptionsRef = useRef(new Map());
   const subscribingRef = useRef(new Set());
@@ -692,7 +702,13 @@ export default function App() {
         timeout
       });
 
-      ws.send(JSON.stringify({ ...payload, req_id: id }));
+      try {
+        ws.send(JSON.stringify({ ...payload, req_id: id }));
+      } catch (error) {
+        clearTimeout(timeout);
+        pendingRequestsRef.current.delete(id);
+        reject(error);
+      }
     });
   }, []);
 
@@ -761,7 +777,6 @@ export default function App() {
     }
   }, [updateOrders, updateClosedTrades]);
 
-  // Automatic reconnect scheduler
   const scheduleReconnect = useCallback(() => {
     if (!runningRef.current) return;
     if (reconnectTimerRef.current) return;
@@ -778,25 +793,58 @@ export default function App() {
     }, 5000);
   }, []);
 
-  // Deriv WebSocket connection with automatic recovery support
+  // Share an existing connection attempt instead of creating
+  // multiple WebSockets during overlapping recovery events.
   const connect = useCallback(() => {
-    return new Promise((resolve, reject) => {
-      if (
-        socketRef.current &&
-        socketRef.current.readyState === WebSocket.OPEN
-      ) {
-        resolve();
+    const existing = socketRef.current;
+
+    if (existing && existing.readyState === WebSocket.OPEN) {
+      return Promise.resolve();
+    }
+
+    if (
+      existing &&
+      existing.readyState === WebSocket.CONNECTING &&
+      connectionPromiseRef.current
+    ) {
+      return connectionPromiseRef.current;
+    }
+
+    if (existing && existing.readyState === WebSocket.CLOSING) {
+      return Promise.reject(
+        new Error("Previous Deriv connection is still closing.")
+      );
+    }
+
+    setConnectionText("CONNECTING");
+
+    let connectionPromise;
+
+    connectionPromise = new Promise((resolve, reject) => {
+      let settled = false;
+      let ws;
+
+      try {
+        ws = new WebSocket(WS_URL);
+      } catch (error) {
+        reject(error);
         return;
       }
 
-      setConnectionText("CONNECTING");
-
-      const ws = new WebSocket(WS_URL);
       socketRef.current = ws;
 
-      let settled = false;
+      const clearConnectionAttempt = () => {
+        if (connectionPromiseRef.current === connectionPromise) {
+          connectionPromiseRef.current = null;
+        }
+      };
 
       ws.onopen = () => {
+        if (socketRef.current !== ws) {
+          ws.close();
+          return;
+        }
+
         if (reconnectTimerRef.current) {
           clearTimeout(reconnectTimerRef.current);
           reconnectTimerRef.current = null;
@@ -805,11 +853,17 @@ export default function App() {
         setConnected(true);
         setConnectionText("DATA CONNECTED");
 
-        settled = true;
-        resolve();
+        clearConnectionAttempt();
+
+        if (!settled) {
+          settled = true;
+          resolve();
+        }
       };
 
       ws.onmessage = event => {
+        if (socketRef.current !== ws) return;
+
         let data;
 
         try {
@@ -843,15 +897,28 @@ export default function App() {
       };
 
       ws.onerror = () => {
+        if (socketRef.current !== ws) return;
+
         setConnectionText("CONNECTION ERROR");
 
         if (!settled) {
           settled = true;
           reject(new Error("Could not connect to Deriv."));
         }
+
+        // Force the close handler to complete cleanup and recovery.
+        try {
+          ws.close();
+        } catch {
+          // The socket may already be closed.
+        }
       };
 
       ws.onclose = () => {
+        if (socketRef.current !== ws) return;
+
+        socketRef.current = null;
+
         setConnected(false);
         setConnectionText("DISCONNECTED");
 
@@ -864,6 +931,8 @@ export default function App() {
         });
 
         pendingRequestsRef.current.clear();
+
+        clearConnectionAttempt();
 
         if (runningRef.current) {
           setMessage("Deriv connection lost. Robot will attempt to reconnect.");
@@ -878,6 +947,10 @@ export default function App() {
         }
       };
     });
+
+    connectionPromiseRef.current = connectionPromise;
+
+    return connectionPromise;
   }, [processTick, scheduleReconnect]);
 
   const subscribeMarket = useCallback(async symbol => {
@@ -1061,6 +1134,7 @@ export default function App() {
 
   const scanAll = useCallback(async list => {
     if (scanLockRef.current || !runningRef.current) return;
+    if (!list || !list.length) return;
 
     scanLockRef.current = true;
     setMessage("Scanning all available Deriv markets...");
@@ -1117,7 +1191,7 @@ export default function App() {
     }
   }, [scanSymbol]);
 
-  // Background recovery and foreground resume
+  // Background recovery and foreground resume.
   useEffect(() => {
     const recoverRobot = async () => {
       if (!runningRef.current) return;
@@ -1125,7 +1199,6 @@ export default function App() {
 
       const ws = socketRef.current;
 
-      // If still connected, refresh the scan when returning to the app.
       if (ws && ws.readyState === WebSocket.OPEN) {
         const list = marketsRef.current;
 
@@ -1148,7 +1221,6 @@ export default function App() {
 
         setConnectionText("DATA CONNECTED");
 
-        // Restore live-price subscriptions for open demo trades.
         const openSymbols = [
           ...new Set(
             ordersRef.current
@@ -1273,6 +1345,8 @@ export default function App() {
 
       await scanAll(list);
 
+      if (!runningRef.current) return;
+
       if (scanTimerRef.current) {
         clearInterval(scanTimerRef.current);
       }
@@ -1353,13 +1427,15 @@ export default function App() {
 
     subscriptionsRef.current.clear();
     subscribingRef.current.clear();
+    activationLocksRef.current.clear();
 
     setMessage(
       `STOPPED. ${closedNow.length} open demo trade(s) closed.`
     );
   };
 
-  // Click BUY or SELL to execute immediately at the current live price.
+  // Immediate demo market execution.
+  // A lock prevents simultaneous clicks from bypassing duplicate checks.
   const activateSignal = async item => {
     const signal = signals[item.symbol];
 
@@ -1371,93 +1447,103 @@ export default function App() {
     }
 
     const touchType = signal.touchType || "RETEST";
+    const lockKey = `${item.symbol}|${signal.boxId}|${touchType}`;
 
-    // Check both open and closed trades.
-    // RETEST and FLIPPY are checked independently.
-    const previousTrades = [
-      ...ordersRef.current,
-      ...closedTradesRef.current
-    ];
-
-    if (
-      boxTradeAlreadyTaken(
-        previousTrades,
-        item.symbol,
-        signal.boxId,
-        touchType
-      )
-    ) {
+    if (activationLocksRef.current.has(lockKey)) {
       setMessage(
-        `${item.symbol}: this box already has a ${touchType} trade.`
+        `${item.symbol}: this ${touchType} execution is already being processed.`
       );
       return;
     }
 
-    // Ensure a live price subscription exists before execution.
-    const subscribed = await subscribeMarket(item.symbol);
+    activationLocksRef.current.add(lockKey);
 
-    if (!subscribed) {
-      setMessage(`${item.symbol}: could not obtain live price. Try again.`);
-      return;
-    }
+    try {
+      const previousTrades = [
+        ...ordersRef.current,
+        ...closedTradesRef.current
+      ];
 
-    const currentPrice = latestPricesRef.current[item.symbol];
+      if (
+        boxTradeAlreadyTaken(
+          previousTrades,
+          item.symbol,
+          signal.boxId,
+          touchType
+        )
+      ) {
+        setMessage(
+          `${item.symbol}: this box already has a ${touchType} trade.`
+        );
+        return;
+      }
 
-    if (!Number.isFinite(currentPrice)) {
-      setMessage(`${item.symbol}: waiting for live price. Try again.`);
-      return;
-    }
+      const subscribed = await subscribeMarket(item.symbol);
 
-    // Recheck after awaiting the live-price subscription.
-    const tradesAfterSubscription = [
-      ...ordersRef.current,
-      ...closedTradesRef.current
-    ];
+      if (!subscribed) {
+        setMessage(`${item.symbol}: could not obtain live price. Try again.`);
+        return;
+      }
 
-    if (
-      boxTradeAlreadyTaken(
-        tradesAfterSubscription,
+      const currentPrice = latestPricesRef.current[item.symbol];
+
+      if (!Number.isFinite(currentPrice)) {
+        setMessage(`${item.symbol}: waiting for live price. Try again.`);
+        return;
+      }
+
+      const tradesAfterSubscription = [
+        ...ordersRef.current,
+        ...closedTradesRef.current
+      ];
+
+      if (
+        boxTradeAlreadyTaken(
+          tradesAfterSubscription,
+          item.symbol,
+          signal.boxId,
+          touchType
+        )
+      ) {
+        setMessage(
+          `${item.symbol}: this box already has a ${touchType} trade.`
+        );
+        return;
+      }
+
+      const executionSignal = {
+        ...signal,
+        touchType,
+        entry: currentPrice
+      };
+
+      const order = makeDemoOrder(
+        executionSignal,
         item.symbol,
-        signal.boxId,
-        touchType
-      )
-    ) {
-      setMessage(
-        `${item.symbol}: this box already has a ${touchType} trade.`
+        item.category,
+        balance,
+        riskPct,
+        signal._candles || []
       );
-      return;
+
+      updateOrders(previous => [order, ...previous]);
+
+      setSelected(item);
+      setLastActivated(
+        `${signal.direction} · ${signal.boxType} · ${touchType} · MARKET EXECUTION`
+      );
+
+      setMessage(
+        `${item.symbol}: ${signal.direction} ${touchType} OPENED IMMEDIATELY at ${fmt(currentPrice, 8)}.`
+      );
+
+      sendBrowserNotification(
+        "iFX BILLIONAIRE — Trade Opened",
+        `${item.symbol} ${signal.direction} ${touchType} at ${fmt(currentPrice, 8)}`
+      );
+    } finally {
+      activationLocksRef.current.delete(lockKey);
     }
-
-    const executionSignal = {
-      ...signal,
-      touchType,
-      entry: currentPrice
-    };
-
-    const order = makeDemoOrder(
-      executionSignal,
-      item.symbol,
-      item.category,
-      balance,
-      riskPct,
-      signal._candles || []
-    );
-
-    updateOrders(previous => [order, ...previous]);
-
-    setSelected(item);
-    setLastActivated(
-      `${signal.direction} · ${signal.boxType} · ${touchType} · MARKET EXECUTION`
-    );
-
-    setMessage(
-      `${item.symbol}: ${signal.direction} ${touchType} OPENED IMMEDIATELY at ${fmt(currentPrice, 8)}.`
-    );
-
-    sendBrowserNotification(
-      "iFX BILLIONAIRE — Trade Opened",
-      `${item.symbol} ${signal.direction} ${touchType} at ${fmt(currentPrice, 8)}`
-    );
   };
 
   useEffect(() => {
@@ -2264,6 +2350,10 @@ export default function App() {
             Each box permits one RETEST and one separate FLIPPY trade.
             Repeated trades of the same type from the same box are blocked,
             including after a trade has closed.
+          </p>
+          <p>
+            Box identity is based on the box candle timestamp, so it remains
+            stable when the downloaded candle history changes position.
           </p>
           <p>
             Background recovery is best-effort. Android may suspend browser
