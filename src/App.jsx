@@ -1,4 +1,3 @@
-
 import React, { useCallback, useEffect, useRef, useState } from "react";
 
 const WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public";
@@ -575,6 +574,7 @@ function makeDemoOrder(
 
   return {
     id: `${symbol}-${signal.boxId}-${signal.touchType}-${createdAtMs}`,
+    comment: "Ifx Billionaire",
     boxId: signal.boxId,
     boxType: signal.boxType,
     touchType: signal.touchType || "RETEST",
@@ -2462,6 +2462,9 @@ export default function App() {
                 {trade.source} · {trade.status}
               </div>
               <div style={small}>
+                Order comment: {trade.comment}
+              </div>
+              <div style={small}>
                 {timeframeName(trade.timeframe)} · {trade.sizingMode === "FIXED_LOTS"
                   ? `${fmt(trade.fixedLots, 2)} lots`
                   : "Percentage risk"}
@@ -2543,6 +2546,10 @@ export default function App() {
 
               <div style={small}>
                 {trade.exitReason} · Closed {trade.closedAt}
+              </div>
+
+              <div style={small}>
+                Order comment: {trade.comment}
               </div>
 
               <div style={small}>
@@ -2705,6 +2712,8 @@ export default function App() {
             Duplicate trades of the same type from that box are blocked.
             <br/>
             EXECUTION: Click BUY or SELL to open immediately at current price.
+            <br/>
+            ORDER COMMENT: Ifx Billionaire.
             <br/>
             SL/TP: Forex 10-pip SL / 31-pip TP.
             <br/>
