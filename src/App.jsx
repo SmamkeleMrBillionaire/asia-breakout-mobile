@@ -229,8 +229,7 @@ function createBoxes(candles) {
   return boxes;
 }
 
-// Strategy entry conditions are unchanged.
-// Diagnostic reasons only explain which condition is currently missing.
+// HLZ entry conditions remain unchanged.
 function findHLZSignal(candles, symbol, category) {
   if (candles.length < 1070) {
     return {
@@ -434,10 +433,7 @@ function findHLZSignal(candles, symbol, category) {
     reason = "Waiting for retest";
   }
 
-  // More precise EMA diagnostics when a valid touch exists.
-  if (
-    sawRetest || sawFlippy
-  ) {
+  if (sawRetest || sawFlippy) {
     const latestTouchExists = boxes.some(box => {
       if (lastIndex <= box.created) return false;
 
@@ -553,6 +549,7 @@ export default function App() {
   const [connectionText, setConnectionText] = useState("DISCONNECTED");
   const [symbols, setSymbols] = useState([]);
   const [signals, setSignals] = useState({});
+  const [candleDiagnostics, setCandleDiagnostics] = useState({});
   const [orders, setOrders] = useState([]);
   const [lastActivated, setLastActivated] = useState("NONE");
   const [category, setCategory] = useState("All");
@@ -726,7 +723,20 @@ export default function App() {
     return list;
   }, [request]);
 
+  // NEW: Candle response diagnostics.
+  // This records the Deriv response without changing HLZ entry conditions.
   const scanSymbol = useCallback(async (item) => {
+    const diagnostic = {
+      requested: CANDLE_COUNT,
+      returned: 0,
+      valid: 0,
+      closed: 0,
+      latestEpoch: null,
+      oldestEpoch: null,
+      responseType: "Not received",
+      error: null
+    };
+
     try {
       const response = await request({
         ticks_history: item.symbol,
@@ -736,7 +746,13 @@ export default function App() {
         granularity: TIMEFRAME
       });
 
-      const raw = response.candles || [];
+      diagnostic.responseType = response.msg_type || "Unknown";
+
+      const raw = Array.isArray(response.candles)
+        ? response.candles
+        : [];
+
+      diagnostic.returned = raw.length;
 
       const candles = raw.map(c => ({
         epoch: Number(c.epoch),
@@ -745,9 +761,14 @@ export default function App() {
         low: Number(c.low),
         close: Number(c.close)
       })).filter(c =>
-        Number.isFinite(c.close) &&
-        Number.isFinite(c.epoch)
+        Number.isFinite(c.epoch) &&
+        Number.isFinite(c.open) &&
+        Number.isFinite(c.high) &&
+        Number.isFinite(c.low) &&
+        Number.isFinite(c.close)
       );
+
+      diagnostic.valid = candles.length;
 
       const now = Math.floor(Date.now() / 1000);
 
@@ -755,11 +776,31 @@ export default function App() {
         c.epoch + TIMEFRAME <= now
       );
 
-      return findHLZSignal(closed, item.symbol, item.category);
+      diagnostic.closed = closed.length;
+
+      if (closed.length) {
+        diagnostic.oldestEpoch = closed[0].epoch;
+        diagnostic.latestEpoch = closed[closed.length - 1].epoch;
+      }
+
+      const signal = findHLZSignal(
+        closed,
+        item.symbol,
+        item.category
+      );
+
+      return {
+        ...signal,
+        _candleData: diagnostic
+      };
+
     } catch (error) {
+      diagnostic.error = error.message || "Unknown Deriv API error";
+
       return {
         direction: "NONE",
-        reason: error.message || "Market data unavailable"
+        reason: "Market data unavailable",
+        _candleData: diagnostic
       };
     }
   }, [request]);
@@ -782,7 +823,16 @@ export default function App() {
         const index = nextIndex++;
         const item = list[index];
 
-        results[item.symbol] = await scanSymbol(item);
+        const result = await scanSymbol(item);
+
+        results[item.symbol] = result;
+
+        if (result._candleData) {
+          setCandleDiagnostics(previous => ({
+            ...previous,
+            [item.symbol]: result._candleData
+          }));
+        }
 
         completed++;
 
@@ -824,15 +874,17 @@ export default function App() {
       runningRef.current = true;
       setRunning(true);
 
+      setCandleDiagnostics({});
+      setSignals({});
+      setScanned(0);
+      setProgress(0);
+
       const list = await discoverMarkets();
 
       if (!list.length) {
         setMessage("No active markets returned by Deriv.");
         return;
       }
-
-      setScanned(0);
-      setProgress(0);
 
       await scanAll(list);
 
@@ -912,8 +964,6 @@ export default function App() {
     signals[s.symbol]?.direction === "SELL"
   ).length;
 
-  const noneCount = Math.max(0, scanned - buyCount - sellCount);
-
   const diagnosticCounts = {};
 
   DIAGNOSTIC_REASONS.forEach(reason => {
@@ -939,6 +989,20 @@ export default function App() {
     .sort((a, b) =>
       String(a.display_name).localeCompare(String(b.display_name))
     );
+
+  const candleDiagnosticList = Object.values(candleDiagnostics);
+
+  const marketsWithCandleData = candleDiagnosticList.filter(
+    d => d.returned > 0
+  ).length;
+
+  const marketsWithEnoughHistory = candleDiagnosticList.filter(
+    d => d.closed >= 1070
+  ).length;
+
+  const marketsWithErrors = candleDiagnosticList.filter(
+    d => d.error
+  ).length;
 
   const signalColor = direction =>
     direction === "BUY"
@@ -1058,7 +1122,124 @@ export default function App() {
           </div>
         </section>
 
-        {/* NEW: STRATEGY DIAGNOSTICS */}
+        {/* NEW: DERIV CANDLE DATA DIAGNOSTICS */}
+        <section style={styles.panel}>
+          <div style={styles.panelTitle}>DERIV CANDLE DATA DIAGNOSTICS</div>
+
+          <div style={styles.smallText}>
+            Requested: {CANDLE_COUNT} candles per market · M5 timeframe
+          </div>
+
+          {scanned === 0 && (
+            <div style={styles.empty}>
+              Start the robot to inspect Deriv candle responses.
+            </div>
+          )}
+
+          {scanned > 0 && (
+            <>
+              <div style={styles.diagnosticList}>
+                {[
+                  ["Markets checked", scanned],
+                  ["Candles requested per market", CANDLE_COUNT],
+                  ["Markets with candle data", marketsWithCandleData],
+                  ["Markets with 1,070+ closed candles", marketsWithEnoughHistory],
+                  ["Markets with API errors", marketsWithErrors]
+                ].map(([label, value]) => (
+                  <div key={label} style={styles.diagnosticRow}>
+                    <span style={styles.diagnosticReason}>{label}</span>
+                    <span style={styles.diagnosticCount}>{value}</span>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ ...styles.panelTitle, marginTop: 17 }}>
+                INDIVIDUAL MARKET DATA
+              </div>
+
+              {symbols
+                .filter(item => candleDiagnostics[item.symbol])
+                .slice(0, 30)
+                .map(item => {
+                  const d = candleDiagnostics[item.symbol];
+
+                  return (
+                    <div key={item.symbol} style={styles.diagnosticMarket}>
+                      <div style={styles.diagnosticMarketName}>
+                        {item.display_name || item.symbol}
+                      </div>
+
+                      <div style={styles.smallText}>
+                        Symbol: {item.symbol}
+                      </div>
+
+                      <div style={styles.diagnosticReasonText}>
+                        Requested: {d.requested}
+                      </div>
+
+                      <div style={styles.diagnosticReasonText}>
+                        Returned by Deriv: {d.returned}
+                      </div>
+
+                      <div style={styles.diagnosticReasonText}>
+                        Valid candles: {d.valid}
+                      </div>
+
+                      <div style={styles.diagnosticReasonText}>
+                        Closed candles: {d.closed}
+                      </div>
+
+                      <div style={styles.diagnosticReasonText}>
+                        Response type: {d.responseType}
+                      </div>
+
+                      {d.oldestEpoch && (
+                        <div style={styles.smallText}>
+                          Oldest closed candle:{" "}
+                          {new Date(d.oldestEpoch * 1000).toISOString()}
+                        </div>
+                      )}
+
+                      {d.latestEpoch && (
+                        <div style={styles.smallText}>
+                          Latest closed candle:{" "}
+                          {new Date(d.latestEpoch * 1000).toISOString()}
+                        </div>
+                      )}
+
+                      {d.error && (
+                        <div style={{
+                          ...styles.diagnosticReasonText,
+                          color: "#ff7777"
+                        }}>
+                          API ERROR: {d.error}
+                        </div>
+                      )}
+
+                      {!d.error && d.returned === 0 && (
+                        <div style={styles.diagnosticReasonText}>
+                          Deriv returned no candles. Check response format.
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+
+              {symbols.filter(item => candleDiagnostics[item.symbol]).length > 30 && (
+                <div style={styles.smallText}>
+                  Showing first 30 markets. Summary above includes all scanned markets.
+                </div>
+              )}
+            </>
+          )}
+
+          <div style={styles.ruleText}>
+            This panel measures the Deriv market-data response only.
+            It does not modify the HLZ trading strategy.
+          </div>
+        </section>
+
+        {/* STRATEGY DIAGNOSTICS */}
         <section style={styles.panel}>
           <div style={styles.panelHeading}>
             <div>
