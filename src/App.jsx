@@ -1,4 +1,3 @@
-
 import React, { useCallback, useEffect, useRef, useState } from "react";
 
 const WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public";
@@ -617,6 +616,11 @@ export default function App() {
   const runningRef = useRef(false);
   const scanTimerRef = useRef(null);
 
+  // Automatic recovery refs
+  const reconnectTimerRef = useRef(null);
+  const reconnectingRef = useRef(false);
+  const marketsRef = useRef([]);
+
   const subscriptionsRef = useRef(new Map());
   const subscribingRef = useRef(new Set());
   const latestPricesRef = useRef({});
@@ -757,6 +761,24 @@ export default function App() {
     }
   }, [updateOrders, updateClosedTrades]);
 
+  // Automatic reconnect scheduler
+  const scheduleReconnect = useCallback(() => {
+    if (!runningRef.current) return;
+    if (reconnectTimerRef.current) return;
+
+    setConnectionText("RECONNECTING");
+    setMessage("Connection lost. Attempting automatic reconnection...");
+
+    reconnectTimerRef.current = setTimeout(() => {
+      reconnectTimerRef.current = null;
+
+      if (runningRef.current) {
+        window.dispatchEvent(new Event("ifx-robot-reconnect"));
+      }
+    }, 5000);
+  }, []);
+
+  // Deriv WebSocket connection with automatic recovery support
   const connect = useCallback(() => {
     return new Promise((resolve, reject) => {
       if (
@@ -772,9 +794,18 @@ export default function App() {
       const ws = new WebSocket(WS_URL);
       socketRef.current = ws;
 
+      let settled = false;
+
       ws.onopen = () => {
+        if (reconnectTimerRef.current) {
+          clearTimeout(reconnectTimerRef.current);
+          reconnectTimerRef.current = null;
+        }
+
         setConnected(true);
         setConnectionText("DATA CONNECTED");
+
+        settled = true;
         resolve();
       };
 
@@ -794,7 +825,10 @@ export default function App() {
           );
         }
 
-        if (data.req_id && pendingRequestsRef.current.has(data.req_id)) {
+        if (
+          data.req_id &&
+          pendingRequestsRef.current.has(data.req_id)
+        ) {
           const pending = pendingRequestsRef.current.get(data.req_id);
 
           clearTimeout(pending.timeout);
@@ -810,7 +844,11 @@ export default function App() {
 
       ws.onerror = () => {
         setConnectionText("CONNECTION ERROR");
-        reject(new Error("Could not connect to Deriv."));
+
+        if (!settled) {
+          settled = true;
+          reject(new Error("Could not connect to Deriv."));
+        }
       };
 
       ws.onclose = () => {
@@ -828,13 +866,19 @@ export default function App() {
         pendingRequestsRef.current.clear();
 
         if (runningRef.current) {
-          runningRef.current = false;
-          setRunning(false);
-          setMessage("Deriv connection closed. Robot stopped.");
+          setMessage("Deriv connection lost. Robot will attempt to reconnect.");
+          scheduleReconnect();
+        } else {
+          setConnectionText("DISCONNECTED");
+        }
+
+        if (!settled) {
+          settled = true;
+          reject(new Error("Deriv connection closed before connecting."));
         }
       };
     });
-  }, [processTick]);
+  }, [processTick, scheduleReconnect]);
 
   const subscribeMarket = useCallback(async symbol => {
     if (subscriptionsRef.current.has(symbol)) return true;
@@ -923,6 +967,8 @@ export default function App() {
       .sort((a, b) =>
         String(a.display_name).localeCompare(String(b.display_name))
       );
+
+    marketsRef.current = list;
 
     setSymbols(list);
     setMessage(`${list.length} active Deriv markets discovered.`);
@@ -1071,6 +1117,123 @@ export default function App() {
     }
   }, [scanSymbol]);
 
+  // Background recovery and foreground resume
+  useEffect(() => {
+    const recoverRobot = async () => {
+      if (!runningRef.current) return;
+      if (reconnectingRef.current) return;
+
+      const ws = socketRef.current;
+
+      // If still connected, refresh the scan when returning to the app.
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        const list = marketsRef.current;
+
+        if (list.length) {
+          await scanAll(list);
+        }
+
+        return;
+      }
+
+      reconnectingRef.current = true;
+
+      try {
+        setConnectionText("RECONNECTING");
+        setMessage("Restoring Deriv connection...");
+
+        await connect();
+
+        if (!runningRef.current) return;
+
+        setConnectionText("DATA CONNECTED");
+
+        // Restore live-price subscriptions for open demo trades.
+        const openSymbols = [
+          ...new Set(
+            ordersRef.current
+              .filter(order => order.status === "OPEN DEMO TRADE")
+              .map(order => order.symbol)
+          )
+        ];
+
+        for (const symbol of openSymbols) {
+          if (!runningRef.current) break;
+
+          await subscribeMarket(symbol);
+        }
+
+        if (!runningRef.current) return;
+
+        let list = marketsRef.current;
+
+        if (!list.length) {
+          list = await discoverMarkets();
+        }
+
+        if (runningRef.current && list.length) {
+          setMessage("Connection restored. Resuming market scans...");
+          await scanAll(list);
+        }
+      } catch (error) {
+        if (runningRef.current) {
+          setMessage(
+            `Reconnection failed: ${error.message}. Retrying shortly.`
+          );
+
+          scheduleReconnect();
+        }
+      } finally {
+        reconnectingRef.current = false;
+      }
+    };
+
+    const handleReconnect = () => {
+      recoverRobot();
+    };
+
+    const handleOnline = () => {
+      if (runningRef.current) {
+        if (reconnectTimerRef.current) {
+          clearTimeout(reconnectTimerRef.current);
+          reconnectTimerRef.current = null;
+        }
+
+        recoverRobot();
+      }
+    };
+
+    const handleVisibility = () => {
+      if (
+        document.visibilityState === "visible" &&
+        runningRef.current
+      ) {
+        if (reconnectTimerRef.current) {
+          clearTimeout(reconnectTimerRef.current);
+          reconnectTimerRef.current = null;
+        }
+
+        recoverRobot();
+      }
+    };
+
+    window.addEventListener("ifx-robot-reconnect", handleReconnect);
+    window.addEventListener("online", handleOnline);
+    document.addEventListener("visibilitychange", handleVisibility);
+
+    return () => {
+      window.removeEventListener("ifx-robot-reconnect", handleReconnect);
+      window.removeEventListener("online", handleOnline);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [
+    connect,
+    scanAll,
+    subscribeMarket,
+    discoverMarkets,
+    scheduleReconnect
+  ]);
+
   const startRobot = async () => {
     if (runningRef.current) return;
 
@@ -1099,6 +1262,7 @@ export default function App() {
       setProgress(0);
 
       const list = await discoverMarkets();
+      marketsRef.current = list;
 
       if (!list.length) {
         setMessage("No active markets returned by Deriv.");
@@ -1115,7 +1279,7 @@ export default function App() {
 
       scanTimerRef.current = setInterval(() => {
         if (runningRef.current) {
-          scanAll(list);
+          scanAll(marketsRef.current);
         }
       }, TIMEFRAME * 1000);
     } catch (error) {
@@ -1128,6 +1292,11 @@ export default function App() {
   const stopRobot = () => {
     runningRef.current = false;
     setRunning(false);
+
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
 
     if (scanTimerRef.current) {
       clearInterval(scanTimerRef.current);
@@ -1297,6 +1466,11 @@ export default function App() {
 
       if (scanTimerRef.current) {
         clearInterval(scanTimerRef.current);
+      }
+
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
       }
 
       if (socketRef.current) {
@@ -2090,6 +2264,10 @@ export default function App() {
             Each box permits one RETEST and one separate FLIPPY trade.
             Repeated trades of the same type from the same box are blocked,
             including after a trade has closed.
+          </p>
+          <p>
+            Background recovery is best-effort. Android may suspend browser
+            activity when the app is in the background or the screen is locked.
           </p>
         </section>
 
