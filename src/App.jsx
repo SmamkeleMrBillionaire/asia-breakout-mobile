@@ -1,3 +1,4 @@
+
 import React, { useCallback, useEffect, useRef, useState } from "react";
 
 const WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public";
@@ -214,6 +215,27 @@ function makeBoxId(box, asiaDay) {
   ].join("-");
 }
 
+// A box allows one RETEST and one separate FLIPPY trade.
+// A repeat of the same trade type from that box is blocked.
+function boxTradeAlreadyTaken(trades, symbol, boxId, touchType) {
+  return trades.some(trade => {
+    if (
+      trade.symbol !== symbol ||
+      trade.boxId !== boxId
+    ) {
+      return false;
+    }
+
+    const previousTouchType =
+      trade.touchType ||
+      (String(trade.source || "").includes("FLIPPY")
+        ? "FLIPPY"
+        : "RETEST");
+
+    return previousTouchType === touchType;
+  });
+}
+
 // Only a qualifying touch on the latest CLOSED M5 candle
 // can generate an actionable signal.
 function findRetestSignal(candles, symbol, category) {
@@ -304,8 +326,6 @@ function findRetestSignal(candles, symbol, category) {
     );
 
     if (firstDirection !== "NONE") {
-
-      // Normal retest must be the latest closed candle.
       if (firstTouchIndex !== lastIndex) continue;
 
       let touchCount = 1;
@@ -399,7 +419,6 @@ function findRetestSignal(candles, symbol, category) {
 
     sawFlippyRetest = true;
 
-    // FLIPPY retest must also be the latest closed candle.
     if (flippyTouchIndex !== lastIndex) continue;
 
     let touchCount = 2;
@@ -529,8 +548,10 @@ function makeDemoOrder(signal, symbol, category, balance, riskPct, candles = [])
   const createdAtMs = Date.now();
 
   return {
-    id: `${symbol}-${signal.boxId}-${createdAtMs}`,
+    id: `${symbol}-${signal.boxId}-${signal.touchType}-${createdAtMs}`,
     boxId: signal.boxId,
+    boxType: signal.boxType,
+    touchType: signal.touchType || "RETEST",
     symbol,
     category,
     direction: signal.direction,
@@ -1180,23 +1201,26 @@ export default function App() {
       return;
     }
 
-    const duplicate = ordersRef.current.some(order =>
-      order.symbol === item.symbol &&
-      order.boxId === signal.boxId
-    );
+    const touchType = signal.touchType || "RETEST";
 
-    if (duplicate) {
-      setMessage(`${item.symbol}: this box already has a trade.`);
-      return;
-    }
+    // Check both open and closed trades.
+    // RETEST and FLIPPY are checked independently.
+    const previousTrades = [
+      ...ordersRef.current,
+      ...closedTradesRef.current
+    ];
 
-    const alreadyClosed = closedTradesRef.current.some(order =>
-      order.symbol === item.symbol &&
-      order.boxId === signal.boxId
-    );
-
-    if (alreadyClosed) {
-      setMessage(`${item.symbol}: this box has already been traded.`);
+    if (
+      boxTradeAlreadyTaken(
+        previousTrades,
+        item.symbol,
+        signal.boxId,
+        touchType
+      )
+    ) {
+      setMessage(
+        `${item.symbol}: this box already has a ${touchType} trade.`
+      );
       return;
     }
 
@@ -1215,19 +1239,29 @@ export default function App() {
       return;
     }
 
-    // Recheck duplicate after awaiting the live-price subscription.
-    const duplicateAfterSubscription = ordersRef.current.some(order =>
-      order.symbol === item.symbol &&
-      order.boxId === signal.boxId
-    );
+    // Recheck after awaiting the live-price subscription.
+    const tradesAfterSubscription = [
+      ...ordersRef.current,
+      ...closedTradesRef.current
+    ];
 
-    if (duplicateAfterSubscription) {
-      setMessage(`${item.symbol}: this box already has a trade.`);
+    if (
+      boxTradeAlreadyTaken(
+        tradesAfterSubscription,
+        item.symbol,
+        signal.boxId,
+        touchType
+      )
+    ) {
+      setMessage(
+        `${item.symbol}: this box already has a ${touchType} trade.`
+      );
       return;
     }
 
     const executionSignal = {
       ...signal,
+      touchType,
       entry: currentPrice
     };
 
@@ -1244,16 +1278,16 @@ export default function App() {
 
     setSelected(item);
     setLastActivated(
-      `${signal.direction} · ${signal.boxType} · MARKET EXECUTION`
+      `${signal.direction} · ${signal.boxType} · ${touchType} · MARKET EXECUTION`
     );
 
     setMessage(
-      `${item.symbol}: ${signal.direction} OPENED IMMEDIATELY at ${fmt(currentPrice, 8)}.`
+      `${item.symbol}: ${signal.direction} ${touchType} OPENED IMMEDIATELY at ${fmt(currentPrice, 8)}.`
     );
 
     sendBrowserNotification(
       "iFX BILLIONAIRE — Trade Opened",
-      `${item.symbol} ${signal.direction} at ${fmt(currentPrice, 8)}`
+      `${item.symbol} ${signal.direction} ${touchType} at ${fmt(currentPrice, 8)}`
     );
   };
 
@@ -1690,11 +1724,19 @@ export default function App() {
               };
 
               const isSelected = selected?.symbol === item.symbol;
+              const touchType = signal.touchType || "RETEST";
 
-              const hasOrder = orders.some(order =>
-                order.symbol === item.symbol &&
-                order.boxId === signal.boxId
-              );
+              const hasOrder = signal.boxId
+                ? boxTradeAlreadyTaken(
+                    [
+                      ...orders,
+                      ...closedTrades
+                    ],
+                    item.symbol,
+                    signal.boxId,
+                    touchType
+                  )
+                : false;
 
               return (
                 <button
@@ -1754,7 +1796,7 @@ export default function App() {
                             color: "#f4c46a",
                             marginTop: 5
                           }}>
-                            THIS BOX ALREADY TRADED
+                            THIS {touchType} FROM THIS BOX ALREADY TRADED
                           </div>
                         )}
                       </>
@@ -1980,7 +2022,7 @@ export default function App() {
               </div>
 
               <div style={small}>
-                Entry: {fmt(trade.entry, 8)} · Exit: {fmt(trade.exitPrice, 8)}
+                {trade.touchType || "RETEST"} · Entry: {fmt(trade.entry, 8)} · Exit: {fmt(trade.exitPrice, 8)}
               </div>
             </div>
           ))}
@@ -2044,6 +2086,11 @@ export default function App() {
             It is not actual Deriv contract valuation. Fixed lots are display-only.
           </p>
           <p>Asia session is calculated using UTC candle timestamps.</p>
+          <p>
+            Each box permits one RETEST and one separate FLIPPY trade.
+            Repeated trades of the same type from the same box are blocked,
+            including after a trade has closed.
+          </p>
         </section>
 
         <section style={card}>
@@ -2117,6 +2164,9 @@ export default function App() {
             <br/>
             BOX LIFECYCLE: First retest → Second retest/FLIPPY
             → Third touch DELETE.
+            <br/>
+            TRADE LIMIT: One RETEST and one FLIPPY per box.
+            Duplicate trades of the same type from that box are blocked.
             <br/>
             EXECUTION: Click BUY or SELL to open immediately at current price.
             <br/>
