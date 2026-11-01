@@ -18,9 +18,8 @@ const DEFAULTS = {
 const PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "NZD/USD", "USD/CAD"];
 const BASE = {"EUR/USD":1.085,"GBP/USD":1.265,"USD/JPY":150.2,"USD/CHF":0.895,"AUD/USD":0.655,"NZD/USD":0.61,"USD/CAD":1.375};
 const fmt = (n, pair) => Number.isFinite(n) ? n.toFixed(pair?.includes("JPY") ? 3 : 5) : "—";
-const money = n => `${n < 0 ? "−" : ""}$${Math.abs(n).toFixed(2)}`;
 const pipSize = pair => pair.includes("JPY") ? 0.01 : 0.0001;
-
+const money = n => (n < 0 ? "−" : "") + "$" + Math.abs(n).toFixed(2);
 const emaAt = (bars, period, index) => {
   if (index + 1 < period) return null;
   const k = 2 / (period + 1);
