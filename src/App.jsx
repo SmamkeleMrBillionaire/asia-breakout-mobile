@@ -1,1651 +1,1408 @@
 
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 
-// ==================================================
-// ASIA BREAKOUT MOBILE
-// V6.11 - EXACT 10-STEP STRATEGY PORT
-// DEMO CANDLE REPLAY ONLY - NO BROKER CONNECTION
-// ==================================================
+const WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public";
+const TIMEFRAME = 300;
+const CANDLE_COUNT = 1200;
+const EMA_PERIODS = [35, 60, 90, 120, 200, 1068];
+const BUFFER_PIPS = 2;
+const FX_SL_PIPS = 10;
+const FX_TP_PIPS = 31;
+const NON_FX_TP_POINTS = 1000;
 
-const DEFAULTS = {
-  asiaStart: 0,
-  asiaEnd: 7,
-  tradeStart: 9,
-  tradeEnd: 19,
-  tradeOnlyAfterAsia: true,
-
-  riskPct: 1,
-  useRiskPercent: true,
-  fixedLots: 0.10,
-
-  fixedSL: 10,
-  forexTP: 31,
-  otherTPPoints: 1000,
-
-  pendingBuffer: 2,
-  pendingExpiryMinutes: 60,
-
-  maxTrades: 1,
-  oneDirectionOnly: true,
-  oneTradePerSignal: true,
-
-  useEmaFilter: true,
-  emaPeriods: [35, 60, 90, 200, 120, 1068],
-  emaDistancePoints: 10,
-
-  useRSIFilter: false,
-  rsiPeriod: 14,
-
-  wickPercent: 20,
-  dojiBodyPercent: 25,
-  maxBoxes: 3,
-  deleteOnTouch: 3,
-
-  breakevenPips: 25,
-  spreadPips: 1.5,
-  trailingExtraPips: 10
-};
-
-const PAIRS = [
-  "EUR/USD",
-  "GBP/USD",
-  "USD/JPY",
-  "USD/CHF",
-  "AUD/USD",
-  "NZD/USD",
-  "USD/CAD"
+const CATEGORIES = [
+  "All",
+  "Forex",
+  "Indices",
+  "Metals",
+  "Synthetics",
+  "Crypto",
+  "Stocks",
+  "Other"
 ];
 
-const BASE = {
-  "EUR/USD": 1.085,
-  "GBP/USD": 1.265,
-  "USD/JPY": 150.2,
-  "USD/CHF": 0.895,
-  "AUD/USD": 0.655,
-  "NZD/USD": 0.61,
-  "USD/CAD": 1.375
-};
+const fmt = (n, digits = 5) =>
+  Number.isFinite(n) ? Number(n).toFixed(digits) : "—";
 
-const fmt = (n, pair) =>
-  Number.isFinite(n)
-    ? n.toFixed(pair?.includes("JPY") ? 3 : 5)
-    : "—";
+function categoryOf(s) {
+  const market = String(s.market || "").toLowerCase();
+  const sub = String(s.submarket || "").toLowerCase();
+  const name = String(s.display_name || "").toLowerCase();
+  const symbol = String(s.symbol || "").toLowerCase();
 
-const pipSize = pair =>
-  pair?.includes("JPY") ? 0.01 : 0.0001;
+  if (market.includes("forex")) return "Forex";
+  if (
+    market.includes("synthetic") ||
+    sub.includes("synthetic") ||
+    symbol.startsWith("1hz") ||
+    symbol.startsWith("r_") ||
+    symbol.includes("volatility") ||
+    symbol.includes("boom") ||
+    symbol.includes("crash") ||
+    symbol.includes("step")
+  ) return "Synthetics";
 
-const pointSize = pair => pipSize(pair) / 10;
+  if (
+    market.includes("crypt") ||
+    sub.includes("crypt") ||
+    name.includes("bitcoin") ||
+    name.includes("ethereum")
+  ) return "Crypto";
 
-const money = n =>
-  (n < 0 ? "−" : "") + "$" + Math.abs(n).toFixed(2);
+  if (
+    market.includes("stock") ||
+    sub.includes("stock") ||
+    market.includes("share")
+  ) return "Stocks";
 
-const hourOf = t => new Date(t).getHours();
+  if (
+    market.includes("index") ||
+    sub.includes("index")
+  ) return "Indices";
 
-const inHours = (t, start, end) => {
-  const h = hourOf(t);
-  return start <= end
-    ? h >= start && h < end
-    : h >= start || h < end;
-};
+  if (
+    market.includes("commodit") ||
+    sub.includes("metal") ||
+    name.includes("gold") ||
+    name.includes("silver") ||
+    name.includes("platinum") ||
+    name.includes("palladium")
+  ) {
+    if (
+      name.includes("gold") ||
+      name.includes("silver") ||
+      name.includes("platinum") ||
+      name.includes("palladium") ||
+      sub.includes("metal")
+    ) return "Metals";
 
-const candleDir = (fallback, c) =>
-  c.close > c.open ? true :
-  c.close < c.open ? false : fallback;
-
-const isBullEngulf = (c, p) =>
-  c.close > c.open &&
-  p.close < p.open &&
-  c.close >= p.open &&
-  c.open <= p.close;
-
-const isBearEngulf = (c, p) =>
-  c.close < c.open &&
-  p.close > p.open &&
-  c.close <= p.open &&
-  c.open >= p.close;
-
-const isDoji = (c, percent = 25) => {
-  const range = c.high - c.low;
-  return range > 0 &&
-    Math.abs(c.close - c.open) <= range * percent / 100;
-};
-
-const emaAt = (bars, period, index) => {
-  if (index + 1 < period) return null;
-
-  const k = 2 / (period + 1);
-  let value = bars[index + 1 - period].close;
-
-  for (let i = index + 2 - period; i <= index; i++) {
-    value = bars[i].close * k + value * (1 - k);
+    return "Other";
   }
 
-  return value;
-};
-
-const rsiAt = (bars, period, index) => {
-  if (index < period) return null;
-
-  let gains = 0;
-  let losses = 0;
-
-  for (let i = index - period + 1; i <= index; i++) {
-    const change = bars[i].close - bars[i - 1].close;
-    if (change > 0) gains += change;
-    else losses -= change;
-  }
-
-  const avgGain = gains / period;
-  const avgLoss = losses / period;
-
-  if (avgLoss === 0) return 100;
-  return 100 - 100 / (1 + avgGain / avgLoss);
-};
-
-const overlaps = (a, b) =>
-  a.top >= b.bot && a.bot <= b.top;
-
-// ==================================================
-// SIMULATED CANDLE GENERATOR
-// ==================================================
-
-function makeReplay(pair, scenario, timeframe) {
-  const step = timeframe * 60000;
-  const now = new Date();
-
-  const day = new Date(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate()
-  ).getTime();
-
-  const base = BASE[pair];
-  const pip = pipSize(pair);
-  const bars = [];
-
-  let price = base;
-
-  let seed = pair.split("").reduce(
-    (a, c) => a + c.charCodeAt(0),
-    scenario.length * 91 + timeframe
-  );
-
-  const rnd = () => {
-    seed = (seed * 1664525 + 1013904223) >>> 0;
-    return seed / 4294967296;
-  };
-
-  const historyCount = Math.max(
-    1150,
-    Math.ceil(24 * 60 / timeframe) + 100
-  );
-
-  // EMA warm-up history
-  for (let i = historyCount; i > 0; i--) {
-    const drift = (rnd() - 0.5) * pip * 2.4;
-    const o = price;
-    price += drift;
-
-    bars.push({
-      time: day - i * step,
-      open: o,
-      high: Math.max(o, price) + rnd() * pip * 0.4,
-      low: Math.min(o, price) - rnd() * pip * 0.4,
-      close: price
-    });
-  }
-
-  // Asia session
-  for (let i = 0; i < Math.ceil(7 * 60 / timeframe); i++) {
-    const o = price;
-    price += (rnd() - 0.5) * pip * 1.7;
-
-    bars.push({
-      time: day + i * step,
-      open: o,
-      high: Math.max(o, price) + rnd() * pip * 0.25,
-      low: Math.min(o, price) - rnd() * pip * 0.25,
-      close: price
-    });
-  }
-
-  // Post-Asia session
-  for (let i = 0; i < Math.ceil(13 * 60 / timeframe); i++) {
-    const o = price;
-    let drift = (rnd() - 0.5) * pip * 1.5;
-
-    if (scenario === "bullish" && i > 3) {
-      drift += pip * 0.55;
-    }
-
-    if (scenario === "bearish" && i > 3) {
-      drift -= pip * 0.55;
-    }
-
-    if (scenario === "retest" && i > 3 && i < 9) {
-      drift += pip * 0.65;
-    }
-
-    if (scenario === "retest" && i >= 9 && i < 15) {
-      drift -= pip * 0.85;
-    }
-
-    if (scenario === "range") drift *= 0.25;
-
-    price += drift;
-
-    const index = Math.ceil(7 * 60 / timeframe) + i;
-
-    bars.push({
-      time: day + index * step,
-      open: o,
-      high: Math.max(o, price) + rnd() * pip * 0.55,
-      low: Math.min(o, price) - rnd() * pip * 0.55,
-      close: price
-    });
-  }
-
-  return bars;
+  return "Other";
 }
 
-// ==================================================
-// BOX CREATION
-// ==================================================
-
-function createBox(c, p, cfg) {
-  const body = Math.abs(c.close - c.open);
-  const upper = c.high - Math.max(c.open, c.close);
-  const lower = Math.min(c.open, c.close) - c.low;
-
-  // ENGULFED BOX
-  if (isBullEngulf(c, p) || isBearEngulf(c, p)) {
-    return {
-      id: "ENG-" + c.time,
-      type: "ENGULFED",
-      top: Math.max(c.open, c.close),
-      bot: Math.min(c.open, c.close),
-      createdTime: c.time,
-      isBuyBox: c.close > c.open,
-      touches: 0,
-      broken: false,
-      breakoutTime: 0,
-      active: true
-    };
-  }
-
-  // WICK BOX
-  if (body > 0) {
-    if (
-      c.close > c.open &&
-      upper >= body * cfg.wickPercent / 100
-    ) {
-      return {
-        id: "WICK-" + c.time,
-        type: "WICK",
-        top: c.high,
-        bot: Math.max(c.open, c.close),
-        createdTime: c.time,
-        isBuyBox: false,
-        touches: 0,
-        broken: false,
-        breakoutTime: 0,
-        active: true
-      };
-    }
-
-    if (
-      c.close < c.open &&
-      lower >= body * cfg.wickPercent / 100
-    ) {
-      return {
-        id: "WICK-" + c.time,
-        type: "WICK",
-        top: Math.min(c.open, c.close),
-        bot: c.low,
-        createdTime: c.time,
-        isBuyBox: true,
-        touches: 0,
-        broken: false,
-        breakoutTime: 0,
-        active: true
-      };
-    }
-  }
-
-  // DOJI BOX
-  if (isDoji(c, cfg.dojiBodyPercent)) {
-    return {
-      id: "DOJI-" + c.time,
-      type: "DOJI",
-      top: c.high,
-      bot: c.low,
-      createdTime: c.time,
-      isBuyBox: c.close >= c.open,
-      touches: 0,
-      broken: false,
-      breakoutTime: 0,
-      active: true
-    };
-  }
-
-  return null;
+function candleColor(c) {
+  return c.close > c.open
+    ? "BUY"
+    : c.close < c.open
+    ? "SELL"
+    : "NONE";
 }
 
-// ==================================================
-// EMA REJECTION FILTER
-// ==================================================
+function calculateEMA(values, period) {
+  const result = new Array(values.length).fill(null);
+  if (values.length < period) return result;
 
-function checkEMARejection(bars, index, isBuy, asia, boxes, pair, cfg) {
-  if (!cfg.useEmaFilter) return true;
+  const multiplier = 2 / (period + 1);
+  let ema = values[0];
 
-  const c = bars[index];
-  const distance = cfg.emaDistancePoints * pointSize(pair);
-
-  const validBox = boxes.some(b =>
-    b.active &&
-    b.touches <= 3 &&
-    c.time > b.createdTime &&
-    c.high >= b.bot &&
-    c.low <= b.top
-  );
-
-  if (!validBox) return false;
-
-  for (const period of cfg.emaPeriods) {
-    const ema = emaAt(bars, period, index);
-
-    if (ema == null) continue;
-
-    // EMA must be outside the Asia range.
-    if (ema >= asia.low && ema <= asia.high) continue;
-
-    let rejected = false;
-
-    if (isBuy) {
-      rejected =
-        c.close < c.open &&
-        c.open > ema + distance &&
-        c.low <= ema + distance &&
-        c.close > ema;
-    } else {
-      rejected =
-        c.close > c.open &&
-        c.open < ema - distance &&
-        c.high >= ema - distance &&
-        c.close < ema;
-    }
-
-    if (rejected) return true;
+  for (let i = 0; i < values.length; i++) {
+    ema = values[i] * multiplier + ema * (1 - multiplier);
+    result[i] = ema;
   }
 
-  return false;
+  return result;
 }
 
-// ==================================================
-// ASIA BREAKOUT V6.11 ENGINE
-// ==================================================
-
-function runV611(bars, pair, cfg, startingBalance) {
-  const pip = pipSize(pair);
-
-  const boxes = [];
-  const signals = [];
-  const trades = [];
-  const pending = [];
-
-  let open = null;
-  let balance = startingBalance;
-  let peak = startingBalance;
-  let drawdown = 0;
-
-  let lastSignal = "WAIT FOR SETUP";
-  let lastActivated = null;
-  let lastNotification = "";
-
-  let directionLock = null;
-  const usedSignals = new Set();
-
-  const lastBar = bars[bars.length - 1];
-  const today = new Date(lastBar.time).toDateString();
-
-  const todayBars = bars.filter(
-    b => new Date(b.time).toDateString() === today
-  );
-
-  const asiaBars = todayBars.filter(
-    b =>
-      hourOf(b.time) >= cfg.asiaStart &&
-      hourOf(b.time) < cfg.asiaEnd
-  );
-
-  if (!asiaBars.length) {
-    return {
-      asia: null,
-      boxes: [],
-      signals: [],
-      trades: [],
-      pending: [],
-      open: null,
-      balance,
-      drawdown: 0,
-      lastSignal: "WAITING FOR ASIA DATA",
-      lastActivated: null,
-      lastNotification: ""
-    };
+function pipSize(symbol, category, candles) {
+  if (category === "Forex") {
+    return symbol.toUpperCase().includes("JPY")
+      ? 0.01
+      : 0.0001;
   }
 
-  const asia = {
-    high: Math.max(...asiaBars.map(b => b.high)),
-    low: Math.min(...asiaBars.map(b => b.low))
-  };
-
-  const asiaRangePips = (asia.high - asia.low) / pip;
-
-  const firstAsiaTime = asiaBars[0].time;
-  const lastAsiaTime = asiaBars[asiaBars.length - 1].time;
-
-  const startIndex = bars.findIndex(
-    b => b.time >= firstAsiaTime
-  );
-
-  // Approximate USD pip value for demo sizing.
-  // Actual lot sizing depends on broker and instrument.
-  const pipValuePerLot = 10;
-
-  const placePending = (isBuy, box, source, candle, index) => {
-    const direction = isBuy ? "BUY" : "SELL";
-
-    const signalKey = box.id + "-" + box.touches;
-
-    if (cfg.oneTradePerSignal && usedSignals.has(signalKey)) {
-      return false;
-    }
-
-    if (cfg.oneDirectionOnly && directionLock &&
-        directionLock !== direction) {
-      return false;
-    }
-
-    // Same-direction pending blocks another order.
-    const samePending = pending.find(
-      p => p.direction === direction
-    );
-
-    if (samePending) return false;
-
-    // Opposite pending is deleted.
-    for (let i = pending.length - 1; i >= 0; i--) {
-      if (pending[i].direction !== direction) {
-        pending.splice(i, 1);
-      }
-    }
-
-    // Opposite open position closes at current candle close.
-    if (open && open.direction !== direction) {
-      const priceMove = open.direction === "BUY"
-        ? candle.close - open.entry
-        : open.entry - candle.close;
-
-      const pipsMoved = priceMove / pip;
-      const profit = pipsMoved * open.lots * pipValuePerLot;
-
-      balance += profit;
-      peak = Math.max(peak, balance);
-
-      trades.unshift({
-        id: candle.time + "-OPPOSITE",
-        time: candle.time,
-        direction: open.direction,
-        source: open.source,
-        entry: open.entry,
-        exit: candle.close,
-        result: profit >= 0 ? "WIN" : "LOSS",
-        profit,
-        risk: open.risk,
-        exitReason: "OPPOSITE SIGNAL"
-      });
-
-      open = null;
-    }
-
-    // Maximum active positions.
-    if (open || pending.length >= cfg.maxTrades) return false;
-
-    if (cfg.tradeOnlyAfterAsia && candle.time <= lastAsiaTime) {
-      return false;
-    }
-
-    if (!inHours(candle.time, cfg.tradeStart, cfg.tradeEnd)) {
-      return false;
-    }
-
-    // RSI filter (optional).
-    if (cfg.useRSIFilter) {
-      const rsi = rsiAt(bars, cfg.rsiPeriod, index);
-      if (rsi == null) return false;
-
-      if (isBuy && rsi <= 50) return false;
-      if (!isBuy && rsi >= 50) return false;
-    }
-
-    // EMA rejection filter.
-    if (
-      !checkEMARejection(
-        bars, index, isBuy, asia, boxes, pair, cfg
-      )
-    ) {
-      return false;
-    }
-
-    const entry = isBuy
-      ? box.top + cfg.pendingBuffer * pip
-      : box.bot - cfg.pendingBuffer * pip;
-
-    const sl = entry + (isBuy ? -1 : 1) * cfg.fixedSL * pip;
-
-    const tpDistance = cfg.forexTP * pip;
-
-    const tp = entry + (isBuy ? 1 : -1) * tpDistance;
-
-    const risk = cfg.useRiskPercent
-      ? balance * cfg.riskPct / 100
-      : cfg.fixedSL * cfg.fixedLots * pipValuePerLot;
-
-    const lots = cfg.useRiskPercent
-      ? risk / (cfg.fixedSL * pipValuePerLot)
-      : cfg.fixedLots;
-
-    pending.push({
-      direction,
-      entry,
-      sl,
-      tp,
-      risk,
-      lots,
-      source,
-      created: candle.time,
-      boxId: box.id,
-      signalKey
-    });
-
-    usedSignals.add(signalKey);
-
-    if (!directionLock) directionLock = direction;
-
-    lastSignal = source;
-
-    signals.unshift({
-      name: source,
-      direction,
-      time: candle.time,
-      entry,
-      box: box.id
-    });
-
-    return true;
-  };
-
-  // ==================================================
-  // CHRONOLOGICAL CANDLE PROCESSING
-  // ==================================================
-
-  for (let i = Math.max(1, startIndex); i < bars.length; i++) {
-    const c = bars[i];
-    const p = bars[i - 1];
-
-    if (new Date(c.time).toDateString() !== today) continue;
-
-    const h = hourOf(c.time);
-
-    // No trading during Asia.
-    if (h >= cfg.asiaStart && h < cfg.asiaEnd) continue;
-
-    // Only create boxes after Asia.
-    if (h >= cfg.asiaEnd) {
-      const newBox = createBox(c, p, cfg);
-
-      if (newBox) {
-        boxes.push(newBox);
-
-        // Maximum 3 visible boxes.
-        const visible = boxes.filter(b => b.active);
-
-        while (visible.length > cfg.maxBoxes) {
-          const oldest = visible.shift();
-          oldest.active = false;
-        }
-      }
-    }
-
-    // ----------------------------------------------
-    // PENDING ORDER EXPIRY
-    // ----------------------------------------------
-
-    for (let j = pending.length - 1; j >= 0; j--) {
-      const order = pending[j];
-
-      if (
-        c.time - order.created >=
-        cfg.pendingExpiryMinutes * 60000
-      ) {
-        pending.splice(j, 1);
-        lastNotification = "PENDING EXPIRED: " + order.direction;
-      }
-    }
-
-    // ----------------------------------------------
-    // PENDING ORDER ACTIVATION
-    // ----------------------------------------------
-
-    let activatedThisBar = false;
-
-    for (let j = pending.length - 1; j >= 0; j--) {
-      const order = pending[j];
-
-      const hit = order.direction === "BUY"
-        ? c.high >= order.entry
-        : c.low <= order.entry;
-
-      if (!hit) continue;
-
-      if (open) continue;
-
-      open = {
-        ...order,
-        entryTime: c.time,
-        originalSL: order.sl,
-        breakevenDone: false,
-        trailingActive: false
-      };
-
-      pending.splice(j, 1);
-
-      lastActivated = {
-        direction: order.direction,
-        source: order.source,
-        entry: order.entry,
-        time: c.time
-      };
-
-      lastNotification =
-        "PENDING ACTIVATED: " + order.direction +
-        " " + order.source;
-
-      activatedThisBar = true;
-      break;
-    }
-
-    // Do not assume intrabar price sequence after activation.
-    if (activatedThisBar) continue;
-
-    // ----------------------------------------------
-    // OPEN TRADE MANAGEMENT
-    // ----------------------------------------------
-
-    if (open) {
-      const isBuy = open.direction === "BUY";
-
-      const stopHit = isBuy
-        ? c.low <= open.sl
-        : c.high >= open.sl;
-
-      const targetHit = isBuy
-        ? c.high >= open.tp
-        : c.low <= open.tp;
-
-      // Conservative execution: SL wins if both touched.
-      if (stopHit || targetHit) {
-        const won = targetHit && !stopHit;
-
-        const profit = won
-          ? open.risk * (cfg.forexTP / cfg.fixedSL)
-          : open.sl === open.entry + (isBuy ? -1 : 1) *
-            cfg.fixedSL * pip
-            ? -open.risk
-            : (
-                (isBuy
-                  ? open.sl - open.entry
-                  : open.entry - open.sl
-                ) / (cfg.fixedSL * pip)
-              ) * open.risk;
-
-        balance += profit;
-        peak = Math.max(peak, balance);
-
-        drawdown = Math.max(
-          drawdown,
-          peak > 0 ? (peak - balance) / peak * 100 : 0
-        );
-
-        trades.unshift({
-          id: c.time + "-" + trades.length,
-          time: c.time,
-          direction: open.direction,
-          source: open.source,
-          entry: open.entry,
-          exit: won ? open.tp : open.sl,
-          sl: open.sl,
-          tp: open.tp,
-          result: won ? "WIN" : "LOSS",
-          profit,
-          risk: open.risk,
-          exitReason: won ? "TAKE PROFIT" : "STOP LOSS"
-        });
-
-        open = null;
-        continue;
-      }
-
-      // BREAKEVEN: open price + spread.
-      const favorablePips = isBuy
-        ? (c.close - open.entry) / pip
-        : (open.entry - c.close) / pip;
-
-      if (
-        !open.breakevenDone &&
-        favorablePips >= cfg.breakevenPips
-      ) {
-        const be = open.entry +
-          (isBuy ? 1 : -1) * cfg.spreadPips * pip;
-
-        if (isBuy) open.sl = Math.max(open.sl, be);
-        else open.sl = Math.min(open.sl, be);
-
-        open.breakevenDone = true;
-      }
-
-      // EMA 60 TRAILING STOP.
-      // Activates after Asia range + extra 10 pips.
-      const trailingTrigger =
-        asiaRangePips + cfg.trailingExtraPips;
-
-      if (favorablePips >= trailingTrigger) {
-        open.trailingActive = true;
-
-        const ema60 = emaAt(bars, 60, i);
-
-        if (ema60 != null) {
-          if (isBuy && ema60 < c.close) {
-            open.sl = Math.max(open.sl, ema60);
-          }
-
-          if (!isBuy && ema60 > c.close) {
-            open.sl = Math.min(open.sl, ema60);
-          }
-        }
-      }
-    }
-
-    // ----------------------------------------------
-    // TRADING HOURS
-    // ----------------------------------------------
-
-    if (
-      open ||
-      pending.length >= cfg.maxTrades ||
-      !inHours(c.time, cfg.tradeStart, cfg.tradeEnd)
-    ) {
-      continue;
-    }
-
-    if (cfg.tradeOnlyAfterAsia && c.time <= lastAsiaTime) {
-      continue;
-    }
-
-    // ----------------------------------------------
-    // BOX BREAKOUT DETECTION AND RETEST TOUCHES
-    // ----------------------------------------------
-
-    for (const b of boxes) {
-      if (!b.active || c.time <= b.createdTime) continue;
-
-      // Detect breakout and save its time.
-      if (!b.broken) {
-        if (c.high > b.top) {
-          b.broken = true;
-          b.breakoutDirection = "UP";
-          b.breakoutTime = c.time;
-        } else if (c.low < b.bot) {
-          b.broken = true;
-          b.breakoutDirection = "DOWN";
-          b.breakoutTime = c.time;
-        }
-
-        continue;
-      }
-
-      // Touch must happen on a later candle.
-      if (c.time <= b.breakoutTime) continue;
-
-      const touched =
-        c.high >= b.bot &&
-        c.low <= b.top;
-
-      if (!touched) continue;
-
-      // Each candle can count only once.
-      if (b.lastTouchTime === c.time) continue;
-
-      b.lastTouchTime = c.time;
-      b.touches++;
-
-      const isBuy = candleDir(b.isBuyBox, c);
-
-      const stage = b.touches === 1
-        ? "RETEST"
-        : b.touches < cfg.deleteOnTouch
-          ? "FLIPPY"
-          : "DELETE";
-
-      const source = b.type + " " + stage;
-
-      // Third touch deletes the box.
-      if (b.touches >= cfg.deleteOnTouch) {
-        b.active = false;
-      }
-
-      placePending(isBuy, b, source, c, i);
-
-      if (open || pending.length) break;
-    }
-  }
+  const last = candles[candles.length - 1]?.close || 1;
+  const decimals = (String(last).split(".")[1] || "").length;
+  return Math.pow(10, -Math.min(decimals, 8));
+}
+
+function buildAsiaRange(candles) {
+  if (!candles.length) return null;
+
+  const lastDay = new Date(
+    candles[candles.length - 1].epoch * 1000
+  ).toISOString().slice(0, 10);
+
+  const asia = candles.filter(c => {
+    const date = new Date(c.epoch * 1000);
+    const day = date.toISOString().slice(0, 10);
+    const hour = date.getUTCHours();
+    return day === lastDay && hour >= 0 && hour < 7;
+  });
+
+  if (!asia.length) return null;
 
   return {
-    asia,
-    boxes: boxes.filter(b => b.active),
-    allBoxes: boxes,
-    signals: signals.slice(0, 30).reverse(),
-    trades,
-    pending,
-    open,
-    balance,
-    drawdown,
-    lastSignal,
-    lastActivated,
-    lastNotification,
-    asiaRangePips,
-    ema: cfg.emaPeriods.map(period => ({
-      period,
-      value: emaAt(bars, period, bars.length - 1)
-    })),
-    bars: bars.slice(-80)
+    high: Math.max(...asia.map(c => c.high)),
+    low: Math.min(...asia.map(c => c.low)),
+    day: lastDay
   };
 }
 
-// ==================================================
-// MOBILE INTERFACE
-// ==================================================
+function createBoxes(candles) {
+  const boxes = [];
 
-const panel = {
-  background: "#121c2d",
-  border: "1px solid #25344a",
-  borderRadius: 16,
-  padding: 16,
-  marginTop: 14
-};
+  for (let i = 1; i < candles.length; i++) {
+    const c = candles[i];
+    const prev = candles[i - 1];
+    const date = new Date(c.epoch * 1000);
 
-const btn = bg => ({
-  background: bg,
-  color: "white",
-  border: 0,
-  borderRadius: 10,
-  padding: "12px 14px",
-  fontWeight: 800,
-  width: "100%",
-  cursor: "pointer"
-});
+    if (date.getUTCHours() < 7) continue;
 
-const label = {
-  fontSize: 12,
-  color: "#91a4bd",
-  display: "block",
-  marginBottom: 6
-};
+    const range = c.high - c.low;
+    const body = Math.abs(c.close - c.open);
 
-const field = {
-  width: "100%",
-  boxSizing: "border-box",
-  background: "#0b1422",
-  color: "#edf4ff",
-  border: "1px solid #33445d",
-  borderRadius: 9,
-  padding: "11px",
-  fontSize: 14
-};
+    if (range <= 0) continue;
+
+    // ENGULFED: current body engulfs previous opposite body.
+    const currentBull = c.close > c.open;
+    const previousBear = prev.close < prev.open;
+    const currentBear = c.close < c.open;
+    const previousBull = prev.close > prev.open;
+
+    if (
+      (currentBull && previousBear &&
+        c.open <= prev.close && c.close >= prev.open) ||
+      (currentBear && previousBull &&
+        c.open >= prev.close && c.close <= prev.open)
+    ) {
+      boxes.push({
+        type: "ENGULFED",
+        high: prev.high,
+        low: prev.low,
+        created: i
+      });
+    }
+
+    // DOJI: body is 25% or less of full candle range.
+    if (body / range <= 0.25) {
+      boxes.push({
+        type: "DOJI",
+        high: c.high,
+        low: c.low,
+        created: i
+      });
+    }
+
+    // WICK: wick is at least 20% of candle body.
+    if (currentBull) {
+      const upperWick = c.high - c.close;
+
+      if (upperWick >= body * 0.20) {
+        boxes.push({
+          type: "WICK",
+          high: c.high,
+          low: c.close,
+          created: i
+        });
+      }
+    }
+
+    if (currentBear) {
+      const lowerWick = c.close - c.low;
+
+      if (lowerWick >= body * 0.20) {
+        boxes.push({
+          type: "WICK",
+          high: c.close,
+          low: c.low,
+          created: i
+        });
+      }
+    }
+  }
+
+  return boxes;
+}
+
+function findHLZSignal(candles, symbol, category) {
+  if (candles.length < 1070) {
+    return { direction: "NONE", reason: "Insufficient EMA history" };
+  }
+
+  const asia = buildAsiaRange(candles);
+
+  if (!asia) {
+    return { direction: "NONE", reason: "Asia range unavailable" };
+  }
+
+  const boxes = createBoxes(candles).filter(box =>
+  new Date(candles[box.created].epoch * 1000)
+    .toISOString().slice(0, 10) === asia.day
+);
+  if (!boxes.length) {
+    return { direction: "NONE", reason: "No HLZ boxes" };
+  }
+
+  const closes = candles.map(c => c.close);
+  const emas = {};
+
+  EMA_PERIODS.forEach(period => {
+    emas[period] = calculateEMA(closes, period);
+  });
+
+  const lastIndex = candles.length - 1;
+  const last = candles[lastIndex];
+  const direction = candleColor(last);
+
+  if (direction === "NONE") {
+    return { direction: "NONE", reason: "Neutral candle" };
+  }
+
+  const unit = pipSize(symbol, category, candles);
+  const rejectionBuffer = unit * 10;
+  const entryBuffer = unit * BUFFER_PIPS;
+
+  let best = null;
+
+  for (const box of boxes) {
+    if (lastIndex <= box.created) continue;
+
+    // Find the first breakout after box creation.
+    let breakoutIndex = -1;
+
+    for (let i = box.created + 1; i <= lastIndex; i++) {
+      if (
+        candles[i].close > box.high ||
+        candles[i].close < box.low
+      ) {
+        breakoutIndex = i;
+        break;
+      }
+    }
+
+    if (breakoutIndex < 0 || lastIndex <= breakoutIndex) {
+      continue;
+    }
+
+    // Count only touches after the breakout.
+    let touchCount = 0;
+    let lastTouchIndex = -1;
+
+    for (let i = breakoutIndex + 1; i <= lastIndex; i++) {
+      const candle = candles[i];
+
+      const touched =
+        candle.low <= box.high &&
+        candle.high >= box.low;
+
+      if (touched) {
+        touchCount++;
+        lastTouchIndex = i;
+      }
+    }
+
+    // Third touch deletes the box.
+    if (touchCount >= 3 || lastTouchIndex !== lastIndex) {
+      continue;
+    }
+
+    const touchType = touchCount === 1
+      ? "RETEST"
+      : "FLIPPY";
+
+    // Direction comes from the touch candle.
+    const touchDirection = candleColor(last);
+    if (touchDirection === "NONE") continue;
+
+    // EMA must be inside the HLZ box and outside Asia.
+    for (const period of EMA_PERIODS) {
+      const ema = emas[period][lastIndex];
+      if (!Number.isFinite(ema)) continue;
+
+      const emaInsideBox =
+        ema >= box.low && ema <= box.high;
+
+      const emaOutsideAsia =
+        ema < asia.low || ema > asia.high;
+
+      if (!emaInsideBox || !emaOutsideAsia) continue;
+
+      // Last closed candle must reject the EMA.
+      const buyRejection =
+        touchDirection === "BUY" &&
+        last.low <= ema + rejectionBuffer &&
+        last.close > ema;
+
+      const sellRejection =
+        touchDirection === "SELL" &&
+        last.high >= ema - rejectionBuffer &&
+        last.close < ema;
+
+      if (!buyRejection && !sellRejection) continue;
+
+      const signal = {
+        direction: touchDirection,
+        boxType: box.type,
+        touchType,
+        touchCount,
+        emaPeriod: period,
+        ema,
+        boxHigh: box.high,
+        boxLow: box.low,
+        asiaHigh: asia.high,
+        asiaLow: asia.low,
+        entry: touchDirection === "BUY"
+          ? box.high + entryBuffer
+          : box.low - entryBuffer,
+        pip: unit,
+        candleTime: last.epoch
+      };
+
+      if (
+        !best ||
+        signal.emaPeriod < best.emaPeriod
+      ) {
+        best = signal;
+      }
+    }
+  }
+
+  return best || {
+    direction: "NONE",
+    reason: "No breakout + retest + EMA confirmation"
+  };
+}
+
+function makeDemoOrder(signal, symbol, category, balance, riskPct) {
+  const point = signal.pip;
+  const isForex = category === "Forex";
+
+  const slDistance = isForex
+    ? FX_SL_PIPS * point
+    : 10 * point;
+
+  const tpDistance = isForex
+    ? FX_TP_PIPS * point
+    : NON_FX_TP_POINTS * point;
+
+  const buy = signal.direction === "BUY";
+
+  const sl = buy
+    ? signal.entry - slDistance
+    : signal.entry + slDistance;
+
+  const tp = buy
+    ? signal.entry + tpDistance
+    : signal.entry - tpDistance;
+
+  const riskMoney = balance * riskPct / 100;
+
+  return {
+    id: `${symbol}-${Date.now()}`,
+    symbol,
+    category,
+    direction: signal.direction,
+    source: `${signal.boxType} ${signal.touchType} EMA${signal.emaPeriod}`,
+    entry: signal.entry,
+    sl,
+    tp,
+    riskMoney,
+    status: "DEMO PENDING",
+    created: new Date().toLocaleTimeString()
+  };
+}
 
 export default function App() {
-  const [pair, setPair] = useState("EUR/USD");
-  const [timeframe, setTimeframe] = useState(5);
-  const [scenario, setScenario] = useState("range");
+  const socketRef = useRef(null);
+  const requestRef = useRef(0);
+  const pendingRef = useRef(new Map());
+  const scanLock = useRef(false);
+  const runningRef = useRef(false);
+  const scanTimer = useRef(null);
+
+  const [connected, setConnected] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [connectionText, setConnectionText] = useState("DISCONNECTED");
+  const [symbols, setSymbols] = useState([]);
+  const [signals, setSignals] = useState({});
+  const [orders, setOrders] = useState([]);
+  const [lastActivated, setLastActivated] = useState("NONE");
+  const [category, setCategory] = useState("All");
+  const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState(null);
+  const [progress, setProgress] = useState(0);
+  const [scanned, setScanned] = useState(0);
   const [balance, setBalance] = useState(10000);
-  const [cfg, setCfg] = useState(DEFAULTS);
-  const [replay, setReplay] = useState(null);
-  const [tab, setTab] = useState("overview");
-
-  const result = useMemo(
-    () => replay
-      ? runV611(replay, pair, cfg, balance)
-      : null,
-    [replay, pair, cfg, balance]
+  const [riskPct, setRiskPct] = useState(1);
+  const [fixedLots, setFixedLots] = useState(0.10);
+  const [message, setMessage] = useState(
+    "Connect to Deriv to discover available markets."
   );
+  const [lastScan, setLastScan] = useState("Not scanned");
 
-  const update = (key, value) =>
-    setCfg(s => ({ ...s, [key]: value }));
+  const request = useCallback((payload) => {
+    return new Promise((resolve, reject) => {
+      const ws = socketRef.current;
 
-  const run = (type = scenario) => {
-    setScenario(type);
-    setReplay(makeReplay(pair, type, timeframe));
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        reject(new Error("Deriv data connection is not open."));
+        return;
+      }
+
+      const id = ++requestRef.current;
+
+      const timeout = setTimeout(() => {
+        pendingRef.current.delete(id);
+        reject(new Error("Deriv request timed out."));
+      }, 30000);
+
+      pendingRef.current.set(id, {
+        resolve,
+        reject,
+        timeout
+      });
+
+      ws.send(JSON.stringify({
+        ...payload,
+        req_id: id
+      }));
+    });
+  }, []);
+
+  const connect = useCallback(() => {
+    return new Promise((resolve, reject) => {
+      if (
+        socketRef.current &&
+        socketRef.current.readyState === WebSocket.OPEN
+      ) {
+        resolve();
+        return;
+      }
+
+      setConnectionText("CONNECTING");
+
+      const ws = new WebSocket(WS_URL);
+      socketRef.current = ws;
+
+      ws.onopen = () => {
+        setConnected(true);
+        setConnectionText("DATA CONNECTED");
+        resolve();
+      };
+
+      ws.onmessage = event => {
+        let data;
+
+        try {
+          data = JSON.parse(event.data);
+        } catch {
+          return;
+        }
+
+        if (data.req_id && pendingRef.current.has(data.req_id)) {
+          const pending = pendingRef.current.get(data.req_id);
+          clearTimeout(pending.timeout);
+          pendingRef.current.delete(data.req_id);
+
+          if (data.error) {
+            pending.reject(new Error(data.error.message));
+          } else {
+            pending.resolve(data);
+          }
+        }
+      };
+
+      ws.onerror = () => {
+        setConnectionText("CONNECTION ERROR");
+        reject(new Error("Could not connect to Deriv."));
+      };
+
+      ws.onclose = () => {
+        setConnected(false);
+        setConnectionText("DISCONNECTED");
+
+        pendingRef.current.forEach(p => {
+          clearTimeout(p.timeout);
+          p.reject(new Error("Connection closed."));
+        });
+
+        pendingRef.current.clear();
+      };
+    });
+  }, []);
+
+  const discoverMarkets = useCallback(async () => {
+    const response = await request({
+      active_symbols: "full"
+    });
+
+    const list = (response.active_symbols || [])
+      .filter(s => s.symbol && !s.is_trading_suspended)
+      .map(s => ({
+        ...s,
+        category: categoryOf(s)
+      }))
+      .sort((a, b) =>
+        a.display_name.localeCompare(b.display_name)
+      );
+
+    setSymbols(list);
+    setMessage(
+      `${list.length} active Deriv symbols discovered.`
+    );
+
+    return list;
+  }, [request]);
+
+  const scanSymbol = useCallback(async (item) => {
+    try {
+      const response = await request({
+        ticks_history: item.symbol,
+        count: CANDLE_COUNT,
+        end: "latest",
+        style: "candles",
+        granularity: TIMEFRAME
+      });
+
+      const raw = response.candles || [];
+
+      const candles = raw.map(c => ({
+        epoch: Number(c.epoch),
+        open: Number(c.open),
+        high: Number(c.high),
+        low: Number(c.low),
+        close: Number(c.close)
+      })).filter(c =>
+        Number.isFinite(c.close) &&
+        Number.isFinite(c.epoch)
+      );
+
+      // Ignore the still-forming candle.
+      const now = Math.floor(Date.now() / 1000);
+      const closed = candles.filter(c =>
+        c.epoch + TIMEFRAME <= now
+      );
+
+      return findHLZSignal(
+        closed,
+        item.symbol,
+        item.category
+      );
+    } catch (error) {
+      return {
+        direction: "NONE",
+        reason: error.message || "Market data unavailable"
+      };
+    }
+  }, [request]);
+
+  const scanAll = useCallback(async (list) => {
+    if (scanLock.current || !runningRef.current) return;
+
+    scanLock.current = true;
+    setMessage("Scanning all available Deriv markets...");
+
+    const results = {};
+    let completed = 0;
+    let nextIndex = 0;
+
+    const worker = async () => {
+      while (
+        nextIndex < list.length &&
+        runningRef.current
+      ) {
+        const index = nextIndex++;
+        const item = list[index];
+
+        results[item.symbol] = await scanSymbol(item);
+
+        completed++;
+        setScanned(completed);
+        setProgress(
+          Math.round(completed / list.length * 100)
+        );
+
+        if (completed % 10 === 0) {
+          setSignals(previous => ({
+            ...previous,
+            ...results
+          }));
+        }
+      }
+    };
+
+    // Conservative request concurrency for mobile.
+    await Promise.all([
+      worker(),
+      worker()
+    ]);
+
+    setSignals(previous => ({
+      ...previous,
+      ...results
+    }));
+
+    setLastScan(new Date().toLocaleTimeString());
+    setMessage(
+      runningRef.current
+        ? `Scan complete: ${completed} of ${list.length} symbols checked.`
+        : "Scanning stopped."
+    );
+
+    scanLock.current = false;
+  }, [scanSymbol]);
+
+  const startRobot = async () => {
+    try {
+      setMessage("Connecting to Deriv...");
+      await connect();
+
+      runningRef.current = true;
+      setRunning(true);
+
+      const list = await discoverMarkets();
+
+      if (!list.length) {
+        setMessage("No active markets returned by Deriv.");
+        return;
+      }
+
+      await scanAll(list);
+
+      if (scanTimer.current) {
+        clearInterval(scanTimer.current);
+      }
+
+      scanTimer.current = setInterval(() => {
+        if (runningRef.current) {
+          scanAll(list);
+        }
+      }, TIMEFRAME * 1000);
+    } catch (error) {
+      runningRef.current = false;
+      setRunning(false);
+      setMessage(error.message);
+    }
   };
 
-  const reset = () => setReplay(null);
+  const stopRobot = () => {
+    runningRef.current = false;
+    setRunning(false);
 
-  const total = result?.trades?.length || 0;
+    if (scanTimer.current) {
+      clearInterval(scanTimer.current);
+      scanTimer.current = null;
+    }
 
-  const wins =
-    result?.trades?.filter(t => t.result === "WIN").length || 0;
+    // Demo-only STOP: clear all simulated orders.
+    setOrders([]);
+    setMessage(
+      "STOPPED. All simulated pending orders cleared."
+    );
+  };
 
-  const winRate = total
-    ? (wins / total * 100).toFixed(1)
-    : "0.0";
+  const activateSignal = item => {
+    const signal = signals[item.symbol];
+
+    if (!signal || signal.direction === "NONE") return;
+
+    const order = makeDemoOrder(
+      signal,
+      item.symbol,
+      item.category,
+      balance,
+      riskPct
+    );
+
+    setOrders(previous => [order, ...previous]);
+    setSelected(item);
+    setLastActivated(order.source);
+    setMessage(
+      `${item.symbol}: simulated pending stop created.`
+    );
+  };
+
+  useEffect(() => {
+    return () => {
+      runningRef.current = false;
+
+      if (scanTimer.current) {
+        clearInterval(scanTimer.current);
+      }
+
+      if (socketRef.current) {
+        socketRef.current.close();
+      }
+    };
+  }, []);
+
+  const visibleSymbols = symbols.filter(item => {
+    const matchesCategory =
+      category === "All" || item.category === category;
+
+    const matchesSearch =
+      !search ||
+      item.display_name.toLowerCase().includes(search.toLowerCase()) ||
+      item.symbol.toLowerCase().includes(search.toLowerCase());
+
+    return matchesCategory && matchesSearch;
+  });
+
+  const buyCount = symbols.filter(s =>
+    signals[s.symbol]?.direction === "BUY"
+  ).length;
+
+  const sellCount = symbols.filter(s =>
+    signals[s.symbol]?.direction === "SELL"
+  ).length;
+
+  const noneCount = Math.max(
+    0,
+    scanned - buyCount - sellCount
+  );
+
+  const signalColor = direction =>
+    direction === "BUY"
+      ? "#16c784"
+      : direction === "SELL"
+      ? "#ea5455"
+      : "#8993a4";
 
   return (
-    <main style={{
-      minHeight: "100vh",
-      background: "#080e19",
-      color: "#edf4ff",
-      fontFamily: "Inter,system-ui,Arial",
-      padding: 16,
-      boxSizing: "border-box"
-    }}>
-      <div style={{ maxWidth: 760, margin: "0 auto" }}>
+    <div style={styles.app}>
+      <style>{`
+        * { box-sizing: border-box; }
+        body { margin: 0; background: #080d18; }
+        button, input { font: inherit; }
+        button { cursor: pointer; }
+        .market-scroll {
+          display:flex; gap:7px; overflow-x:auto;
+          padding:4px 0 10px; scrollbar-width:none;
+        }
+        .market-scroll::-webkit-scrollbar { display:none; }
+        .market-card:active { transform:scale(.99); }
+        .market-card {
+          transition:transform .12s ease;
+        }
+        .market-card:disabled { opacity:.55; cursor:not-allowed; }
+        input:focus { outline:1px solid #31a8ff; }
+      `}</style>
 
-        <header style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          gap: 12,
-          flexWrap: "wrap"
+      <header style={styles.header}>
+        <div>
+          <div style={styles.brand}>iFX BILLIONAIRE</div>
+          <div style={styles.subtitle}>HLZ MOBILE ROBOT · V1</div>
+        </div>
+
+        <div style={{
+          ...styles.status,
+          background: running ? "#123e30" : "#33252a",
+          color: running ? "#25d99a" : "#ff7a82"
         }}>
-          <div>
-            <div style={{
-              color: "#45c5ff",
-              fontWeight: 900,
-              letterSpacing: 2,
-              fontSize: 12
-            }}>
-              V6.11 STRATEGY PORT
-            </div>
-
-            <h1 style={{ margin: "5px 0", fontSize: 28 }}>
-              ASIA BREAKOUT
-            </h1>
-
-            <div style={{ color: "#93a5bd", fontSize: 13 }}>
-              Mobile demo · candle replay · no broker connection
-            </div>
-          </div>
-
           <span style={{
-            background: "#422b12",
-            color: "#ffce79",
-            padding: "7px 10px",
-            borderRadius: 30,
-            fontSize: 11,
-            fontWeight: 800
-          }}>
-            DEMO ONLY
-          </span>
-        </header>
+            ...styles.dot,
+            background: running ? "#25d99a" : "#ff626c"
+          }}/>
+          {running ? "RUNNING" : "STOPPED"}
+        </div>
+      </header>
 
-        {/* MARKET SETUP */}
-        <section style={panel}>
-          <h3 style={{ marginTop: 0 }}>Market setup</h3>
+      <main style={styles.main}>
+        <section style={styles.panel}>
+          <div style={styles.panelTitle}>ROBOT CONTROL</div>
 
-          <div style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(2,minmax(0,1fr))",
-            gap: 12
-          }}>
-            <label>
-              <span style={label}>Forex major pair</span>
-              <select
-                value={pair}
-                onChange={e => {
-                  setPair(e.target.value);
-                  reset();
-                }}
-                style={field}
-              >
-                {PAIRS.map(p => <option key={p}>{p}</option>)}
-              </select>
-            </label>
-
-            <label>
-              <span style={label}>Chart timeframe</span>
-              <select
-                value={timeframe}
-                onChange={e => {
-                  setTimeframe(+e.target.value);
-                  reset();
-                }}
-                style={field}
-              >
-                {[1, 5, 15, 30, 60].map(v => (
-                  <option key={v} value={v}>
-                    {v === 60 ? "1 hour" : v + " minutes"}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label>
-              <span style={label}>Demo starting balance ($)</span>
-              <input
-                type="number"
-                min="100"
-                value={balance}
-                onChange={e =>
-                  setBalance(Math.max(100, +e.target.value || 100))
-                }
-                style={field}
-              />
-            </label>
-
-            <label>
-              <span style={label}>Position sizing</span>
-              <input
-                value={cfg.useRiskPercent
-                  ? cfg.riskPct + "% risk"
-                  : cfg.fixedLots + " lots"}
-                readOnly
-                style={field}
-              />
-            </label>
+          <div style={styles.connection}>
+            <span style={{
+              ...styles.dot,
+              background: connected ? "#20c997" : "#8892a6"
+            }}/>
+            {connectionText}
+            <span style={styles.demoTag}>DEMO EXECUTION</span>
           </div>
 
-          <div style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(3,minmax(0,1fr))",
-            gap: 8,
-            marginTop: 14
-          }}>
-            <button style={btn("#334155")} onClick={() => run("range")}>
-              RANGE TEST
-            </button>
-
-            <button style={btn("#166534")} onClick={() => run("bullish")}>
-              BULLISH TEST
-            </button>
-
-            <button style={btn("#991b1b")} onClick={() => run("bearish")}>
-              BEARISH TEST
-            </button>
-          </div>
-
-          <div style={{
-            display: "grid",
-            gridTemplateColumns: "1fr 1fr",
-            gap: 8,
-            marginTop: 8
-          }}>
-            <button style={btn("#075985")} onClick={() => run("retest")}>
-              BREAKOUT TEST
-            </button>
-
-            <button style={btn("#475569")} onClick={reset}>
-              CLEAR REPLAY
-            </button>
-          </div>
-
-          <p style={{
-            fontSize: 11,
-            color: "#91a4bd",
-            lineHeight: 1.5,
-            marginBottom: 0
-          }}>
-            Deterministic test candles only. These are not live
-            market prices or broker historical data.
-          </p>
-        </section>
-
-        {/* NAVIGATION */}
-        <nav style={{
-          display: "flex",
-          gap: 8,
-          marginTop: 14
-        }}>
-          {["overview", "strategy", "journal", "settings"].map(t => (
+          <div style={styles.buttonRow}>
             <button
-              key={t}
-              onClick={() => setTab(t)}
+              onClick={startRobot}
+              disabled={running}
               style={{
-                ...btn(tab === t ? "#0369a1" : "#1b293d"),
-                textTransform: "capitalize",
-                padding: 10
+                ...styles.primaryButton,
+                opacity: running ? .5 : 1
               }}
             >
-              {t}
+              ▶ START ROBOT
             </button>
-          ))}
-        </nav>
-
-        {/* OVERVIEW */}
-        {tab === "overview" && (
-          <>
-            <section style={panel}>
-              <h3 style={{ marginTop: 0 }}>Asia session range</h3>
-
-              {result?.asia ? (
-                <div style={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr 1fr",
-                  gap: 12
-                }}>
-                  <Metric title="ASIA HIGH" value={fmt(result.asia.high, pair)} />
-                  <Metric title="ASIA LOW" value={fmt(result.asia.low, pair)} />
-                  <Metric
-                    title="RANGE"
-                    value={result.asiaRangePips.toFixed(1) + " pips"}
-                  />
-                  <Metric title="TIME WINDOW" value="00:00–07:00" />
-                </div>
-              ) : (
-                <p style={{ color: "#91a4bd" }}>
-                  Run a replay to calculate the Asia high and low.
-                </p>
-              )}
-            </section>
-
-            <section style={panel}>
-              <h3 style={{ marginTop: 0 }}>Strategy status</h3>
-
-              <div style={{
-                fontSize: 19,
-                fontWeight: 900,
-                color: result?.pending?.length
-                  ? "#fbbf24"
-                  : "#94a3b8"
-              }}>
-                {result?.lastSignal || "WAITING FOR CANDLES"}
-              </div>
-
-              <p style={{ color: "#91a4bd", fontSize: 12 }}>
-                Pending: {result?.pending?.length || 0} ·
-                Open trade: {result?.open?.direction || "None"}
-              </p>
-
-              {result?.pending?.map((p, i) => (
-                <div key={i} style={{
-                  borderTop: "1px solid #29384d",
-                  paddingTop: 10,
-                  marginTop: 10
-                }}>
-                  <b>{p.direction} STOP · {p.source}</b>
-                  <p style={{ fontSize: 12, color: "#a9b9cd" }}>
-                    Entry {fmt(p.entry, pair)} ·
-                    SL {fmt(p.sl, pair)} ·
-                    TP {fmt(p.tp, pair)} ·
-                    Lots {p.lots.toFixed(2)} ·
-                    Risk {money(p.risk)}
-                  </p>
-                </div>
-              ))}
-
-              {result?.open && (
-                <div style={{
-                  borderTop: "1px solid #29384d",
-                  paddingTop: 10,
-                  marginTop: 10
-                }}>
-                  <b>OPEN {result.open.direction}</b>
-                  <p style={{ fontSize: 12, color: "#a9b9cd" }}>
-                    Entry {fmt(result.open.entry, pair)} ·
-                    SL {fmt(result.open.sl, pair)} ·
-                    TP {fmt(result.open.tp, pair)}
-                  </p>
-                  <p style={{ fontSize: 11, color: "#91a4bd" }}>
-                    Breakeven: {result.open.breakevenDone ? "ACTIVE" : "WAITING"} ·
-                    EMA trailing: {result.open.trailingActive ? "ACTIVE" : "WAITING"}
-                  </p>
-                </div>
-              )}
-            </section>
-
-            <section style={panel}>
-              <h3 style={{ marginTop: 0 }}>LAST ACTIVATED</h3>
-
-              {result?.lastActivated ? (
-                <>
-                  <b style={{ color: "#4ade80" }}>
-                    {result.lastActivated.direction} · {result.lastActivated.source}
-                  </b>
-                  <p style={{ fontSize: 12, color: "#a9b9cd" }}>
-                    Entry: {fmt(result.lastActivated.entry, pair)}
-                  </p>
-                  <p style={{ fontSize: 11, color: "#91a4bd" }}>
-                    {new Date(result.lastActivated.time).toLocaleString()}
-                  </p>
-                </>
-              ) : (
-                <p style={{ color: "#91a4bd", fontSize: 12 }}>
-                  No pending order has activated in this replay.
-                </p>
-              )}
-
-              {result?.lastNotification && (
-                <p style={{
-                  color: "#fbbf24",
-                  fontSize: 12,
-                  borderTop: "1px solid #29384d",
-                  paddingTop: 10
-                }}>
-                  {result.lastNotification}
-                </p>
-              )}
-            </section>
-
-            <section style={panel}>
-              <h3 style={{ marginTop: 0 }}>Visible boxes</h3>
-
-              {!result?.boxes?.length ? (
-                <p style={{ color: "#91a4bd", fontSize: 12 }}>
-                  No active boxes detected.
-                </p>
-              ) : result.boxes.map(b => (
-                <div key={b.id} style={{
-                  borderTop: "1px solid #29384d",
-                  padding: "10px 0"
-                }}>
-                  <b>{b.type} · {b.isBuyBox ? "BUY BOX" : "SELL BOX"}</b>
-                  <p style={{ fontSize: 12, color: "#a9b9cd" }}>
-                    Top: {fmt(b.top, pair)} ·
-                    Bottom: {fmt(b.bot, pair)}
-                  </p>
-                  <p style={{ fontSize: 11, color: "#91a4bd" }}>
-                    {b.broken ? "BROKEN " + b.breakoutDirection : "NOT BROKEN"} ·
-                    Touches: {b.touches}
-                  </p>
-                </div>
-              ))}
-            </section>
-
-            <section style={panel}>
-              <h3 style={{ marginTop: 0 }}>Demo performance</h3>
-
-              <div style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(2,minmax(0,1fr))",
-                gap: 12
-              }}>
-                <Metric title="BALANCE" value={money(result?.balance ?? balance)} />
-                <Metric title="CLOSED TRADES" value={total} />
-                <Metric title="WIN RATE" value={winRate + "%"} />
-                <Metric
-                  title="MAX DRAWDOWN"
-                  value={(result?.drawdown || 0).toFixed(2) + "%"}
-                />
-              </div>
-            </section>
-          </>
-        )}
-
-        {/* STRATEGY */}
-        {tab === "strategy" && (
-          <section style={panel}>
-            <h3 style={{ marginTop: 0 }}>V6.11 strategy rules</h3>
-
-            <ol style={{
-              paddingLeft: 20,
-              lineHeight: 1.8,
-              color: "#d6e2f1"
-            }}>
-              <li>Build Asia high and low from 00:00–07:00.</li>
-              <li>No trading during Asia.</li>
-              <li>
-                Create ENGULFED, WICK and DOJI boxes after Asia.
-              </li>
-              <li>Keep a maximum of 3 visible boxes.</li>
-              <li>Save breakout direction and breakout time.</li>
-              <li>
-                Count later touches: RETEST, FLIPPY, DELETE.
-              </li>
-              <li>Determine trade direction from touch candle colour.</li>
-              <li>
-                Require at least one valid rejection from EMA 35,
-                60, 90, 200, 120 or 1068.
-              </li>
-              <li>
-                Trade only between 09:00 and 19:00.
-              </li>
-              <li>
-                Place BUY STOP or SELL STOP at box boundary
-                plus/minus 2 pips.
-              </li>
-              <li>
-                Apply 10-pip SL and 31-pip Forex TP.
-              </li>
-              <li>
-                Expire pending orders after 60 minutes.
-              </li>
-              <li>
-                Breakeven after 25 pips; follow EMA 60 after
-                Asia range plus 10 pips.
-              </li>
-            </ol>
-
-            <div style={{
-              borderTop: "1px solid #29384d",
-              paddingTop: 12
-            }}>
-              <b>EMA values</b>
-
-              {(result?.ema || []).map(e => (
-                <p key={e.period} style={{
-                  margin: "7px 0",
-                  color: "#a9b9cd",
-                  fontSize: 13
-                }}>
-                  EMA {e.period}: {fmt(e.value, pair)}
-                </p>
-              ))}
-            </div>
-          </section>
-        )}
-
-        {/* JOURNAL */}
-        {tab === "journal" && (
-          <section style={panel}>
-            <h3 style={{ marginTop: 0 }}>Trade journal</h3>
-
-            {!result?.trades?.length ? (
-              <p style={{ color: "#91a4bd" }}>
-                No completed demo trades in this replay.
-              </p>
-            ) : result.trades.map(t => (
-              <div key={t.id} style={{
-                borderTop: "1px solid #29384d",
-                padding: "12px 0"
-              }}>
-                <b style={{
-                  color: t.result === "WIN" ? "#4ade80" : "#fb7185"
-                }}>
-                  {t.result} · {t.direction} · {t.source}
-                </b>
-
-                <p style={{
-                  fontSize: 12,
-                  color: "#a9b9cd",
-                  margin: "5px 0"
-                }}>
-                  {new Date(t.time).toLocaleString()}
-                </p>
-
-                <p style={{ fontSize: 12, margin: "5px 0" }}>
-                  Entry {fmt(t.entry, pair)} ·
-                  Exit {fmt(t.exit, pair)} ·
-                  Risk {money(t.risk)}
-                </p>
-
-                <b>{money(t.profit)}</b>
-                <p style={{ fontSize: 11, color: "#91a4bd" }}>
-                  Exit: {t.exitReason}
-                </p>
-              </div>
-            ))}
-          </section>
-        )}
-
-        {/* SETTINGS */}
-        {tab === "settings" && (
-          <section style={panel}>
-            <h3 style={{ marginTop: 0 }}>Execution & risk settings</h3>
-
-            <div style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr",
-              gap: 12
-            }}>
-              <Setting
-                label="Fixed SL (pips)"
-                value={cfg.fixedSL}
-                onChange={v => update("fixedSL", Math.max(1, +v || 1))}
-              />
-
-              <Setting
-                label="Forex TP (pips)"
-                value={cfg.forexTP}
-                onChange={v => update("forexTP", Math.max(1, +v || 1))}
-              />
-
-              <Setting
-                label="Pending buffer (pips)"
-                value={cfg.pendingBuffer}
-                onChange={v => update("pendingBuffer", Math.max(0, +v || 0))}
-              />
-
-              <Setting
-                label="Pending expiry (minutes)"
-                value={cfg.pendingExpiryMinutes}
-                onChange={v => update("pendingExpiryMinutes", Math.max(1, +v || 1))}
-              />
-
-              <Setting
-                label="Risk (%)"
-                value={cfg.riskPct}
-                onChange={v => update("riskPct", Math.max(0.1, Math.min(100, +v || 1)))}
-              />
-
-              <Setting
-                label="Fixed lots"
-                value={cfg.fixedLots}
-                onChange={v => update("fixedLots", Math.max(0.01, +v || 0.01))}
-              />
-
-              <Setting
-                label="Breakeven trigger (pips)"
-                value={cfg.breakevenPips}
-                onChange={v => update("breakevenPips", Math.max(1, +v || 1))}
-              />
-
-              <Setting
-                label="Trailing extra trigger (pips)"
-                value={cfg.trailingExtraPips}
-                onChange={v => update("trailingExtraPips", Math.max(0, +v || 0))}
-              />
-
-              <Setting
-                label="EMA distance (points)"
-                value={cfg.emaDistancePoints}
-                onChange={v => update("emaDistancePoints", Math.max(0, +v || 0))}
-              />
-
-              <Setting
-                label="Wick threshold (%)"
-                value={cfg.wickPercent}
-                onChange={v => update("wickPercent", Math.max(1, Math.min(100, +v || 20)))}
-              />
-
-              <Setting
-                label="Doji body maximum (%)"
-                value={cfg.dojiBodyPercent}
-                onChange={v => update("dojiBodyPercent", Math.max(1, Math.min(100, +v || 25)))}
-              />
-            </div>
-
-            <div style={{
-              borderTop: "1px solid #29384d",
-              marginTop: 16,
-              paddingTop: 14
-            }}>
-              <b>Position sizing</b>
-
-              <Toggle
-                label="Use risk percentage sizing"
-                checked={cfg.useRiskPercent}
-                onChange={v => update("useRiskPercent", v)}
-              />
-
-              <Toggle
-                label="One direction only"
-                checked={cfg.oneDirectionOnly}
-                onChange={v => update("oneDirectionOnly", v)}
-              />
-
-              <Toggle
-                label="One trade per signal"
-                checked={cfg.oneTradePerSignal}
-                onChange={v => update("oneTradePerSignal", v)}
-              />
-
-              <Toggle
-                label="Trade only after Asia"
-                checked={cfg.tradeOnlyAfterAsia}
-                onChange={v => update("tradeOnlyAfterAsia", v)}
-              />
-
-              <Toggle
-                label="Enable six-EMA rejection filter"
-                checked={cfg.useEmaFilter}
-                onChange={v => update("useEmaFilter", v)}
-              />
-
-              <Toggle
-                label="Enable RSI filter"
-                checked={cfg.useRSIFilter}
-                onChange={v => update("useRSIFilter", v)}
-              />
-            </div>
-
-            <p style={{
-              fontSize: 12,
-              color: "#91a4bd",
-              lineHeight: 1.6
-            }}>
-              Trading window: 09:00–19:00. Maximum active
-              trades: 1. Maximum visible boxes: 3.
-              Forex TP: 31 pips. SL: 10 pips.
-            </p>
 
             <button
-              style={btn("#334155")}
-              onClick={() => setCfg(DEFAULTS)}
+              onClick={stopRobot}
+              disabled={!running && orders.length === 0}
+              style={styles.stopButton}
             >
-              RESTORE DEFAULT SETTINGS
+              ■ STOP
             </button>
-          </section>
-        )}
+          </div>
 
-        {/* DISCLAIMER */}
-        <section style={{
-          ...panel,
-          borderColor: "#6b4c1e",
-          background: "#17170f"
-        }}>
-          <b style={{ color: "#ffce79" }}>
-            Simulation limitations
-          </b>
+          <div style={styles.message}>{message}</div>
 
-          <p style={{
-            fontSize: 12,
-            color: "#d8c9a7",
-            lineHeight: 1.6,
-            marginBottom: 0
-          }}>
-            This is a browser-based strategy simulator, not an
-            MT4 execution engine. It uses generated OHLC candles.
-            Spread, commissions, broker execution, slippage and
-            actual account notifications are not connected.
-            The lot-sizing calculation uses an approximate
-            $10 per pip per standard lot assumption. Gold and
-            indices require their own contract specifications
-            before their 1,000-point TP can be tested accurately.
+          <div style={styles.progressTrack}>
+            <div style={{
+              ...styles.progressFill,
+              width: `${progress}%`
+            }}/>
+          </div>
+
+          <div style={styles.smallText}>
+            Scan progress: {scanned}/{symbols.length} · {progress}%
+          </div>
+        </section>
+
+        <section style={styles.statsGrid}>
+          <div style={styles.stat}>
+            <div style={styles.statLabel}>MARKETS FOUND</div>
+            <div style={styles.statValue}>{symbols.length}</div>
+          </div>
+          <div style={styles.stat}>
+            <div style={styles.statLabel}>BUY SIGNALS</div>
+            <div style={{...styles.statValue, color:"#16c784"}}>
+              {buyCount}
+            </div>
+          </div>
+          <div style={styles.stat}>
+            <div style={styles.statLabel}>SELL SIGNALS</div>
+            <div style={{...styles.statValue, color:"#ea5455"}}>
+              {sellCount}
+            </div>
+          </div>
+          <div style={styles.stat}>
+            <div style={styles.statLabel}>OPEN DEMO ORDERS</div>
+            <div style={styles.statValue}>{orders.length}</div>
+          </div>
+        </section>
+
+        <section style={styles.panel}>
+          <div style={styles.panelHeading}>
+            <div>
+              <div style={styles.panelTitle}>ACTIVE HLZ SIGNALS</div>
+              <div style={styles.smallText}>
+                All currently discovered Deriv markets
+              </div>
+            </div>
+            <div style={styles.smallText}>
+              M5 · EMA 35/60/90/120/200/1068
+            </div>
+          </div>
+
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search symbol or market..."
+            style={styles.search}
+          />
+
+          <div className="market-scroll">
+            {CATEGORIES.map(cat => (
+              <button
+                key={cat}
+                onClick={() => setCategory(cat)}
+                style={{
+                  ...styles.categoryButton,
+                  background: category === cat ? "#1677d2" : "#18243a",
+                  color: category === cat ? "#fff" : "#aab7cc"
+                }}
+              >
+                {cat}
+              </button>
+            ))}
+          </div>
+
+          {!symbols.length && (
+            <div style={styles.empty}>
+              Press START ROBOT to discover Deriv markets.
+            </div>
+          )}
+
+          <div style={styles.marketList}>
+            {visibleSymbols.slice(0, 250).map(item => {
+              const signal = signals[item.symbol] || {
+                direction: "NONE",
+                reason: "Waiting for scan"
+              };
+
+              const color = signalColor(signal.direction);
+              const isSelected = selected?.symbol === item.symbol;
+
+              return (
+                <button
+                  key={item.symbol}
+                  className="market-card"
+                  onClick={() => {
+                    if (signal.direction !== "NONE") {
+                      activateSignal(item);
+                    } else {
+                      setSelected(item);
+                      setMessage(
+                        `${item.display_name}: ${signal.reason || "No signal"}`
+                      );
+                    }
+                  }}
+                  style={{
+                    ...styles.marketCard,
+                    borderColor: isSelected ? "#31a8ff" : "#24334b"
+                  }}
+                >
+                  <div style={styles.marketLeft}>
+                    <div style={styles.marketName}>
+                      {item.display_name || item.symbol}
+                    </div>
+                    <div style={styles.marketMeta}>
+                      {item.symbol} · {item.category}
+                    </div>
+                    {signal.direction !== "NONE" && (
+                      <div style={styles.signalDetail}>
+                        {signal.boxType} · {signal.touchType} · EMA{signal.emaPeriod}
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={{
+                    ...styles.signalBadge,
+                    background: color
+                  }}>
+                    {signal.direction === "NONE"
+                      ? "NONE"
+                      : signal.direction}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          {visibleSymbols.length > 250 && (
+            <div style={styles.smallText}>
+              Showing first 250 of {visibleSymbols.length} matching
+              instruments. All discovered instruments remain in the scan.
+            </div>
+          )}
+        </section>
+
+        <section style={styles.panel}>
+          <div style={styles.panelTitle}>TRADE SETTINGS</div>
+
+          <div style={styles.settingsGrid}>
+            <label style={styles.field}>
+              <span>Demo balance ($)</span>
+              <input
+                type="number"
+                value={balance}
+                onChange={e => setBalance(Number(e.target.value))}
+                style={styles.numberInput}
+              />
+            </label>
+
+            <label style={styles.field}>
+              <span>Risk per trade (%)</span>
+              <input
+                type="number"
+                min="0.1"
+                max="10"
+                step="0.1"
+                value={riskPct}
+                onChange={e => setRiskPct(Number(e.target.value))}
+                style={styles.numberInput}
+              />
+            </label>
+
+            <label style={styles.field}>
+              <span>Fixed lots (display only)</span>
+              <input
+                type="number"
+                min="0.01"
+                step="0.01"
+                value={fixedLots}
+                onChange={e => setFixedLots(Number(e.target.value))}
+                style={styles.numberInput}
+              />
+            </label>
+          </div>
+
+          <div style={styles.ruleText}>
+            Forex demo: 10-pip SL / 31-pip TP.
+            Non-Forex demo: 10-point SL / 1,000-point TP.
+            Non-Forex distances are provisional point-based test values,
+            not validated live contract settings.
+          </div>
+        </section>
+
+        <section style={styles.panel}>
+          <div style={styles.panelHeading}>
+            <div>
+              <div style={styles.panelTitle}>DEMO PENDING ORDERS</div>
+              <div style={styles.smallText}>
+                Orders created by tapping a valid signal
+              </div>
+            </div>
+            <div style={styles.countBadge}>{orders.length}</div>
+          </div>
+
+          {!orders.length && (
+            <div style={styles.empty}>No demo pending orders.</div>
+          )}
+
+          {orders.map(order => (
+            <div key={order.id} style={styles.orderCard}>
+              <div style={styles.panelHeading}>
+                <strong>{order.symbol}</strong>
+                <span style={{
+                  color: order.direction === "BUY" ? "#16c784" : "#ea5455",
+                  fontWeight:800
+                }}>
+                  {order.direction}
+                </span>
+              </div>
+              <div style={styles.smallText}>{order.source}</div>
+
+              <div style={styles.orderGrid}>
+                <div>ENTRY <b>{fmt(order.entry, 6)}</b></div>
+                <div>STOP LOSS <b>{fmt(order.sl, 6)}</b></div>
+                <div>TAKE PROFIT <b>{fmt(order.tp, 6)}</b></div>
+                <div>RISK <b>${fmt(order.riskMoney, 2)}</b></div>
+              </div>
+
+              <div style={styles.demoTag}>{order.status}</div>
+            </div>
+          ))}
+        </section>
+
+        <section style={styles.panel}>
+          <div style={styles.panelTitle}>LAST ACTIVATED</div>
+          <div style={styles.lastActivated}>{lastActivated}</div>
+          <div style={styles.smallText}>
+            Last scan: {lastScan}
+          </div>
+        </section>
+
+        <section style={styles.warning}>
+          <strong>IMPORTANT — EXECUTION STATUS</strong>
+          <p>
+            Deriv public market data is connected separately from broker
+            execution. This build scans real Deriv candles but creates
+            simulated orders only. It does not send real pending orders,
+            close real positions or manage a live account.
+          </p>
+          <p>
+            Asia session is calculated using UTC candle timestamps.
+            Confirm the session timezone against the original EA before
+            comparing signals.
           </p>
         </section>
 
-        <footer style={{
-          textAlign: "center",
-          color: "#6f829b",
-          fontSize: 11,
-          padding: "20px 0"
-        }}>
-          ASIA BREAKOUT MOBILE · V6.11 · DEMO ONLY
+        <footer style={styles.footer}>
+          iFX BILLIONAIRE ROBOT · HLZ MOBILE V1
+          <br/>
+          Breakouts · Retests · EMA rejection
         </footer>
-      </div>
-    </main>
-  );
-}
-
-// ==================================================
-// REUSABLE COMPONENTS
-// ==================================================
-
-function Metric({ title, value }) {
-  return (
-    <div style={{
-      background: "#0b1422",
-      padding: 12,
-      borderRadius: 10
-    }}>
-      <div style={{
-        fontSize: 10,
-        color: "#8196b1",
-        fontWeight: 800,
-        letterSpacing: 1
-      }}>
-        {title}
-      </div>
-
-      <div style={{
-        fontSize: 19,
-        fontWeight: 900,
-        marginTop: 5,
-        overflowWrap: "anywhere"
-      }}>
-        {value}
-      </div>
+      </main>
     </div>
   );
 }
 
-function Setting({ label, value, onChange }) {
-  return (
-    <label>
-      <span style={{
-        fontSize: 12,
-        color: "#91a4bd",
-        display: "block",
-        marginBottom: 6
-      }}>
-        {label}
-      </span>
-
-      <input
-        type="number"
-        value={value}
-        onChange={e => onChange(e.target.value)}
-        style={field}
-      />
-    </label>
-  );
-}
-
-function Toggle({ label, checked, onChange }) {
-  return (
-    <label style={{
-      display: "flex",
-      alignItems: "center",
-      gap: 10,
-      padding: "10px 0",
-      borderBottom: "1px solid #29384d",
-      fontSize: 13,
-      color: "#d6e2f1"
-    }}>
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={e => onChange(e.target.checked)}
-      />
-      {label}
-    </label>
-  );
-}
+const styles = {
+  app: {
+    minHeight: "100vh",
+    background: "#080d18",
+    color: "#eef4ff",
+    fontFamily: "Arial, sans-serif"
+  },
+  header: {
+    padding: "20px 16px",
+    background: "#101a2b",
+    borderBottom: "1px solid #24334b",
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 10
+  },
+  brand: {
+    fontSize: 19,
+    fontWeight: 900,
+    letterSpacing: 1.2
+  },
+  subtitle: {
+    fontSize: 10,
+    color: "#8293ad",
+    marginTop: 5,
+    letterSpacing: 1.5
+  },
+  status: {
+    borderRadius: 20,
+    padding: "8px 11px",
+    fontSize: 11,
+    fontWeight: 900,
+    display: "flex",
+    alignItems: "center",
+    gap: 7
+  },
+  dot: {
+    display: "inline-block",
+    width: 8,
+    height: 8,
+    borderRadius: "50%"
+  },
+  main: {
+    width: "100%",
+    maxWidth: 900,
+    margin: "0 auto",
+    padding: 12,
+    display: "flex",
+    flexDirection: "column",
+    gap: 12
+  },
+  panel: {
+    background: "#101a2b",
+    border: "1px solid #24334b",
+    borderRadius: 13,
+    padding: 14
+  },
+  panelTitle: {
+    fontSize: 12,
+    fontWeight: 900,
+    letterSpacing: 1,
+    color: "#dce8fb"
+  },
+  panelHeading: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 10
+  },
+  connection: {
+    marginTop: 12,
+    fontSize: 11,
+    color: "#9aaac1",
+    display: "flex",
+    alignItems: "center",
+    gap: 8
+  },
+  demoTag: {
+    display: "inline-block",
+    fontSize: 9,
+    color: "#f4c46a",
+    background: "#382e1d",
+    borderRadius: 5,
+    padding: "5px 7px",
+    fontWeight: 900,
+    letterSpacing: .5,
+    marginTop: 7
+  },
+  buttonRow: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 9,
+    marginTop: 15
+  },
+  primaryButton: {
+    border: 0,
+    borderRadius: 9,
+    background: "#138d68",
+    color: "white",
+    padding: 14,
+    fontWeight: 900
+  },
+  stopButton: {
+    border: 0,
+    borderRadius: 9,
+    background: "#a52d3a",
+    color: "white",
+    padding: 14,
+    fontWeight: 900
+  },
+  message: {
+    fontSize: 11,
+    color: "#9fb1ca",
+    marginTop: 12,
+    lineHeight: 1.5
+  },
+  progressTrack: {
+    height: 5,
+    background: "#26364e",
+    borderRadius: 10,
+    marginTop: 10,
+    overflow: "hidden"
+  },
+  progressFill: {
+    height: "100%",
+    background: "#31a8ff",
+    transition: "width .2s"
+  },
+  smallText: {
+    fontSize: 10,
+    color: "#8395af",
+    marginTop: 6,
+    lineHeight: 1.5
+  },
+  statsGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(2,minmax(0,1fr))",
+    gap: 8
+  },
+  stat: {
+    padding: 13,
+    background: "#101a2b",
+    border: "1px solid #24334b",
+    borderRadius: 10
+  },
+  statLabel: {
+    fontSize: 9,
+    color: "#8193ad",
+    fontWeight: 800,
+    letterSpacing: .7
+  },
+  statValue: {
+    fontSize: 23,
+    fontWeight: 900,
+    marginTop: 7
+  },
+  search: {
+    width: "100%",
+    marginTop: 13,
+    background: "#0a1424",
+    border: "1px solid #30435e",
+    borderRadius: 8,
+    color: "white",
+    padding: 12,
+    fontSize: 13
+  },
+  categoryButton: {
+    border: 0,
+    borderRadius: 20,
+    padding: "8px 12px",
+    fontSize: 10,
+    fontWeight: 800,
+    whiteSpace: "nowrap"
+  },
+  marketList: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 7
+  },
+  marketCard: {
+    width: "100%",
+    background: "#0b1525",
+    border: "1px solid #24334b",
+    borderRadius: 9,
+    padding: 11,
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    textAlign: "left",
+    gap: 8,
+    color: "#edf4ff"
+  },
+  marketLeft: {
+    minWidth: 0,
+    flex: 1
+  },
+  marketName: {
+    fontSize: 12,
+    fontWeight: 800,
+    overflowWrap: "anywhere"
+  },
+  marketMeta: {
+    fontSize: 9,
+    color: "#8294ae",
+    marginTop: 4
+  },
+  signalDetail: {
+    fontSize: 9,
+    color: "#a9c9e9",
+    marginTop: 5
+  },
+  signalBadge: {
+    minWidth: 65,
+    textAlign: "center",
+    padding: "8px 7px",
+    borderRadius: 6,
+    fontSize: 10,
+    fontWeight: 900,
+    color: "#07111c"
+  },
+  empty: {
+    textAlign: "center",
+    padding: 22,
+    color: "#8395af",
+    fontSize: 12,
+    lineHeight: 1.6
+  },
+  settingsGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(2,minmax(0,1fr))",
+    gap: 12,
+    marginTop: 13
+  },
+  field: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 7,
+    fontSize: 10,
+    color: "#94a8c3"
+  },
+  numberInput: {
+    width: "100%",
+    minWidth: 0,
+    background: "#0a1424",
+    border: "1px solid #30435e",
+    borderRadius: 7,
+    color: "white",
+    padding: 10,
+    fontSize: 13
+  },
+  ruleText: {
+    marginTop: 13,
+    fontSize: 10,
+    lineHeight: 1.6,
+    color: "#a8b7cb",
+    background: "#0b1525",
+    padding: 10,
+    borderRadius: 7
+  },
+  countBadge: {
+    background: "#203653",
+    borderRadius: 20,
+    padding: "5px 10px",
+    fontSize: 11,
+    fontWeight: 900
+  },
+  orderCard: {
+    background: "#0b1525",
+    border: "1px solid #2b3e58",
+    borderRadius: 9,
+    padding: 12,
+    marginTop: 10
+  },
+  orderGrid: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 12,
+    marginTop: 13,
+    fontSize: 9,
+    color: "#8395af"
+  },
+  lastActivated: {
+    marginTop: 12,
+    padding: 12,
+    background: "#0b1525",
+    borderRadius: 8,
+    color: "#48c9a0",
+    fontSize: 13,
+    fontWeight: 900,
+    overflowWrap: "anywhere"
+  },
+  warning: {
+    background: "#302719",
+    border: "1px solid #725b2e",
+    color: "#f4d69a",
+    padding: 13,
+    borderRadius: 10,
+    fontSize: 11,
+    lineHeight: 1.6
+  },
+  footer: {
+    textAlign: "center",
+    padding: "16px 5px 28px",
+    color: "#647893",
+    fontSize: 9,
+    letterSpacing: 1.2,
+    lineHeight: 1.8
+  }
+};
