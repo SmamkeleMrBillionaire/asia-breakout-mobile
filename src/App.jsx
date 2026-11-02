@@ -623,6 +623,18 @@ function getExitReason(trade, price) {
   return null;
 }
 
+function getExitPrice(trade, exitReason, observedPrice) {
+  if (exitReason === "STOP LOSS") {
+    return trade.sl;
+  }
+
+  if (exitReason === "TAKE PROFIT") {
+    return trade.tp;
+  }
+
+  return observedPrice;
+}
+
 function sendBrowserNotification(title, body) {
   if (typeof window === "undefined" || !("Notification" in window)) {
     return false;
@@ -802,12 +814,22 @@ export default function App() {
       const exitReason = getExitReason(trade, price);
 
       if (exitReason) {
-        const finalPnl = calculateDemoPnl(trade, price);
+        const exitPrice = getExitPrice(
+          trade,
+          exitReason,
+          price
+        );
+
+        const finalPnl = calculateDemoPnl(
+          trade,
+          exitPrice
+        );
 
         newlyClosed.push({
           ...trade,
           status: "CLOSED",
-          exitPrice: price,
+          exitPrice,
+          observedExitPrice: price,
           exitReason,
           realisedPnl: finalPnl,
           floatingPnl: 0,
