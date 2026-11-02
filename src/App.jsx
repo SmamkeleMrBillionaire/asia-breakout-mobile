@@ -561,8 +561,6 @@ function makeDemoOrder(
     ? signal.entry + tpDistance
     : signal.entry - tpDistance;
 
-  // Fixed-lot mode uses 0.10 lots as a 1% risk-normalised
-  // simulation baseline. This is not a broker contract calculation.
   const safeLots = Math.max(0, Number(fixedLots) || 0);
   const safeRiskPct = Math.max(0, Number(riskPct) || 0);
 
@@ -1683,7 +1681,13 @@ export default function App() {
     };
   }, []);
 
+  // ACTIVE RETEST SIGNALS: filter out all markets without BUY or SELL.
   const visibleSymbols = symbols.filter(item => {
+    const direction = signals[item.symbol]?.direction;
+
+    const hasActiveSignal =
+      direction === "BUY" || direction === "SELL";
+
     const matchesCategory =
       category === "All" || item.category === category;
 
@@ -1694,7 +1698,7 @@ export default function App() {
       String(item.display_name || "").toLowerCase().includes(searchTerm) ||
       String(item.symbol || "").toLowerCase().includes(searchTerm);
 
-    return matchesCategory && matchesSearch;
+    return hasActiveSignal && matchesCategory && matchesSearch;
   });
 
   const buyCount = symbols.filter(s =>
@@ -1829,17 +1833,6 @@ export default function App() {
     color: "#8395af"
   };
 
-  const diagnosticRow = {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 10,
-    background: "#0b1525",
-    padding: "10px 11px",
-    borderRadius: 7,
-    marginTop: 7
-  };
-
   const searchStyle = {
     width: "100%",
     marginTop: 13,
@@ -1860,6 +1853,17 @@ export default function App() {
     color: "white",
     padding: 10,
     fontSize: 13
+  };
+
+  const collapsibleSummary = {
+    ...title,
+    cursor: "pointer",
+    listStyle: "none",
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 10,
+    minHeight: 22
   };
 
   return (
@@ -1883,6 +1887,14 @@ export default function App() {
         .market-card { transition:transform .12s ease; }
         .market-card:disabled { opacity:.55; cursor:not-allowed; }
         input:focus, select:focus { outline:1px solid #31a8ff; }
+        details > summary::-webkit-details-marker { display:none; }
+        details > summary::after {
+          content:"＋";
+          color:#55c9ff;
+          font-size:16px;
+          margin-left:auto;
+        }
+        details[open] > summary::after { content:"−"; }
       `}</style>
 
       <header style={{
@@ -2054,7 +2066,7 @@ export default function App() {
         <section style={card}>
           <div style={title}>ACTIVE RETEST SIGNALS</div>
           <div style={small}>
-            All discovered Deriv markets · {timeframeName(timeframe)} · Latest closed candle only
+            Active BUY and SELL signals only · {timeframeName(timeframe)}
           </div>
 
           <input
@@ -2092,6 +2104,23 @@ export default function App() {
               color: "#8395af"
             }}>
               Press START ROBOT to discover Deriv markets.
+            </div>
+          )}
+
+          {symbols.length > 0 && scanned > 0 && visibleSymbols.length === 0 && (
+            <div style={{
+              textAlign: "center",
+              padding: 22,
+              color: "#8395af",
+              background: "#0b1525",
+              borderRadius: 8,
+              marginTop: 5,
+              fontSize: 11,
+              lineHeight: 1.6
+            }}>
+              No active BUY or SELL signals for this selection.
+              <br/>
+              Inactive markets are hidden.
             </div>
           )}
 
@@ -2181,16 +2210,6 @@ export default function App() {
                         )}
                       </>
                     )}
-
-                    {signal.direction === "NONE" && (
-                      <div style={{
-                        fontSize: 10,
-                        color: "#f1c477",
-                        marginTop: 5
-                      }}>
-                        {signal.reason}
-                      </div>
-                    )}
                   </div>
 
                   <div style={{
@@ -2211,8 +2230,11 @@ export default function App() {
           </div>
         </section>
 
-        <section style={card}>
-          <div style={title}>TRADE SETTINGS</div>
+        {/* TRADE SETTINGS — collapsed by default */}
+        <details style={card}>
+          <summary style={collapsibleSummary}>
+            TRADE SETTINGS
+          </summary>
 
           <div style={{
             display: "grid",
@@ -2359,37 +2381,9 @@ export default function App() {
               This is not the actual contract valuation used by a broker.
             </div>
           )}
-        </section>
+        </details>
 
-        <section style={card}>
-          <div style={title}>ALERT NOTIFICATIONS</div>
-          <div style={small}>
-            Browser permission: {notificationPermission.toUpperCase()}
-          </div>
-
-          <button
-            onClick={requestNotificationPermission}
-            style={{
-              width: "100%",
-              marginTop: 12,
-              border: 0,
-              borderRadius: 8,
-              background: "#1677d2",
-              color: "white",
-              padding: 12,
-              fontWeight: 900
-            }}
-          >
-            ENABLE / CHECK NOTIFICATIONS
-          </button>
-
-          <div style={small}>
-            The robot sends a browser notification when a simulated trade
-            reaches TP or SL. Android and browser notification permissions
-            must be enabled. Notifications are not guaranteed if Android
-            suspends or closes the browser.
-          </div>
-        </section>
+        {/* ALERT NOTIFICATIONS hidden as requested */}
 
         <section style={card}>
           <div style={title}>BROKER CONNECTION</div>
@@ -2576,260 +2570,17 @@ export default function App() {
           <div style={small}>Last scan: {lastScan}</div>
         </section>
 
-        <section style={{
-          background: "#302719",
-          border: "1px solid #725b2e",
-          color: "#f4d69a",
-          padding: 13,
-          borderRadius: 10,
-          fontSize: 11,
-          lineHeight: 1.6,
-          marginBottom: 12
-        }}>
-          <strong>IMPORTANT — EXECUTION STATUS</strong>
-          <p>
-            This build uses Deriv public market data and simulated demo orders.
-            It does not place or manage real broker trades.
-          </p>
-          <p>
-            A qualifying BUY or SELL opens immediately at the current live
-            market price when its market card is clicked.
-          </p>
-          <p>
-            Signals require a qualifying touch on the latest closed candle
-            of the selected timeframe. Green candle touching the box bottom
-            = SELL. Red candle touching the box top = BUY.
-          </p>
-          <p>
-            No pending orders or pending-order expiry are used.
-          </p>
-          <p>
-            Browser notifications are requested when starting the robot.
-            TP and SL alerts are sent when browser permission is granted.
-            Notifications may not arrive if the browser is closed or suspended.
-          </p>
-          <p>
-            Non-Forex SL uses recent candle range on the selected timeframe
-            and TP uses 3.1 times that distance. These are simulated distances,
-            not broker-specific contract or tick-value calculations.
-          </p>
-          <p>
-            Percentage-risk P&L is risk-normalised. Fixed-lot mode uses
-            0.10 lots as a 1% risk-normalised simulation baseline.
-            Neither mode calculates actual Deriv contract valuation.
-          </p>
-          <p>Asia session is calculated using UTC candle timestamps.</p>
-          <p>
-            Each box permits one RETEST and one separate FLIPPY trade.
-            Repeated trades of the same type from the same box are blocked,
-            including after a trade has closed.
-          </p>
-          <p>
-            Box identity is based on the box candle timestamp, so it remains
-            stable when the downloaded candle history changes position.
-          </p>
-          <p>
-            Background recovery is best-effort. Android may suspend browser
-            activity when the app is in the background or the screen is locked.
-          </p>
-        </section>
+        {/* DERIV CANDLE DATA DIAGNOSTICS hidden as requested */}
+        {/* STRATEGY RULES hidden as requested */}
+        {/* INDIVIDUAL MARKET DATA hidden as requested */}
+        {/* STRATEGY DIAGNOSTICS hidden as requested */}
 
-        <section style={card}>
-          <div style={title}>DERIV CANDLE DATA DIAGNOSTICS</div>
-          <div style={small}>
-            Maximum request: {CANDLE_COUNT} candles · {timeframeName(timeframe)}
-          </div>
+        {/* MARKET-BY-MARKET REASONS — collapsed by default */}
+        <details style={card}>
+          <summary style={collapsibleSummary}>
+            MARKET-BY-MARKET REASONS
+          </summary>
 
-          {scanned === 0 && (
-            <div style={{
-              textAlign: "center",
-              padding: 18,
-              color: "#8395af"
-            }}>
-              Start the robot to inspect Deriv candle responses.
-            </div>
-          )}
-
-          {scanned > 0 && (
-            <div style={{ marginTop: 14 }}>
-              {[
-                ["Markets checked", scanned],
-                ["Maximum candles requested", CANDLE_COUNT],
-                ["Markets with candle data", marketsWithCandleData],
-                ["Markets with API errors", marketsWithErrors]
-              ].map(([label, value]) => (
-                <div key={label} style={diagnosticRow}>
-                  <span style={{ color: "#b9c9df", fontSize: 11 }}>
-                    {label}
-                  </span>
-                  <strong style={{ color: "#55c9ff" }}>{value}</strong>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div style={{
-            marginTop: 13,
-            fontSize: 10,
-            lineHeight: 1.7,
-            color: "#a8b7cb",
-            background: "#0b1525",
-            padding: 10,
-            borderRadius: 7
-          }}>
-            Deriv may return fewer candles than requested. All valid closed
-            candles returned are used. No minimum of 1,200 candles is required.
-          </div>
-        </section>
-
-        <section style={card}>
-          <div style={title}>STRATEGY RULES</div>
-          <div style={{
-            marginTop: 13,
-            fontSize: 10,
-            lineHeight: 1.7,
-            color: "#a8b7cb",
-            background: "#0b1525",
-            padding: 10,
-            borderRadius: 7
-          }}>
-            ASIA RANGE: 00:00–07:00 UTC.
-            <br/>
-            TIMEFRAME: {timeframeName(timeframe)}.
-            <br/>
-            BOXES: DOJI · ENGULFED · WICK.
-            <br/>
-            NORMAL RETEST: Green candle at bottom = SELL.
-            Red candle at top = BUY.
-            <br/>
-            FLIPPY: First retest fails, price breaks the opposite
-            side, then returns to retest that opposite boundary.
-            <br/>
-            BOX LIFECYCLE: First retest → Second retest/FLIPPY
-            → Third touch DELETE.
-            <br/>
-            TRADE LIMIT: One RETEST and one FLIPPY per box.
-            Duplicate trades of the same type from that box are blocked.
-            <br/>
-            EXECUTION: Click BUY or SELL to open immediately at current price.
-            <br/>
-            ORDER COMMENT: Ifx Billionaire.
-            <br/>
-            SL/TP: Forex 10-pip SL / 31-pip TP.
-            <br/>
-            EMA: Completely removed. No EMA calculations or filters.
-          </div>
-        </section>
-
-        <section style={card}>
-          <div style={title}>INDIVIDUAL MARKET DATA</div>
-          <div style={small}>
-            Candle history returned by Deriv · {candleDiagnosticList.length} markets
-          </div>
-
-          {scanned === 0 && (
-            <div style={{
-              textAlign: "center",
-              padding: 18,
-              color: "#8395af"
-            }}>
-              Individual candle information will appear here after scanning.
-            </div>
-          )}
-
-          {symbols
-            .filter(item => candleDiagnostics[item.symbol])
-            .map(item => {
-              const d = candleDiagnostics[item.symbol];
-
-              return (
-                <div key={item.symbol} style={{
-                  background: "#0b1525",
-                  border: "1px solid #24334b",
-                  padding: 10,
-                  borderRadius: 7,
-                  marginTop: 8
-                }}>
-                  <div style={{ fontSize: 11, fontWeight: 800 }}>
-                    {item.display_name || item.symbol}
-                  </div>
-                  <div style={small}>Symbol: {item.symbol}</div>
-                  <div style={small}>Timeframe: {d.timeframe}</div>
-                  <div style={small}>Maximum requested: {d.requestedMaximum}</div>
-                  <div style={small}>Returned by Deriv: {d.returned}</div>
-                  <div style={small}>Valid candles: {d.valid}</div>
-                  <div style={small}>Closed candles: {d.closed}</div>
-                  <div style={small}>Response type: {d.responseType}</div>
-
-                  {d.oldestEpoch && (
-                    <div style={small}>
-                      Oldest closed candle: {new Date(d.oldestEpoch * 1000).toISOString()}
-                    </div>
-                  )}
-
-                  {d.latestEpoch && (
-                    <div style={small}>
-                      Latest closed candle: {new Date(d.latestEpoch * 1000).toISOString()}
-                    </div>
-                  )}
-
-                  {d.error && (
-                    <div style={{ ...small, color: "#ff7777" }}>
-                      API ERROR: {d.error}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-        </section>
-
-        <section style={card}>
-          <div style={title}>STRATEGY DIAGNOSTICS</div>
-          <div style={small}>
-            Why each scanned market does or does not have a signal · {scanned} scanned
-          </div>
-
-          {!scanned && (
-            <div style={{
-              textAlign: "center",
-              padding: 18,
-              color: "#8395af"
-            }}>
-              Start the robot to see diagnostic results.
-            </div>
-          )}
-
-          {scanned > 0 && (
-            <div style={{ marginTop: 14 }}>
-              {Object.entries(diagnosticCounts)
-                .filter(([, count]) => count > 0)
-                .sort((a, b) => b[1] - a[1])
-                .map(([reason, count]) => (
-                  <div key={reason} style={diagnosticRow}>
-                    <span style={{ color: "#b9c9df", fontSize: 11 }}>
-                      {reason}
-                    </span>
-                    <strong style={{ color: "#55c9ff" }}>{count}</strong>
-                  </div>
-                ))}
-            </div>
-          )}
-
-          <div style={{
-            marginTop: 13,
-            fontSize: 10,
-            lineHeight: 1.7,
-            color: "#a8b7cb",
-            background: "#0b1525",
-            padding: 10,
-            borderRadius: 7
-          }}>
-            Diagnostics only. No EMA conditions are used.
-          </div>
-        </section>
-
-        <section style={card}>
-          <div style={title}>MARKET-BY-MARKET REASONS</div>
           <div style={small}>
             Individual explanation for every market without a signal · {diagnosticMarkets.length} markets
           </div>
@@ -2866,7 +2617,7 @@ export default function App() {
               </div>
             </div>
           ))}
-        </section>
+        </details>
 
         <footer style={{
           textAlign: "center",
