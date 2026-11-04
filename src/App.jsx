@@ -2,37 +2,22 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 
 const WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public";
-const DEFAULT_TIMEFRAME = 3600;
-const CANDLE_COUNT = 1000;
-const BUFFER_PIPS = 2;
-const FX_SL_PIPS = 10;
-const FX_TP_PIPS = 31;
 
-const TIMEFRAMES = [
-  { label: "H1", seconds: 3600 }
-];
+const TIMEFRAME = 900; // M15 only
+const CANDLE_COUNT = 1000;
+const SL_OFFSET_PIPS = 5;
+const RISK_REWARD = 3;
 
 const CATEGORIES = [
   "All", "Forex", "Indices", "Metals",
   "Synthetics", "Crypto", "Stocks", "Other"
 ];
 
-const DIAGNOSTIC_REASONS = [
-  "Asia range unavailable", "No boxes found",
-  "Waiting for breakout", "Waiting for first retest",
-  "Waiting for opposite-side breakout",
-  "Waiting for FLIPPY retest",
-  "Third touch — DELETE",
-  "Neutral retest candle",
-  "Signal confirmed",
-  "Market data unavailable"
-];
-
 const fmt = (n, digits = 5) =>
   Number.isFinite(Number(n)) ? Number(n).toFixed(digits) : "—";
 
-function timeframeName(seconds) {
-  return TIMEFRAMES.find(t => t.seconds === seconds)?.label || "H1";
+function timeframeName() {
+  return "M15";
 }
 
 function categoryOf(s) {
@@ -43,7 +28,9 @@ function categoryOf(s) {
   const symbol = String(s.symbol || "").toLowerCase();
   const type = String(s.symbol_type || "").toLowerCase();
 
-  if (market.includes("forex") || sub.includes("forex") || type.includes("forex")) return "Forex";
+  if (market.includes("forex") || sub.includes("forex") || type.includes("forex")) {
+    return "Forex";
+  }
 
   if (
     market.includes("synthetic") || sub.includes("synthetic") ||
@@ -85,51 +72,119 @@ function candleColor(c) {
   return "NEUTRAL";
 }
 
-function pipSize(symbol, category, candles) {
+function utcDate(epoch) {
+  return new Date(epoch * 1000).toISOString().slice(0, 10);
+}
+
+function utcHour(epoch) {
+  return new Date(epoch * 1000).getUTCHours();
+}
+
+function utcMinute(epoch) {
+  return new Date(epoch * 1000).getUTCMinutes();
+}
+
+function pipSize(symbol, category, candles, marketPip) {
+  if (Number.isFinite(Number(marketPip)) && Number(marketPip) > 0) {
+    return Number(marketPip);
+  }
+
   if (category === "Forex") {
     return symbol.toUpperCase().includes("JPY") ? 0.01 : 0.0001;
   }
 
   const last = candles[candles.length - 1]?.close || 1;
   const decimals = (String(last).split(".")[1] || "").length;
+
   return Math.pow(10, -Math.min(decimals, 8));
 }
 
-function buildAsiaRange(candles) {
-  if (!candles.length) return null;
+function sessionAt(epoch) {
+  const hour = utcHour(epoch);
 
-  const lastDay = new Date(
-    candles[candles.length - 1].epoch * 1000
-  ).toISOString().slice(0, 10);
+  if (hour >= 7 && hour < 11) return "LONDON";
+  if (hour >= 15 && hour < 17) return "NEW YORK";
 
-  const asia = candles.filter(c => {
-    const date = new Date(c.epoch * 1000);
-    return (
-      date.toISOString().slice(0, 10) === lastDay &&
-      date.getUTCHours() >= 0 &&
-      date.getUTCHours() < 7
-    );
-  });
-
-  if (!asia.length) return null;
-
-  return {
-    high: Math.max(...asia.map(c => c.high)),
-    low: Math.min(...asia.map(c => c.low)),
-    day: lastDay
-  };
+  return null;
 }
 
-function createBoxes(candles, asiaDay) {
+function makeBoxId(type, epoch, high, low) {
+  return [
+    type,
+    epoch,
+    Number(high).toPrecision(12),
+    Number(low).toPrecision(12)
+  ].join("-");
+}
+
+function getVolumeLabel(candle) {
+  if (
+    candle &&
+    Number.isFinite(Number(candle.volume)) &&
+    candle.volume !== null &&
+    candle.volume !== ""
+  ) {
+    return fmt(candle.volume, 0);
+  }
+
+  return "N/A";
+}
+
+// ORANGE BOX:
+// First four M15 candles of the UTC day: 00:00–01:00.
+function buildOrangeBoxes(candles) {
+  const byDay = new Map();
+
+  candles.forEach((c, index) => {
+    if (utcHour(c.epoch) !== 0) return;
+
+    const day = utcDate(c.epoch);
+
+    if (!byDay.has(day)) byDay.set(day, []);
+    byDay.get(day).push({ ...c, index });
+  });
+
+  const boxes = [];
+
+  for (const [day, dayCandles] of byDay.entries()) {
+    const firstHour = dayCandles.filter(c =>
+      utcMinute(c.epoch) < 60
+    );
+
+    if (firstHour.length < 4) continue;
+
+    const high = Math.max(...firstHour.map(c => c.high));
+    const low = Math.min(...firstHour.map(c => c.low));
+    const createdEpoch = firstHour[0].epoch;
+
+    boxes.push({
+      type: "ORANGE",
+      day,
+      high,
+      low,
+      createdEpoch,
+      createdIndex: firstHour[firstHour.length - 1].index,
+      boxId: makeBoxId("ORANGE", createdEpoch, high, low)
+    });
+  }
+
+  return boxes;
+}
+
+// BLUE BOXES:
+// ENGULF = previous candle is the box.
+// DOJI = doji candle itself is the box.
+// WICK and Asia boxes are removed.
+function buildBlueBoxes(candles) {
   const boxes = [];
 
   for (let i = 1; i < candles.length; i++) {
     const c = candles[i];
     const prev = candles[i - 1];
-    const date = new Date(c.epoch * 1000);
 
-    if (date.toISOString().slice(0, 10) !== asiaDay) continue;
-    if (date.getUTCHours() < 7) continue;
+    const hour = utcHour(c.epoch);
+
+    if (hour < 1 || hour >= 22) continue;
 
     const range = c.high - c.low;
     const body = Math.abs(c.close - c.open);
@@ -137,390 +192,313 @@ function createBoxes(candles, asiaDay) {
     if (range <= 0) continue;
 
     const currentBull = c.close > c.open;
-    const previousBear = prev.close < prev.open;
     const currentBear = c.close < c.open;
+    const previousBear = prev.close < prev.open;
     const previousBull = prev.close > prev.open;
 
-    if (
+    const engulfing =
       (currentBull && previousBear &&
         c.open <= prev.close && c.close >= prev.open) ||
       (currentBear && previousBull &&
-        c.open >= prev.close && c.close <= prev.open)
-    ) {
+        c.open >= prev.close && c.close <= prev.open);
+
+    if (engulfing) {
       boxes.push({
-        type: "ENGULFED",
+        type: "ENGULF",
         high: prev.high,
         low: prev.low,
-        created: i,
-        createdEpoch: c.epoch
+        createdIndex: i,
+        createdEpoch: c.epoch,
+        boxId: makeBoxId("ENGULF", c.epoch, prev.high, prev.low)
       });
     }
 
-    if (body / range <= 0.25) {
+    if (body / range <= 0.10) {
       boxes.push({
         type: "DOJI",
         high: c.high,
         low: c.low,
-        created: i,
-        createdEpoch: c.epoch
+        createdIndex: i,
+        createdEpoch: c.epoch,
+        boxId: makeBoxId("DOJI", c.epoch, c.high, c.low)
       });
-    }
-
-    if (currentBull) {
-      const upperWick = c.high - c.close;
-
-      if (upperWick >= body * 0.20) {
-        boxes.push({
-          type: "WICK",
-          high: c.high,
-          low: c.close,
-          created: i,
-          createdEpoch: c.epoch
-        });
-      }
-    }
-
-    if (currentBear) {
-      const lowerWick = c.close - c.low;
-
-      if (lowerWick >= body * 0.20) {
-        boxes.push({
-          type: "WICK",
-          high: c.close,
-          low: c.low,
-          created: i,
-          createdEpoch: c.epoch
-        });
-      }
     }
   }
 
   return boxes;
 }
 
-function touchesTop(candle, box) {
-  return candle.low <= box.high && candle.high >= box.high;
+function candleTouchesTop(c, box) {
+  return c.low <= box.high && c.high >= box.high;
 }
 
-function touchesBottom(candle, box) {
-  return candle.low <= box.low && candle.high >= box.low;
+function candleTouchesBottom(c, box) {
+  return c.low <= box.low && c.high >= box.low;
 }
 
-function touchesBox(candle, box) {
-  return candle.low <= box.high && candle.high >= box.low;
+function candleTouchesBox(c, box) {
+  return c.low <= box.high && c.high >= box.low;
 }
 
-function getRetestDirection(candle, boundary) {
-  const color = candleColor(candle);
-
-  if (boundary === "BOTTOM" && color === "GREEN") return "SELL";
-  if (boundary === "TOP" && color === "RED") return "BUY";
-
-  return "NONE";
-}
-
-function makeBoxId(box, asiaDay) {
-  return [
-    asiaDay,
-    box.type,
-    box.createdEpoch,
-    box.high.toPrecision(12),
-    box.low.toPrecision(12)
-  ].join("-");
-}
-
-function boxTradeAlreadyTaken(trades, symbol, boxId, touchType) {
-  return trades.some(trade => {
-    if (trade.symbol !== symbol || trade.boxId !== boxId) {
-      return false;
-    }
-
-    const previousTouchType =
-      trade.touchType ||
-      (String(trade.source || "").includes("FLIPPY")
-        ? "FLIPPY"
-        : "RETEST");
-
-    return previousTouchType === touchType;
-  });
-}
-
-function findRetestSignal(candles, symbol, category) {
-  const empty = {
-    direction: "NONE",
-    reason: "Market data unavailable",
-    deletedBoxIds: []
-  };
-
-  if (!candles.length) return empty;
-
-  const asia = buildAsiaRange(candles);
-
-  if (!asia) {
-    return { ...empty, reason: "Asia range unavailable" };
-  }
-
-  const boxes = createBoxes(candles, asia.day);
-
-  if (!boxes.length) {
-    return { ...empty, reason: "No boxes found" };
-  }
-
+function buildOrangeSignals(candles, boxes, pip) {
   const lastIndex = candles.length - 1;
-  const unit = pipSize(symbol, category, candles);
-  const entryBuffer = unit * BUFFER_PIPS;
+  const last = candles[lastIndex];
 
-  const deletedBoxIds = [];
+  if (!last) return [];
 
-  let sawBreakout = false;
-  let sawFirstRetest = false;
-  let sawOppositeBreak = false;
-  let sawFlippyRetest = false;
-  let sawNeutral = false;
-  let best = null;
+  const session = sessionAt(last.epoch);
+  if (!session) return [];
+
+  const signals = [];
 
   for (const box of boxes) {
-    if (lastIndex <= box.created) continue;
+    if (utcDate(last.epoch) !== box.day) continue;
 
-    const boxId = makeBoxId(box, asia.day);
+    if (lastIndex <= box.createdIndex) continue;
 
     let breakoutIndex = -1;
     let breakoutDirection = null;
 
-    for (let i = box.created + 1; i <= lastIndex; i++) {
+    for (let i = box.createdIndex + 1; i <= lastIndex; i++) {
+      if (utcDate(candles[i].epoch) !== box.day) continue;
+
+      if (sessionAt(candles[i].epoch) !== session) continue;
+
       if (candles[i].close > box.high) {
         breakoutIndex = i;
-        breakoutDirection = "UP";
+        breakoutDirection = "BUY";
         break;
       }
 
       if (candles[i].close < box.low) {
         breakoutIndex = i;
-        breakoutDirection = "DOWN";
+        breakoutDirection = "SELL";
         break;
       }
     }
 
-    if (breakoutIndex < 0) continue;
+    if (breakoutIndex < 0 || breakoutIndex >= lastIndex) continue;
 
-    sawBreakout = true;
+    // Retest: price wicks back through the broken boundary,
+    // then closes back outside in the breakout direction.
+    const retestCandle = last;
 
-    if (lastIndex <= breakoutIndex) continue;
+    let validRetest = false;
 
-    const firstBoundary =
-      breakoutDirection === "UP" ? "TOP" : "BOTTOM";
-
-    let firstTouchIndex = -1;
-
-    for (let i = breakoutIndex + 1; i <= lastIndex; i++) {
-      const touched = firstBoundary === "TOP"
-        ? touchesTop(candles[i], box)
-        : touchesBottom(candles[i], box);
-
-      if (touched) {
-        firstTouchIndex = i;
-        break;
-      }
+    if (breakoutDirection === "BUY") {
+      validRetest =
+        retestCandle.low <= box.high &&
+        retestCandle.close > box.high;
+    } else {
+      validRetest =
+        retestCandle.high >= box.low &&
+        retestCandle.close < box.low;
     }
 
-    if (firstTouchIndex < 0) continue;
+    if (!validRetest) continue;
 
-    sawFirstRetest = true;
+    const signalId = [
+      box.boxId,
+      session,
+      last.epoch,
+      "ORANGE",
+      breakoutDirection
+    ].join("|");
 
-    const firstDirection = getRetestDirection(
-      candles[firstTouchIndex],
-      firstBoundary
-    );
-
-    if (firstDirection !== "NONE") {
-      if (firstTouchIndex !== lastIndex) continue;
-
-      let touchCount = 1;
-      let deleted = false;
-
-      for (let i = firstTouchIndex + 1; i <= lastIndex; i++) {
-        if (touchesBox(candles[i], box)) {
-          touchCount++;
-
-          if (touchCount >= 3) {
-            deleted = true;
-            break;
-          }
-        }
-      }
-
-      if (deleted) {
-        deletedBoxIds.push(boxId);
-        continue;
-      }
-
-      const signal = {
-        direction: firstDirection,
-        boxType: box.type,
-        touchType: "RETEST",
-        sourceBoxType: box.type,
-        boxId,
-        boxHigh: box.high,
-        boxLow: box.low,
-        asiaHigh: asia.high,
-        asiaLow: asia.low,
-        entry: firstDirection === "BUY"
-          ? box.high + entryBuffer
-          : box.low - entryBuffer,
-        pip: unit,
-        candleTime: candles[firstTouchIndex].epoch,
-        reason: "Signal confirmed"
-      };
-
-      if (!best || box.created > best.created) {
-        best = { ...signal, created: box.created };
-      }
-
-      continue;
-    }
-
-    const oppositeBoundary =
-      firstBoundary === "TOP" ? "BOTTOM" : "TOP";
-
-    let oppositeBreakIndex = -1;
-
-    for (let i = firstTouchIndex + 1; i <= lastIndex; i++) {
-      if (
-        firstBoundary === "TOP" &&
-        candles[i].close < box.low
-      ) {
-        oppositeBreakIndex = i;
-        break;
-      }
-
-      if (
-        firstBoundary === "BOTTOM" &&
-        candles[i].close > box.high
-      ) {
-        oppositeBreakIndex = i;
-        break;
-      }
-    }
-
-    if (oppositeBreakIndex < 0) {
-      sawNeutral = true;
-      continue;
-    }
-
-    sawOppositeBreak = true;
-
-    let flippyTouchIndex = -1;
-
-    for (let i = oppositeBreakIndex + 1; i <= lastIndex; i++) {
-      const touched = oppositeBoundary === "TOP"
-        ? touchesTop(candles[i], box)
-        : touchesBottom(candles[i], box);
-
-      if (touched) {
-        flippyTouchIndex = i;
-        break;
-      }
-    }
-
-    if (flippyTouchIndex < 0) continue;
-
-    sawFlippyRetest = true;
-
-    if (flippyTouchIndex !== lastIndex) continue;
-
-    let touchCount = 2;
-    let deleted = false;
-
-    for (let i = flippyTouchIndex + 1; i <= lastIndex; i++) {
-      if (touchesBox(candles[i], box)) {
-        touchCount++;
-
-        if (touchCount >= 3) {
-          deleted = true;
-          break;
-        }
-      }
-    }
-
-    if (deleted) {
-      deletedBoxIds.push(boxId);
-      continue;
-    }
-
-    const flippyDirection = getRetestDirection(
-      candles[flippyTouchIndex],
-      oppositeBoundary
-    );
-
-    if (flippyDirection === "NONE") {
-      sawNeutral = true;
-      continue;
-    }
-
-    const signal = {
-      direction: flippyDirection,
-      boxType: "FLIPPY",
-      sourceBoxType: box.type,
-      touchType: "FLIPPY",
-      boxId,
+    signals.push({
+      direction: breakoutDirection,
+      boxType: "ORANGE",
+      touchType: "ORANGE RETEST",
+      boxId: box.boxId,
+      signalId,
+      session,
+      sessionKey: `${box.day}-${session}`,
       boxHigh: box.high,
       boxLow: box.low,
-      asiaHigh: asia.high,
-      asiaLow: asia.low,
-      entry: flippyDirection === "BUY"
-        ? box.high + entryBuffer
-        : box.low - entryBuffer,
-      pip: unit,
-      candleTime: candles[flippyTouchIndex].epoch,
-      reason: "Signal confirmed"
-    };
+      pip,
+      candleTime: last.epoch,
+      volume: getVolumeLabel(last),
+      reason: `${session} orange-box breakout retest`
+    });
+  }
 
-    if (!best || box.created > best.created) {
-      best = { ...signal, created: box.created };
+  return signals;
+}
+
+function buildBlueSignals(candles, boxes, pip) {
+  const lastIndex = candles.length - 1;
+  const last = candles[lastIndex];
+
+  if (!last) return [];
+
+  const hour = utcHour(last.epoch);
+
+  if (hour < 1 || hour >= 22) return [];
+
+  const color = candleColor(last);
+  if (color === "NEUTRAL") return [];
+
+  const signals = [];
+
+  for (const box of boxes) {
+    if (lastIndex <= box.createdIndex) continue;
+
+    // BLUE TOUCHES:
+    // High + GREEN = SELL.
+    // Low + RED = BUY.
+    if (candleTouchesTop(last, box) && color === "GREEN") {
+      signals.push({
+        direction: "SELL",
+        boxType: box.type,
+        touchType: "BLUE TOUCH HIGH",
+        boxId: box.boxId,
+        signalId: `${box.boxId}|TOUCH_HIGH|${last.epoch}`,
+        boxHigh: box.high,
+        boxLow: box.low,
+        pip,
+        candleTime: last.epoch,
+        volume: getVolumeLabel(last),
+        reason: "Blue box high touched by GREEN candle"
+      });
     }
+
+    if (candleTouchesBottom(last, box) && color === "RED") {
+      signals.push({
+        direction: "BUY",
+        boxType: box.type,
+        touchType: "BLUE TOUCH LOW",
+        boxId: box.boxId,
+        signalId: `${box.boxId}|TOUCH_LOW|${last.epoch}`,
+        boxHigh: box.high,
+        boxLow: box.low,
+        pip,
+        candleTime: last.epoch,
+        volume: getVolumeLabel(last),
+        reason: "Blue box low touched by RED candle"
+      });
+    }
+
+    // BLUE BREAKOUT:
+    // Break UP -> wait through GREEN candles -> BUY first RED.
+    // Break DOWN -> wait through RED candles -> SELL first GREEN.
+    let breakoutIndex = -1;
+    let breakoutDirection = null;
+
+    for (let i = box.createdIndex + 1; i <= lastIndex; i++) {
+      if (candles[i].close > box.high) {
+        breakoutIndex = i;
+        breakoutDirection = "BUY";
+        break;
+      }
+
+      if (candles[i].close < box.low) {
+        breakoutIndex = i;
+        breakoutDirection = "SELL";
+        break;
+      }
+    }
+
+    if (breakoutIndex < 0 || breakoutIndex >= lastIndex) continue;
+
+    let confirmationIndex = -1;
+
+    for (let i = breakoutIndex + 1; i <= lastIndex; i++) {
+      const nextColor = candleColor(candles[i]);
+
+      if (breakoutDirection === "BUY" && nextColor === "RED") {
+        confirmationIndex = i;
+        break;
+      }
+
+      if (breakoutDirection === "SELL" && nextColor === "GREEN") {
+        confirmationIndex = i;
+        break;
+      }
+    }
+
+    if (confirmationIndex !== lastIndex) continue;
+
+    signals.push({
+      direction: breakoutDirection,
+      boxType: box.type,
+      touchType: "BLUE BREAKOUT",
+      boxId: box.boxId,
+      signalId: `${box.boxId}|BREAKOUT|${breakoutDirection}|${last.epoch}`,
+      boxHigh: box.high,
+      boxLow: box.low,
+      pip,
+      candleTime: last.epoch,
+      volume: getVolumeLabel(last),
+      reason: `Blue ${breakoutDirection} breakout confirmation`
+    });
   }
 
-  if (best) {
-    const { created, ...signal } = best;
+  return signals;
+}
 
+function findStrategySignal(candles, symbol, category, marketPip) {
+  const empty = {
+    direction: "NONE",
+    reason: "Waiting for a valid M15 setup",
+    boxCount: 0
+  };
+
+  if (!candles || candles.length < 5) {
+    return { ...empty, reason: "Not enough closed M15 candles" };
+  }
+
+  const pip = pipSize(symbol, category, candles, marketPip);
+
+  const orangeBoxes = buildOrangeBoxes(candles);
+  const blueBoxes = buildBlueBoxes(candles);
+
+  const orangeSignals = buildOrangeSignals(
+    candles,
+    orangeBoxes,
+    pip
+  );
+
+  const blueSignals = buildBlueSignals(
+    candles,
+    blueBoxes,
+    pip
+  );
+
+  const allSignals = [...orangeSignals, ...blueSignals];
+
+  if (!allSignals.length) {
     return {
-      ...signal,
-      deletedBoxIds,
-      reason: "Signal confirmed"
+      ...empty,
+      reason: "Waiting for Orange or Blue box setup",
+      orangeBoxCount: orangeBoxes.length,
+      blueBoxCount: blueBoxes.length
     };
   }
 
-  let reason = "Waiting for breakout";
+  // Prefer the most recently created signal.
+  allSignals.sort((a, b) => b.candleTime - a.candleTime);
 
-  if (deletedBoxIds.length) reason = "Third touch — DELETE";
-  else if (sawFlippyRetest) reason = "Neutral retest candle";
-  else if (sawOppositeBreak) reason = "Waiting for FLIPPY retest";
-  else if (sawFirstRetest) reason = "Waiting for opposite-side breakout";
-  else if (sawBreakout) reason = "Waiting for first retest";
-  else if (sawNeutral) reason = "Neutral retest candle";
+  const signal = allSignals[0];
 
   return {
-    direction: "NONE",
-    reason,
-    boxCount: boxes.length,
-    deletedBoxIds
+    ...signal,
+    reason: signal.reason,
+    orangeBoxCount: orangeBoxes.length,
+    blueBoxCount: blueBoxes.length,
+    _candles: candles
   };
 }
 
-function nonForexStopDistance(signal, candles) {
-  const recent = candles.slice(-14);
+function alreadyExecuted(trades, signal, symbol) {
+  return trades.some(trade => {
+    if (trade.symbol !== symbol) return false;
 
-  const ranges = recent
-    .map(c => c.high - c.low)
-    .filter(n => Number.isFinite(n) && n > 0);
+    if (signal.boxType === "ORANGE") {
+      return trade.sessionKey === signal.sessionKey;
+    }
 
-  const averageRange = ranges.length
-    ? ranges.reduce((a, b) => a + b, 0) / ranges.length
-    : signal.pip * 10;
-
-  const minimumDistance = signal.pip * 10;
-
-  return Math.max(averageRange, minimumDistance);
+    return trade.signalId === signal.signalId;
+  });
 }
 
 function makeDemoOrder(
@@ -531,29 +509,29 @@ function makeDemoOrder(
   riskPct,
   sizingMode,
   fixedLots,
-  candles = [],
-  timeframe = DEFAULT_TIMEFRAME
+  timeframe = TIMEFRAME
 ) {
-  const point = signal.pip;
-  const isForex = category === "Forex";
-
-  const slDistance = isForex
-    ? FX_SL_PIPS * point
-    : nonForexStopDistance(signal, candles);
-
-  const tpDistance = isForex
-    ? FX_TP_PIPS * point
-    : slDistance * 3.1;
-
   const buy = signal.direction === "BUY";
+  const offset = signal.pip * SL_OFFSET_PIPS;
 
+  // Required box-based stop loss.
   const sl = buy
-    ? signal.entry - slDistance
-    : signal.entry + slDistance;
+    ? signal.boxLow - offset
+    : signal.boxHigh + offset;
+
+  const entry = signal.entry;
+  const slDistance = Math.abs(entry - sl);
+
+  if (!Number.isFinite(slDistance) || slDistance <= 0) {
+    throw new Error("Invalid stop-loss distance. Trade was not opened.");
+  }
+
+  // Fixed 3R target.
+  const tpDistance = slDistance * RISK_REWARD;
 
   const tp = buy
-    ? signal.entry + tpDistance
-    : signal.entry - tpDistance;
+    ? entry + tpDistance
+    : entry - tpDistance;
 
   const safeLots = Math.max(0, Number(fixedLots) || 0);
   const safeRiskPct = Math.max(0, Number(riskPct) || 0);
@@ -565,28 +543,31 @@ function makeDemoOrder(
   const createdAtMs = Date.now();
 
   return {
-    id: `${symbol}-${signal.boxId}-${signal.touchType}-${createdAtMs}`,
+    id: `${symbol}-${signal.signalId}-${createdAtMs}`,
+    signalId: signal.signalId,
     comment: "Ifx Billionaire",
     boxId: signal.boxId,
     boxType: signal.boxType,
-    touchType: signal.touchType || "RETEST",
+    touchType: signal.touchType,
+    session: signal.session || null,
+    sessionKey: signal.sessionKey || null,
     symbol,
     category,
     direction: signal.direction,
-    source: `${signal.boxType} ${signal.touchType} · MARKET EXECUTION`,
+    source: `${signal.boxType} · ${signal.touchType}`,
     timeframe,
     sizingMode,
     fixedLots: sizingMode === "FIXED_LOTS" ? safeLots : null,
-    entry: signal.entry,
+    entry,
     sl,
     tp,
     slDistance,
     tpDistance,
     riskMoney,
     status: "OPEN DEMO TRADE",
-    currentPrice: signal.entry,
+    currentPrice: entry,
     floatingPnl: 0,
-    fillPrice: signal.entry,
+    fillPrice: entry,
     filledAt: new Date(createdAtMs).toLocaleTimeString(),
     created: new Date(createdAtMs).toLocaleTimeString(),
     createdAtMs
@@ -598,11 +579,11 @@ function calculateDemoPnl(trade, price) {
 
   if (!stopDistance) return 0;
 
-  const priceMove = trade.direction === "BUY"
+  const move = trade.direction === "BUY"
     ? price - trade.entry
     : trade.entry - price;
 
-  return (priceMove / stopDistance) * trade.riskMoney;
+  return (move / stopDistance) * trade.riskMoney;
 }
 
 function getExitReason(trade, price) {
@@ -617,9 +598,9 @@ function getExitReason(trade, price) {
   return null;
 }
 
-function getExitPrice(trade, exitReason, observedPrice) {
-  if (exitReason === "STOP LOSS") return trade.sl;
-  if (exitReason === "TAKE PROFIT") return trade.tp;
+function getExitPrice(trade, reason, observedPrice) {
+  if (reason === "STOP LOSS") return trade.sl;
+  if (reason === "TAKE PROFIT") return trade.tp;
   return observedPrice;
 }
 
@@ -645,24 +626,25 @@ export default function App() {
   const connectionPromiseRef = useRef(null);
   const requestRef = useRef(0);
   const pendingRequestsRef = useRef(new Map());
+
   const scanLockRef = useRef(false);
   const rescanRequestedRef = useRef(false);
   const queuedScanListRef = useRef(null);
+
   const runningRef = useRef(false);
   const scanTimerRef = useRef(null);
-
   const reconnectTimerRef = useRef(null);
   const reconnectingRef = useRef(false);
+
   const marketsRef = useRef([]);
   const activationLocksRef = useRef(new Set());
 
   const subscriptionsRef = useRef(new Map());
   const subscribingRef = useRef(new Set());
+
   const latestPricesRef = useRef({});
   const ordersRef = useRef([]);
   const closedTradesRef = useRef([]);
-
-  const timeframeRef = useRef(DEFAULT_TIMEFRAME);
 
   const [connected, setConnected] = useState(false);
   const [running, setRunning] = useState(false);
@@ -670,7 +652,6 @@ export default function App() {
 
   const [symbols, setSymbols] = useState([]);
   const [signals, setSignals] = useState({});
-  const [candleDiagnostics, setCandleDiagnostics] = useState({});
   const [orders, setOrders] = useState([]);
   const [closedTrades, setClosedTrades] = useState([]);
 
@@ -678,25 +659,27 @@ export default function App() {
   const [category, setCategory] = useState("All");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState(null);
+
   const [progress, setProgress] = useState(0);
   const [scanned, setScanned] = useState(0);
+
   const [balance, setBalance] = useState(10000);
   const [riskPct, setRiskPct] = useState(1);
   const [fixedLots, setFixedLots] = useState(0.10);
   const [sizingMode, setSizingMode] = useState("RISK_PERCENT");
-  const [timeframe, setTimeframe] = useState(DEFAULT_TIMEFRAME);
+
+  const [message, setMessage] = useState(
+    "Connect to Deriv to discover available markets."
+  );
+
+  const [lastScan, setLastScan] = useState("Not scanned");
+  const [latestPrices, setLatestPrices] = useState({});
 
   const [notificationPermission, setNotificationPermission] = useState(
     typeof window !== "undefined" && "Notification" in window
       ? Notification.permission
       : "unsupported"
   );
-
-  const [message, setMessage] = useState(
-    "Connect to Deriv to discover available markets."
-  );
-  const [lastScan, setLastScan] = useState("Not scanned");
-  const [latestPrices, setLatestPrices] = useState({});
 
   const updateOrders = useCallback(updater => {
     const next = typeof updater === "function"
@@ -715,30 +698,6 @@ export default function App() {
     closedTradesRef.current = next;
     setClosedTrades(next);
   }, []);
-
-  const requestNotificationPermission = async () => {
-    if (
-      typeof window === "undefined" ||
-      !("Notification" in window)
-    ) {
-      setNotificationPermission("unsupported");
-      return;
-    }
-
-    try {
-      const permission = await Notification.requestPermission();
-      setNotificationPermission(permission);
-
-      setMessage(
-        permission === "granted"
-          ? "Browser notifications enabled."
-          : "Notifications were not enabled. You can change browser permissions."
-      );
-    } catch {
-      setNotificationPermission(Notification.permission);
-      setMessage("Could not request notification permission.");
-    }
-  };
 
   const request = useCallback(payload => {
     return new Promise((resolve, reject) => {
@@ -851,8 +810,7 @@ export default function App() {
   }, [updateOrders, updateClosedTrades]);
 
   const scheduleReconnect = useCallback(() => {
-    if (!runningRef.current) return;
-    if (reconnectTimerRef.current) return;
+    if (!runningRef.current || reconnectTimerRef.current) return;
 
     setConnectionText("RECONNECTING");
     setMessage("Connection lost. Attempting automatic reconnection...");
@@ -997,7 +955,6 @@ export default function App() {
         });
 
         pendingRequestsRef.current.clear();
-
         clearConnectionAttempt();
 
         if (runningRef.current) {
@@ -1007,13 +964,12 @@ export default function App() {
 
         if (!settled) {
           settled = true;
-          reject(new Error("Deriv connection closed before connecting."));
+          reject(new Error("Connection closed before connecting."));
         }
       };
     });
 
     connectionPromiseRef.current = connectionPromise;
-
     return connectionPromise;
   }, [processTick, scheduleReconnect]);
 
@@ -1052,7 +1008,6 @@ export default function App() {
         );
       }
 
-      setMessage(`${symbol}: live price monitoring active.`);
       return true;
     } catch (error) {
       setMessage(`${symbol}: subscription failed: ${error.message}`);
@@ -1103,7 +1058,6 @@ export default function App() {
       );
 
     marketsRef.current = list;
-
     setSymbols(list);
     setMessage(`${list.length} active Deriv markets discovered.`);
 
@@ -1111,17 +1065,11 @@ export default function App() {
   }, [request]);
 
   const scanSymbol = useCallback(async item => {
-    const activeTimeframe = timeframeRef.current;
-
     const diagnostic = {
-      requestedMaximum: CANDLE_COUNT,
-      timeframe: timeframeName(activeTimeframe),
       returned: 0,
       valid: 0,
       closed: 0,
       latestEpoch: null,
-      oldestEpoch: null,
-      responseType: "Not received",
       error: null
     };
 
@@ -1131,10 +1079,8 @@ export default function App() {
         count: CANDLE_COUNT,
         end: "latest",
         style: "candles",
-        granularity: activeTimeframe
+        granularity: TIMEFRAME
       });
-
-      diagnostic.responseType = response.msg_type || "Unknown";
 
       const raw = Array.isArray(response.candles)
         ? response.candles
@@ -1147,7 +1093,8 @@ export default function App() {
         open: Number(c.open),
         high: Number(c.high),
         low: Number(c.low),
-        close: Number(c.close)
+        close: Number(c.close),
+        volume: c.volume === undefined ? null : Number(c.volume)
       })).filter(c =>
         Number.isFinite(c.epoch) &&
         Number.isFinite(c.open) &&
@@ -1162,20 +1109,20 @@ export default function App() {
       const now = Math.floor(Date.now() / 1000);
 
       const closed = candles.filter(c =>
-        c.epoch + activeTimeframe <= now
+        c.epoch + TIMEFRAME <= now
       );
 
       diagnostic.closed = closed.length;
 
       if (closed.length) {
-        diagnostic.oldestEpoch = closed[0].epoch;
         diagnostic.latestEpoch = closed[closed.length - 1].epoch;
       }
 
-      const signal = findRetestSignal(
+      const signal = findStrategySignal(
         closed,
         item.symbol,
-        item.category
+        item.category,
+        item.pip
       );
 
       return {
@@ -1189,7 +1136,6 @@ export default function App() {
       return {
         direction: "NONE",
         reason: "Market data unavailable",
-        deletedBoxIds: [],
         _candles: [],
         _candleData: diagnostic
       };
@@ -1197,8 +1143,7 @@ export default function App() {
   }, [request]);
 
   const scanAll = useCallback(async list => {
-    if (!runningRef.current) return;
-    if (!list || !list.length) return;
+    if (!runningRef.current || !list?.length) return;
 
     if (scanLockRef.current) {
       rescanRequestedRef.current = true;
@@ -1207,7 +1152,8 @@ export default function App() {
     }
 
     scanLockRef.current = true;
-    setMessage(`Scanning all available Deriv markets on ${timeframeName(timeframeRef.current)}...`);
+
+    setMessage("Scanning Deriv markets using completed M15 candles...");
 
     const results = {};
     let completed = 0;
@@ -1221,14 +1167,8 @@ export default function App() {
         const result = await scanSymbol(item);
         results[item.symbol] = result;
 
-        if (result._candleData) {
-          setCandleDiagnostics(previous => ({
-            ...previous,
-            [item.symbol]: result._candleData
-          }));
-        }
-
         completed++;
+
         setScanned(completed);
         setProgress(Math.round(completed / list.length * 100));
 
@@ -1251,7 +1191,7 @@ export default function App() {
 
       setMessage(
         runningRef.current
-          ? `Scan complete: ${completed} of ${list.length} symbols checked on ${timeframeName(timeframeRef.current)}.`
+          ? `M15 scan complete: ${completed} of ${list.length} markets checked.`
           : "Scanning stopped."
       );
 
@@ -1272,148 +1212,6 @@ export default function App() {
     }
   }, [scanSymbol]);
 
-  const handleTimeframeChange = value => {
-    const nextTimeframe = Number(value);
-
-    if (!TIMEFRAMES.some(t => t.seconds === nextTimeframe)) return;
-
-    timeframeRef.current = nextTimeframe;
-    setTimeframe(nextTimeframe);
-
-    setSignals({});
-    setCandleDiagnostics({});
-    setScanned(0);
-    setProgress(0);
-
-    if (scanTimerRef.current) {
-      clearInterval(scanTimerRef.current);
-      scanTimerRef.current = null;
-    }
-
-    setMessage("Timeframe is locked to H1.");
-
-    if (runningRef.current) {
-      scanAll(marketsRef.current);
-
-      scanTimerRef.current = setInterval(() => {
-        if (runningRef.current) {
-          scanAll(marketsRef.current);
-        }
-      }, 3600 * 1000);
-    }
-  };
-
-  useEffect(() => {
-    const recoverRobot = async () => {
-      if (!runningRef.current) return;
-      if (reconnectingRef.current) return;
-
-      const ws = socketRef.current;
-
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        const list = marketsRef.current;
-
-        if (list.length) {
-          await scanAll(list);
-        }
-
-        return;
-      }
-
-      reconnectingRef.current = true;
-
-      try {
-        setConnectionText("RECONNECTING");
-        setMessage("Restoring Deriv connection...");
-
-        await connect();
-
-        if (!runningRef.current) return;
-
-        setConnectionText("DATA CONNECTED");
-
-        const openSymbols = [
-          ...new Set(
-            ordersRef.current
-              .filter(order => order.status === "OPEN DEMO TRADE")
-              .map(order => order.symbol)
-          )
-        ];
-
-        for (const symbol of openSymbols) {
-          if (!runningRef.current) break;
-          await subscribeMarket(symbol);
-        }
-
-        if (!runningRef.current) return;
-
-        let list = marketsRef.current;
-
-        if (!list.length) {
-          list = await discoverMarkets();
-        }
-
-        if (runningRef.current && list.length) {
-          setMessage("Connection restored. Resuming H1 market scans...");
-          await scanAll(list);
-        }
-      } catch (error) {
-        if (runningRef.current) {
-          setMessage(
-            `Reconnection failed: ${error.message}. Retrying shortly.`
-          );
-
-          scheduleReconnect();
-        }
-      } finally {
-        reconnectingRef.current = false;
-      }
-    };
-
-    const handleReconnect = () => recoverRobot();
-
-    const handleOnline = () => {
-      if (runningRef.current) {
-        if (reconnectTimerRef.current) {
-          clearTimeout(reconnectTimerRef.current);
-          reconnectTimerRef.current = null;
-        }
-
-        recoverRobot();
-      }
-    };
-
-    const handleVisibility = () => {
-      if (
-        document.visibilityState === "visible" &&
-        runningRef.current
-      ) {
-        if (reconnectTimerRef.current) {
-          clearTimeout(reconnectTimerRef.current);
-          reconnectTimerRef.current = null;
-        }
-
-        recoverRobot();
-      }
-    };
-
-    window.addEventListener("ifx-robot-reconnect", handleReconnect);
-    window.addEventListener("online", handleOnline);
-    document.addEventListener("visibilitychange", handleVisibility);
-
-    return () => {
-      window.removeEventListener("ifx-robot-reconnect", handleReconnect);
-      window.removeEventListener("online", handleOnline);
-      document.removeEventListener("visibilitychange", handleVisibility);
-    };
-  }, [
-    connect,
-    scanAll,
-    subscribeMarket,
-    discoverMarkets,
-    scheduleReconnect
-  ]);
-
   const startRobot = async () => {
     if (runningRef.current) return;
 
@@ -1423,25 +1221,25 @@ export default function App() {
         "Notification" in window &&
         Notification.permission === "default"
       ) {
-        await requestNotificationPermission();
+        try {
+          const permission = await Notification.requestPermission();
+          setNotificationPermission(permission);
+        } catch {
+          // Notifications are optional.
+        }
       }
 
-      timeframeRef.current = 3600;
-      setTimeframe(3600);
-
-      setMessage("Connecting to Deriv H1 market data...");
+      setMessage("Connecting to Deriv M15 market data...");
       await connect();
 
       runningRef.current = true;
       setRunning(true);
 
-      setCandleDiagnostics({});
       setSignals({});
       setScanned(0);
       setProgress(0);
 
       const list = await discoverMarkets();
-      marketsRef.current = list;
 
       if (!list.length) {
         setMessage("No active markets returned by Deriv.");
@@ -1462,7 +1260,7 @@ export default function App() {
         if (runningRef.current) {
           scanAll(marketsRef.current);
         }
-      }, 3600 * 1000);
+      }, TIMEFRAME * 1000);
     } catch (error) {
       runningRef.current = false;
       setRunning(false);
@@ -1473,6 +1271,7 @@ export default function App() {
   const stopRobot = () => {
     runningRef.current = false;
     setRunning(false);
+
     rescanRequestedRef.current = false;
     queuedScanListRef.current = null;
 
@@ -1539,7 +1338,7 @@ export default function App() {
     activationLocksRef.current.clear();
 
     setMessage(
-      `STOPPED. ${closedNow.length} open demo trade(s) closed.`
+      `STOPPED. ${closedNow.length} open simulated trade(s) closed.`
     );
   };
 
@@ -1548,18 +1347,15 @@ export default function App() {
 
     if (!signal || signal.direction === "NONE") return;
 
-    if (!signal.boxId) {
-      setMessage("Signal has no valid box identifier.");
+    if (!signal.signalId || !signal.boxId) {
+      setMessage("Signal is missing its box or signal identifier.");
       return;
     }
 
-    const touchType = signal.touchType || "RETEST";
-    const lockKey = `${item.symbol}|${signal.boxId}|${touchType}`;
+    const lockKey = `${item.symbol}|${signal.signalId}`;
 
     if (activationLocksRef.current.has(lockKey)) {
-      setMessage(
-        `${item.symbol}: this ${touchType} execution is already being processed.`
-      );
+      setMessage(`${item.symbol}: this signal is already being processed.`);
       return;
     }
 
@@ -1571,16 +1367,11 @@ export default function App() {
         ...closedTradesRef.current
       ];
 
-      if (
-        boxTradeAlreadyTaken(
-          previousTrades,
-          item.symbol,
-          signal.boxId,
-          touchType
-        )
-      ) {
+      if (alreadyExecuted(previousTrades, signal, item.symbol)) {
         setMessage(
-          `${item.symbol}: this box already has a ${touchType} trade.`
+          signal.boxType === "ORANGE"
+            ? `${item.symbol}: one Orange trade has already been taken in this session.`
+            : `${item.symbol}: this exact Blue signal has already been traded.`
         );
         return;
       }
@@ -1604,23 +1395,13 @@ export default function App() {
         ...closedTradesRef.current
       ];
 
-      if (
-        boxTradeAlreadyTaken(
-          tradesAfterSubscription,
-          item.symbol,
-          signal.boxId,
-          touchType
-        )
-      ) {
-        setMessage(
-          `${item.symbol}: this box already has a ${touchType} trade.`
-        );
+      if (alreadyExecuted(tradesAfterSubscription, signal, item.symbol)) {
+        setMessage("This signal has already been traded.");
         return;
       }
 
       const executionSignal = {
         ...signal,
-        touchType,
         entry: currentPrice
       };
 
@@ -1632,46 +1413,124 @@ export default function App() {
         riskPct,
         sizingMode,
         fixedLots,
-        signal._candles || [],
-        3600
+        TIMEFRAME
       );
 
       updateOrders(previous => [order, ...previous]);
 
       setSelected(item);
+
       setLastActivated(
-        `${signal.direction} · ${signal.boxType} · ${touchType} · H1 · MARKET EXECUTION`
+        `${signal.direction} · ${signal.boxType} · ${signal.touchType} · M15`
       );
 
       setMessage(
-        `${item.symbol}: ${signal.direction} ${touchType} OPENED IMMEDIATELY at ${fmt(currentPrice, 8)}.`
+        `${item.symbol}: ${signal.direction} simulated trade opened at ${fmt(currentPrice, 8)}.`
       );
 
       sendBrowserNotification(
-        "iFX BILLIONAIRE — Trade Opened",
-        `${item.symbol} ${signal.direction} ${touchType} at ${fmt(currentPrice, 8)}`
+        "iFX BILLIONAIRE — Demo Trade Opened",
+        `${item.symbol} ${signal.direction} ${signal.touchType} at ${fmt(currentPrice, 8)}`
       );
+    } catch (error) {
+      setMessage(`${item.symbol}: ${error.message}`);
     } finally {
       activationLocksRef.current.delete(lockKey);
     }
   };
 
   useEffect(() => {
+    const recoverRobot = async () => {
+      if (!runningRef.current || reconnectingRef.current) return;
+
+      const ws = socketRef.current;
+
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        if (marketsRef.current.length) {
+          await scanAll(marketsRef.current);
+        }
+        return;
+      }
+
+      reconnectingRef.current = true;
+
+      try {
+        setConnectionText("RECONNECTING");
+        setMessage("Restoring Deriv connection...");
+
+        await connect();
+
+        if (!runningRef.current) return;
+
+        const openSymbols = [
+          ...new Set(
+            ordersRef.current
+              .filter(order => order.status === "OPEN DEMO TRADE")
+              .map(order => order.symbol)
+          )
+        ];
+
+        for (const symbol of openSymbols) {
+          if (!runningRef.current) break;
+          await subscribeMarket(symbol);
+        }
+
+        if (!runningRef.current) return;
+
+        let list = marketsRef.current;
+
+        if (!list.length) {
+          list = await discoverMarkets();
+        }
+
+        if (runningRef.current && list.length) {
+          setMessage("Connection restored. Resuming M15 scans...");
+          await scanAll(list);
+        }
+      } catch (error) {
+        if (runningRef.current) {
+          setMessage(`Reconnection failed: ${error.message}`);
+          scheduleReconnect();
+        }
+      } finally {
+        reconnectingRef.current = false;
+      }
+    };
+
+    const handleReconnect = () => recoverRobot();
+
+    const handleOnline = () => {
+      if (runningRef.current) recoverRobot();
+    };
+
+    const handleVisibility = () => {
+      if (
+        document.visibilityState === "visible" &&
+        runningRef.current
+      ) {
+        recoverRobot();
+      }
+    };
+
+    window.addEventListener("ifx-robot-reconnect", handleReconnect);
+    window.addEventListener("online", handleOnline);
+    document.addEventListener("visibilitychange", handleVisibility);
+
+    return () => {
+      window.removeEventListener("ifx-robot-reconnect", handleReconnect);
+      window.removeEventListener("online", handleOnline);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [connect, scanAll, subscribeMarket, discoverMarkets, scheduleReconnect]);
+
+  useEffect(() => {
     return () => {
       runningRef.current = false;
 
-      if (scanTimerRef.current) {
-        clearInterval(scanTimerRef.current);
-      }
+      if (scanTimerRef.current) clearInterval(scanTimerRef.current);
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
 
-      if (reconnectTimerRef.current) {
-        clearTimeout(reconnectTimerRef.current);
-        reconnectTimerRef.current = null;
-      }
-
-      if (socketRef.current) {
-        socketRef.current.close();
-      }
+      if (socketRef.current) socketRef.current.close();
 
       pendingRequestsRef.current.forEach(p => {
         clearTimeout(p.timeout);
@@ -1681,24 +1540,22 @@ export default function App() {
     };
   }, []);
 
-  // ACTIVE RETEST SIGNALS: hide markets without BUY or SELL.
   const visibleSymbols = symbols.filter(item => {
-    const direction = signals[item.symbol]?.direction;
-
-    const hasActiveSignal =
-      direction === "BUY" || direction === "SELL";
+    const signal = signals[item.symbol];
+    const hasSignal =
+      signal?.direction === "BUY" || signal?.direction === "SELL";
 
     const matchesCategory =
       category === "All" || item.category === category;
 
-    const searchTerm = search.toLowerCase();
+    const term = search.toLowerCase();
 
     const matchesSearch =
-      !searchTerm ||
-      String(item.display_name || "").toLowerCase().includes(searchTerm) ||
-      String(item.symbol || "").toLowerCase().includes(searchTerm);
+      !term ||
+      String(item.display_name || "").toLowerCase().includes(term) ||
+      String(item.symbol || "").toLowerCase().includes(term);
 
-    return hasActiveSignal && matchesCategory && matchesSearch;
+    return hasSignal && matchesCategory && matchesSearch;
   });
 
   const buyCount = symbols.filter(s =>
@@ -1708,10 +1565,6 @@ export default function App() {
   const sellCount = symbols.filter(s =>
     signals[s.symbol]?.direction === "SELL"
   ).length;
-
-  const pendingOrders = orders.filter(o =>
-    o.status === "DEMO PENDING"
-  );
 
   const openTrades = orders.filter(o =>
     o.status === "OPEN DEMO TRADE"
@@ -1731,41 +1584,6 @@ export default function App() {
 
   const moneyColor = value =>
     value > 0 ? "#16c784" : value < 0 ? "#ea5455" : "#eef4ff";
-
-  const diagnosticCounts = {};
-
-  DIAGNOSTIC_REASONS.forEach(reason => {
-    diagnosticCounts[reason] = 0;
-  });
-
-  symbols.forEach(item => {
-    const result = signals[item.symbol];
-    if (!result) return;
-
-    const reason = result.direction !== "NONE"
-      ? "Signal confirmed"
-      : result.reason || "Market data unavailable";
-
-    diagnosticCounts[reason] =
-      (diagnosticCounts[reason] || 0) + 1;
-  });
-
-  const diagnosticMarkets = symbols
-    .filter(item => signals[item.symbol])
-    .filter(item => signals[item.symbol].direction === "NONE")
-    .sort((a, b) =>
-      String(a.display_name).localeCompare(String(b.display_name))
-    );
-
-  const candleDiagnosticList = Object.values(candleDiagnostics);
-
-  const marketsWithCandleData = candleDiagnosticList.filter(d =>
-    d.returned > 0
-  ).length;
-
-  const marketsWithErrors = candleDiagnosticList.filter(d =>
-    d.error
-  ).length;
 
   const signalColor = direction =>
     direction === "BUY"
@@ -1833,17 +1651,6 @@ export default function App() {
     color: "#8395af"
   };
 
-  const searchStyle = {
-    width: "100%",
-    marginTop: 13,
-    background: "#0a1424",
-    border: "1px solid #30435e",
-    borderRadius: 8,
-    color: "white",
-    padding: 12,
-    fontSize: 13
-  };
-
   const fieldStyle = {
     width: "100%",
     minWidth: 0,
@@ -1889,10 +1696,8 @@ export default function App() {
         input:focus, select:focus { outline:1px solid #31a8ff; }
         details > summary::-webkit-details-marker { display:none; }
         details > summary::after {
-          content:"＋";
-          color:#55c9ff;
-          font-size:16px;
-          margin-left:auto;
+          content:"＋"; color:#55c9ff;
+          font-size:16px; margin-left:auto;
         }
         details[open] > summary::after { content:"−"; }
       `}</style>
@@ -1920,7 +1725,7 @@ export default function App() {
             marginTop: 5,
             letterSpacing: 1.5
           }}>
-            HLZ MOBILE ROBOT · H1 RETEST EDITION
+            M15 · ORANGE + BLUE BOX EDITION
           </div>
         </div>
 
@@ -1954,7 +1759,7 @@ export default function App() {
               borderRadius: 5,
               fontWeight: 900
             }}>
-              DEMO EXECUTION
+              SIMULATED DEMO
             </span>
           </div>
 
@@ -2013,7 +1818,7 @@ export default function App() {
           </div>
 
           <div style={small}>
-            H1 scan progress: {scanned}/{symbols.length} · {progress}%
+            M15 scan progress: {scanned}/{symbols.length} · {progress}%
           </div>
         </section>
 
@@ -2040,10 +1845,6 @@ export default function App() {
             <div style={statValue}>{openTrades.length}</div>
           </div>
           <div style={stat}>
-            <div style={statLabel}>PENDING ORDERS</div>
-            <div style={statValue}>{pendingOrders.length}</div>
-          </div>
-          <div style={stat}>
             <div style={statLabel}>FLOATING P&L</div>
             <div style={{ ...statValue, color: moneyColor(floatingPnl) }}>
               {floatingPnl >= 0 ? "+" : ""}${fmt(floatingPnl, 2)}
@@ -2061,19 +1862,32 @@ export default function App() {
               {totalPnl >= 0 ? "+" : ""}${fmt(totalPnl, 2)}
             </div>
           </div>
+          <div style={stat}>
+            <div style={statLabel}>TIMEFRAME</div>
+            <div style={statValue}>M15</div>
+          </div>
         </section>
 
         <section style={card}>
-          <div style={title}>ACTIVE H1 RETEST SIGNALS</div>
+          <div style={title}>ACTIVE M15 SIGNALS</div>
           <div style={small}>
-            H1 completed-candle signals only · BUY and SELL
+            Completed M15 candles only · Tap a signal to open a simulated trade.
           </div>
 
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="Search symbol or market..."
-            style={searchStyle}
+            style={{
+              width: "100%",
+              marginTop: 13,
+              background: "#0a1424",
+              border: "1px solid #30435e",
+              borderRadius: 8,
+              color: "white",
+              padding: 12,
+              fontSize: 13
+            }}
           />
 
           <div className="market-scroll">
@@ -2118,7 +1932,7 @@ export default function App() {
               fontSize: 11,
               lineHeight: 1.6
             }}>
-              No active H1 BUY or SELL signals for this selection.
+              No active M15 BUY or SELL signals for this selection.
               <br/>
               Inactive markets are hidden.
             </div>
@@ -2130,43 +1944,28 @@ export default function App() {
             gap: 7
           }}>
             {visibleSymbols.map(item => {
-              const signal = signals[item.symbol] || {
-                direction: "NONE",
-                reason: "Waiting for scan"
-              };
-
+              const signal = signals[item.symbol];
               const isSelected = selected?.symbol === item.symbol;
-              const touchType = signal.touchType || "RETEST";
 
-              const hasOrder = signal.boxId
-                ? boxTradeAlreadyTaken(
-                    [...orders, ...closedTrades],
-                    item.symbol,
-                    signal.boxId,
-                    touchType
-                  )
-                : false;
+              const previousTrades = [...orders, ...closedTrades];
+
+              const hasOrder = alreadyExecuted(
+                previousTrades,
+                signal,
+                item.symbol
+              );
 
               return (
                 <button
                   key={item.symbol}
                   className="market-card"
-                  onClick={() => {
-                    if (signal.direction !== "NONE") {
-                      activateSignal(item);
-                    } else {
-                      setSelected(item);
-                      setMessage(
-                        `${item.display_name}: ${signal.reason || "No signal"}`
-                      );
-                    }
-                  }}
+                  onClick={() => activateSignal(item)}
                   style={{
                     width: "100%",
                     background: "#0b1525",
                     border: `1px solid ${isSelected ? "#31a8ff" : "#24334b"}`,
                     borderRadius: 9,
-                    padding: 11,
+                    padding: 12,
                     display: "flex",
                     justifyContent: "space-between",
                     alignItems: "center",
@@ -2179,43 +1978,63 @@ export default function App() {
                     <div style={{ fontSize: 12, fontWeight: 800 }}>
                       {item.display_name || item.symbol}
                     </div>
+
                     <div style={small}>
-                      {item.symbol} · {item.category} · H1
+                      {item.symbol} · {item.category} · M15
                     </div>
 
-                    {signal.direction !== "NONE" && (
-                      <>
-                        <div style={{
-                          fontSize: 9,
-                          color: "#a9c9e9",
-                          marginTop: 5
-                        }}>
-                          {signal.boxType} · {signal.touchType}
-                        </div>
-                        <div style={{
-                          fontSize: 9,
-                          color: "#a9c9e9",
-                          marginTop: 5
-                        }}>
-                          Execution: CURRENT MARKET PRICE
-                        </div>
-                        {hasOrder && (
-                          <div style={{
-                            fontSize: 9,
-                            color: "#f4c46a",
-                            marginTop: 5
-                          }}>
-                            TRADED ALREADY — NO NEW ENTRY
-                          </div>
-                        )}
-                      </>
+                    <div style={{
+                      fontSize: 9,
+                      color: signal.boxType === "ORANGE" ? "#f4a340" : "#65aaff",
+                      marginTop: 7,
+                      fontWeight: 900
+                    }}>
+                      {signal.boxType} · {signal.touchType}
+                    </div>
+
+                    <div style={{
+                      fontSize: 9,
+                      color: "#a9c9e9",
+                      marginTop: 5
+                    }}>
+                      VOL {signal.volume ?? "N/A"} · {signal.boxType === "ORANGE"
+                        ? signal.session
+                        : signal.boxType} · {signal.direction}S
+                    </div>
+
+                    <div style={{
+                      fontSize: 9,
+                      color: "#a9c9e9",
+                      marginTop: 5
+                    }}>
+                      BOX HIGH {fmt(signal.boxHigh, 8)} · LOW {fmt(signal.boxLow, 8)}
+                    </div>
+
+                    {hasOrder && (
+                      <div style={{
+                        fontSize: 9,
+                        color: signal.boxType === "ORANGE" ? "#f4c46a" : "#70d9ad",
+                        marginTop: 5
+                      }}>
+                        {signal.boxType === "ORANGE"
+                          ? "ORANGE SESSION ALREADY TRADED"
+                          : "THIS SIGNAL ALREADY TRADED"}
+                      </div>
                     )}
+
+                    <div style={{
+                      fontSize: 9,
+                      color: "#55c9ff",
+                      marginTop: 6
+                    }}>
+                      TAP TO OPEN DEMO TRADE
+                    </div>
                   </div>
 
                   <div style={{
                     minWidth: 65,
                     textAlign: "center",
-                    padding: "8px 7px",
+                    padding: "9px 7px",
                     borderRadius: 6,
                     fontSize: 10,
                     fontWeight: 900,
@@ -2229,6 +2048,92 @@ export default function App() {
             })}
           </div>
         </section>
+
+        <details style={card}>
+          <summary style={collapsibleSummary}>
+            STRATEGY RULES
+          </summary>
+
+          <div style={{
+            marginTop: 13,
+            fontSize: 10,
+            lineHeight: 1.8,
+            color: "#a8b7cb",
+            background: "#0b1525",
+            padding: 11,
+            borderRadius: 7
+          }}>
+            <b style={{ color: "#f4a340" }}>ORANGE BOX</b>
+            <br/>
+            • First four M15 candles: 00:00–01:00 UTC.
+            <br/>
+            • High and low levels are used for the day.
+            <br/>
+            • London: 07:00–11:00 UTC.
+            <br/>
+            • New York: 15:00–17:00 UTC.
+            <br/>
+            • Breakout close outside the box, followed by a wick retest.
+            <br/>
+            • Maximum one Orange trade per session per market.
+            <br/><br/>
+
+            <b style={{ color: "#65aaff" }}>BLUE BOX</b>
+            <br/>
+            • Active box creation: 01:00–22:00 UTC.
+            <br/>
+            • ENGULF: previous candle high and low.
+            <br/>
+            • DOJI: candle body no more than 10% of its range.
+            <br/>
+            • WICK boxes removed.
+            <br/>
+            • Asia boxes and Asia range removed.
+            <br/><br/>
+
+            <b style={{ color: "#65aaff" }}>BLUE TOUCHES</b>
+            <br/>
+            • Box high + GREEN candle = SELL.
+            <br/>
+            • Box low + RED candle = BUY.
+            <br/>
+            • Unlimited separate qualifying touches.
+            <br/><br/>
+
+            <b style={{ color: "#65aaff" }}>BLUE BREAKOUT</b>
+            <br/>
+            • Close above box = Bull Break.
+            <br/>
+            • Skip GREEN candles; BUY on first RED candle.
+            <br/>
+            • Close below box = Bear Break.
+            <br/>
+            • Skip RED candles; SELL on first GREEN candle.
+            <br/><br/>
+
+            <b style={{ color: "#f4c46a" }}>RISK MANAGEMENT</b>
+            <br/>
+            • Stop offset: 5 pips.
+            <br/>
+            • BUY SL: Box Low − 5 pips.
+            <br/>
+            • SELL SL: Box High + 5 pips.
+            <br/>
+            • TP: fixed 3R from actual simulated entry.
+            <br/>
+            • No breakeven.
+            <br/>
+            • No trailing stop.
+            <br/>
+            • No pending orders.
+            <br/>
+            • Manual tap required to open every trade.
+            <br/>
+            • Signals use completed M15 candles only.
+            <br/>
+            • Session times are UTC.
+          </div>
+        </details>
 
         <details style={card}>
           <summary style={collapsibleSummary}>
@@ -2249,12 +2154,8 @@ export default function App() {
               color: "#94a8c3"
             }}>
               <span>Timeframe</span>
-              <select
-                value={3600}
-                disabled
-                style={fieldStyle}
-              >
-                <option value={3600}>H1 — 1 Hour</option>
+              <select value="900" disabled style={fieldStyle}>
+                <option value="900">M15 — 15 Minutes</option>
               </select>
             </label>
 
@@ -2308,7 +2209,9 @@ export default function App() {
                   max="100"
                   step="0.1"
                   value={riskPct}
-                  onChange={e => setRiskPct(Math.max(0, Math.min(100, Number(e.target.value))))}
+                  onChange={e => setRiskPct(
+                    Math.max(0, Math.min(100, Number(e.target.value)))
+                  )}
                   style={fieldStyle}
                 />
               </label>
@@ -2328,7 +2231,9 @@ export default function App() {
                   min="0.01"
                   step="0.01"
                   value={fixedLots}
-                  onChange={e => setFixedLots(Math.max(0.01, Number(e.target.value)))}
+                  onChange={e => setFixedLots(
+                    Math.max(0.01, Number(e.target.value))
+                  )}
                   style={fieldStyle}
                 />
               </label>
@@ -2344,25 +2249,21 @@ export default function App() {
             padding: 10,
             borderRadius: 7
           }}>
-            ACTIVE TIMEFRAME: H1 — 1 HOUR.
+            TIMEFRAME: M15 ONLY.
             <br/>
-            SCAN INTERVAL: 60 MINUTES.
+            SCAN INTERVAL: 15 MINUTES.
             <br/>
-            SIGNAL CONFIRMATION: COMPLETED H1 CANDLES ONLY.
+            SL OFFSET: 5 PIPS.
             <br/>
-            ASIA SESSION: 00:00–07:00 UTC.
+            TAKE PROFIT: 3R.
+            <br/>
+            BREAKEVEN: OFF.
+            <br/>
+            TRAILING STOP: OFF.
             <br/>
             POSITION SIZING: {sizingMode === "RISK_PERCENT"
               ? `${fmt(riskPct, 2)}% of demo balance per trade.`
               : `${fmt(fixedLots, 2)} fixed simulated lots.`}
-            <br/>
-            FOREX: 10-pip SL / 31-pip TP.
-            <br/>
-            NON-FOREX: SL based on average range of the latest 14 closed H1 candles.
-            <br/>
-            NON-FOREX TP: 3.1 times the calculated SL distance.
-            <br/>
-            NO PENDING ORDERS OR EXPIRY.
             <br/>
             Settings apply to new trades. Existing trades retain their original settings.
           </div>
@@ -2377,9 +2278,9 @@ export default function App() {
               padding: 10,
               borderRadius: 7
             }}>
-              SIMULATION NOTE: 0.10 lots represents a 1% risk-normalised
-              baseline. Other lot sizes scale simulated P&L proportionally.
-              This is not the actual contract valuation used by a broker.
+              SIMULATION NOTE: Fixed lots scale simulated P&L using a
+              0.10-lot baseline. This is not the actual contract valuation
+              used by a broker.
             </div>
           )}
         </details>
@@ -2389,6 +2290,7 @@ export default function App() {
           <div style={small}>
             Current data provider: DERIV PUBLIC MARKET DATA
           </div>
+
           <div style={{
             marginTop: 10,
             padding: 11,
@@ -2398,33 +2300,17 @@ export default function App() {
             fontSize: 10,
             lineHeight: 1.7
           }}>
-            This version does not have a broker login or real-account
-            execution connection. It uses Deriv public market data and
-            simulated demo trades only. Another broker cannot be selected
-            from this dashboard.
+            This version uses Deriv public market data and simulated demo
+            trades only. It does not connect to a Deriv account, another
+            broker, or a live trading account.
           </div>
-        </section>
-
-        <section style={card}>
-          <div style={title}>MARKET EXECUTION</div>
-          <div style={small}>
-            Trades open immediately at the current live price when you click a valid H1 signal.
-          </div>
-
-          {!pendingOrders.length && (
-            <div style={{
-              textAlign: "center",
-              padding: 18,
-              color: "#8395af"
-            }}>
-              No pending orders. All new signals use immediate market execution.
-            </div>
-          )}
         </section>
 
         <section style={card}>
           <div style={title}>OPEN DEMO TRADES</div>
-          <div style={small}>Live price monitoring · Floating P&L</div>
+          <div style={small}>
+            Live price monitoring · Floating P&L
+          </div>
 
           {!openTrades.length && (
             <div style={{
@@ -2454,13 +2340,9 @@ export default function App() {
               <div style={small}>
                 {trade.source} · {trade.status}
               </div>
+
               <div style={small}>
-                Order comment: {trade.comment}
-              </div>
-              <div style={small}>
-                {timeframeName(trade.timeframe)} · {trade.sizingMode === "FIXED_LOTS"
-                  ? `${fmt(trade.fixedLots, 2)} lots`
-                  : "Percentage risk"}
+                Order comment: {trade.comment} · M15
               </div>
 
               <div style={orderGrid}>
@@ -2494,6 +2376,12 @@ export default function App() {
                     ${fmt(trade.riskMoney, 2)}
                   </b>
                 </div>
+                <div>
+                  REWARD RATIO
+                  <b style={{ display: "block", color: "white" }}>
+                    3R
+                  </b>
+                </div>
               </div>
 
               <div style={{
@@ -2523,7 +2411,7 @@ export default function App() {
             </div>
           )}
 
-          {closedTrades.slice(0, 20).map(trade => (
+          {closedTrades.slice(0, 30).map(trade => (
             <div key={trade.id} style={orderCard}>
               <div style={{
                 display: "flex",
@@ -2542,11 +2430,11 @@ export default function App() {
               </div>
 
               <div style={small}>
-                Order comment: {trade.comment}
+                {trade.boxType} · {trade.touchType} · M15
               </div>
 
               <div style={small}>
-                {trade.touchType || "RETEST"} · {timeframeName(trade.timeframe)} · Entry: {fmt(trade.entry, 8)} · Exit: {fmt(trade.exitPrice, 8)}
+                Entry: {fmt(trade.entry, 8)} · Exit: {fmt(trade.exitPrice, 8)}
               </div>
             </div>
           ))}
@@ -2569,49 +2457,6 @@ export default function App() {
           <div style={small}>Last scan: {lastScan}</div>
         </section>
 
-        <details style={card}>
-          <summary style={collapsibleSummary}>
-            MARKET-BY-MARKET REASONS
-          </summary>
-
-          <div style={small}>
-            Individual explanation for every market without a signal · {diagnosticMarkets.length} markets
-          </div>
-
-          {!scanned && (
-            <div style={{
-              textAlign: "center",
-              padding: 18,
-              color: "#8395af"
-            }}>
-              Start the robot to see individual market reasons.
-            </div>
-          )}
-
-          {diagnosticMarkets.map(item => (
-            <div key={item.symbol} style={{
-              background: "#0b1525",
-              border: "1px solid #24334b",
-              padding: 10,
-              borderRadius: 7,
-              marginTop: 8
-            }}>
-              <div style={{ fontSize: 11, fontWeight: 800 }}>
-                {item.display_name || item.symbol}
-              </div>
-              <div style={small}>{item.symbol}</div>
-              <div style={{
-                fontSize: 10,
-                color: "#f1c477",
-                marginTop: 5,
-                lineHeight: 1.5
-              }}>
-                {signals[item.symbol]?.reason || "No diagnostic available"}
-              </div>
-            </div>
-          ))}
-        </details>
-
         <footer style={{
           textAlign: "center",
           padding: "16px 5px 28px",
@@ -2620,9 +2465,9 @@ export default function App() {
           letterSpacing: 1.2,
           lineHeight: 1.8
         }}>
-          iFX BILLIONAIRE ROBOT · HLZ MOBILE · H1 EDITION
+          iFX BILLIONAIRE ROBOT · M15 ORANGE + BLUE BOX EDITION
           <br/>
-          1-Hour Candles · Breakouts · Retests · FLIPPY · Market Execution
+          Orange Sessions · Engulfing · Doji · Touches · Breakouts · 3R
         </footer>
       </main>
     </div>
