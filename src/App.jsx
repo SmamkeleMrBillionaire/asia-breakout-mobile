@@ -3,10 +3,17 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 
 const WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public";
 
-const TIMEFRAME = 900; // M15 only
+const TIMEFRAME = 900;
 const CANDLE_COUNT = 1000;
+
 const SL_OFFSET_PIPS = 5;
-const RISK_REWARD = 3;
+const NORMAL_RR = 3;
+const FADE_SL_OFFSET_PIPS = 10;
+const FADE_RR = 2;
+
+const MAX_BLUE_BOXES = 4;
+const MAX_DAILY_TRADES = 4;
+const MAX_OPEN_TRADES = 4;
 
 const CATEGORIES = [
   "All", "Forex", "Indices", "Metals",
@@ -16,8 +23,22 @@ const CATEGORIES = [
 const fmt = (n, digits = 5) =>
   Number.isFinite(Number(n)) ? Number(n).toFixed(digits) : "—";
 
-function timeframeName() {
-  return "M15";
+function utcDate(epoch) {
+  return new Date(epoch * 1000).toISOString().slice(0, 10);
+}
+
+function utcHour(epoch) {
+  return new Date(epoch * 1000).getUTCHours();
+}
+
+function utcMinute(epoch) {
+  return new Date(epoch * 1000).getUTCMinutes();
+}
+
+function candleColor(c) {
+  if (c.close > c.open) return "GREEN";
+  if (c.close < c.open) return "RED";
+  return "NEUTRAL";
 }
 
 function categoryOf(s) {
@@ -66,24 +87,6 @@ function categoryOf(s) {
   return "Other";
 }
 
-function candleColor(c) {
-  if (c.close > c.open) return "GREEN";
-  if (c.close < c.open) return "RED";
-  return "NEUTRAL";
-}
-
-function utcDate(epoch) {
-  return new Date(epoch * 1000).toISOString().slice(0, 10);
-}
-
-function utcHour(epoch) {
-  return new Date(epoch * 1000).getUTCHours();
-}
-
-function utcMinute(epoch) {
-  return new Date(epoch * 1000).getUTCMinutes();
-}
-
 function pipSize(symbol, category, candles, marketPip) {
   if (Number.isFinite(Number(marketPip)) && Number(marketPip) > 0) {
     return Number(marketPip);
@@ -130,8 +133,60 @@ function getVolumeLabel(candle) {
   return "N/A";
 }
 
-// ORANGE BOX:
-// First four M15 candles of the UTC day: 00:00–01:00.
+function calculateRSI(candles, period = 3) {
+  if (!candles || candles.length < period + 1) return null;
+
+  const changes = [];
+
+  for (let i = 1; i < candles.length; i++) {
+    changes.push(candles[i].close - candles[i - 1].close);
+  }
+
+  const recent = changes.slice(-period);
+
+  let gains = 0;
+  let losses = 0;
+
+  recent.forEach(change => {
+    if (change > 0) gains += change;
+    if (change < 0) losses += Math.abs(change);
+  });
+
+  const averageGain = gains / period;
+  const averageLoss = losses / period;
+
+  if (averageLoss === 0 && averageGain === 0) return 50;
+  if (averageLoss === 0) return 100;
+  if (averageGain === 0) return 0;
+
+  const rs = averageGain / averageLoss;
+
+  return 100 - (100 / (1 + rs));
+}
+
+function rsiAt(candles, index, period = 3) {
+  if (index < period) return null;
+
+  return calculateRSI(candles.slice(0, index + 1), period);
+}
+
+function candleTouchesTop(c, box) {
+  return c.low <= box.high && c.high >= box.high;
+}
+
+function candleTouchesBottom(c, box) {
+  return c.low <= box.low && c.high >= box.low;
+}
+
+function candleTouchesBox(c, box) {
+  return c.low <= box.high && c.high >= box.low;
+}
+
+function rangesOverlap(a, b) {
+  return a.low <= b.high && b.low <= a.high;
+}
+
+// ORANGE BOX: first four M15 candles of each UTC day.
 function buildOrangeBoxes(candles) {
   const byDay = new Map();
 
@@ -141,42 +196,42 @@ function buildOrangeBoxes(candles) {
     const day = utcDate(c.epoch);
 
     if (!byDay.has(day)) byDay.set(day, []);
+
     byDay.get(day).push({ ...c, index });
   });
 
   const boxes = [];
 
   for (const [day, dayCandles] of byDay.entries()) {
-    const firstHour = dayCandles.filter(c =>
-      utcMinute(c.epoch) < 60
-    );
+    const firstHour = dayCandles
+      .filter(c => utcMinute(c.epoch) < 60)
+      .sort((a, b) => a.epoch - b.epoch);
 
     if (firstHour.length < 4) continue;
 
-    const high = Math.max(...firstHour.map(c => c.high));
-    const low = Math.min(...firstHour.map(c => c.low));
-    const createdEpoch = firstHour[0].epoch;
+    const firstFour = firstHour.slice(0, 4);
+
+    const high = Math.max(...firstFour.map(c => c.high));
+    const low = Math.min(...firstFour.map(c => c.low));
 
     boxes.push({
       type: "ORANGE",
       day,
       high,
       low,
-      createdEpoch,
-      createdIndex: firstHour[firstHour.length - 1].index,
-      boxId: makeBoxId("ORANGE", createdEpoch, high, low)
+      createdEpoch: firstFour[0].epoch,
+      createdIndex: firstFour[3].index,
+      boxId: makeBoxId("ORANGE", firstFour[0].epoch, high, low)
     });
   }
 
   return boxes;
 }
 
-// BLUE BOXES:
-// ENGULF = previous candle is the box.
-// DOJI = doji candle itself is the box.
-// WICK and Asia boxes are removed.
+// BLUE BOXES: current ENGULFING candle or current DOJI candle.
+// Boxes are created only from 01:00 to 22:00 UTC.
 function buildBlueBoxes(candles) {
-  const boxes = [];
+  const candidates = [];
 
   for (let i = 1; i < candles.length; i++) {
     const c = candles[i];
@@ -203,18 +258,18 @@ function buildBlueBoxes(candles) {
         c.open >= prev.close && c.close <= prev.open);
 
     if (engulfing) {
-      boxes.push({
+      candidates.push({
         type: "ENGULF",
-        high: prev.high,
-        low: prev.low,
+        high: c.high,
+        low: c.low,
         createdIndex: i,
         createdEpoch: c.epoch,
-        boxId: makeBoxId("ENGULF", c.epoch, prev.high, prev.low)
+        boxId: makeBoxId("ENGULF", c.epoch, c.high, c.low)
       });
     }
 
     if (body / range <= 0.10) {
-      boxes.push({
+      candidates.push({
         type: "DOJI",
         high: c.high,
         low: c.low,
@@ -225,19 +280,60 @@ function buildBlueBoxes(candles) {
     }
   }
 
-  return boxes;
+  candidates.sort((a, b) => a.createdIndex - b.createdIndex);
+
+  const accepted = [];
+
+  for (const candidate of candidates) {
+    let replaced = false;
+
+    for (let i = accepted.length - 1; i >= 0; i--) {
+      const existing = accepted[i];
+
+      if (!rangesOverlap(candidate, existing)) continue;
+
+      const oldTouches = countBoxTouches(candles, existing);
+      const newTouches = countBoxTouches(candles, candidate);
+
+      // Keep the box with fewer touches.
+      // On a tie, preserve the older box.
+      if (newTouches < oldTouches) {
+        accepted.splice(i, 1);
+      } else {
+        replaced = true;
+        break;
+      }
+    }
+
+    if (!replaced) {
+      accepted.push(candidate);
+    }
+
+    // Keep the most recent four accepted boxes.
+    while (accepted.length > MAX_BLUE_BOXES) {
+      accepted.shift();
+    }
+  }
+
+  return accepted;
 }
 
-function candleTouchesTop(c, box) {
-  return c.low <= box.high && c.high >= box.high;
+function countBoxTouches(candles, box) {
+  let touches = 0;
+
+  for (let i = box.createdIndex + 1; i < candles.length; i++) {
+    const c = candles[i];
+
+    if (candleTouchesBox(c, box)) {
+      touches++;
+    }
+  }
+
+  return touches;
 }
 
-function candleTouchesBottom(c, box) {
-  return c.low <= box.low && c.high >= box.low;
-}
-
-function candleTouchesBox(c, box) {
-  return c.low <= box.high && c.high >= box.low;
+function insideBox(candle, box) {
+  return candle.open >= box.low && candle.open <= box.high;
 }
 
 function buildOrangeSignals(candles, boxes, pip) {
@@ -247,79 +343,104 @@ function buildOrangeSignals(candles, boxes, pip) {
   if (!last) return [];
 
   const session = sessionAt(last.epoch);
+
   if (!session) return [];
 
   const signals = [];
 
   for (const box of boxes) {
     if (utcDate(last.epoch) !== box.day) continue;
-
     if (lastIndex <= box.createdIndex) continue;
 
-    let breakoutIndex = -1;
-    let breakoutDirection = null;
+    const color = candleColor(last);
 
-    for (let i = box.createdIndex + 1; i <= lastIndex; i++) {
-      if (utcDate(candles[i].epoch) !== box.day) continue;
-
-      if (sessionAt(candles[i].epoch) !== session) continue;
-
-      if (candles[i].close > box.high) {
-        breakoutIndex = i;
-        breakoutDirection = "BUY";
-        break;
+    // Orange breakout: candle opens inside and closes outside.
+    if (insideBox(last, box)) {
+      if (last.close > box.high) {
+        signals.push({
+          direction: "BUY",
+          boxType: "ORANGE",
+          touchType: "ORANGE BREAKOUT",
+          boxId: box.boxId,
+          signalId: `${box.boxId}|BREAKOUT_BUY|${last.epoch}`,
+          session,
+          sessionKey: `${box.day}-${session}`,
+          boxHigh: box.high,
+          boxLow: box.low,
+          pip,
+          candleTime: last.epoch,
+          volume: getVolumeLabel(last),
+          reason: `${session} orange-box upside breakout`
+        });
       }
 
-      if (candles[i].close < box.low) {
-        breakoutIndex = i;
-        breakoutDirection = "SELL";
-        break;
+      if (last.close < box.low) {
+        signals.push({
+          direction: "SELL",
+          boxType: "ORANGE",
+          touchType: "ORANGE BREAKOUT",
+          boxId: box.boxId,
+          signalId: `${box.boxId}|BREAKOUT_SELL|${last.epoch}`,
+          session,
+          sessionKey: `${box.day}-${session}`,
+          boxHigh: box.high,
+          boxLow: box.low,
+          pip,
+          candleTime: last.epoch,
+          volume: getVolumeLabel(last),
+          reason: `${session} orange-box downside breakout`
+        });
       }
     }
 
-    if (breakoutIndex < 0 || breakoutIndex >= lastIndex) continue;
-
-    // Retest: price wicks back through the broken boundary,
-    // then closes back outside in the breakout direction.
-    const retestCandle = last;
-
-    let validRetest = false;
-
-    if (breakoutDirection === "BUY") {
-      validRetest =
-        retestCandle.low <= box.high &&
-        retestCandle.close > box.high;
-    } else {
-      validRetest =
-        retestCandle.high >= box.low &&
-        retestCandle.close < box.low;
+    // Orange rejection retests:
+    // RED candle touches high and closes back inside = BUY.
+    // GREEN candle touches low and closes back inside = SELL.
+    if (
+      color === "RED" &&
+      candleTouchesTop(last, box) &&
+      last.close <= box.high &&
+      last.close >= box.low
+    ) {
+      signals.push({
+        direction: "BUY",
+        boxType: "ORANGE",
+        touchType: "ORANGE HIGH RETEST",
+        boxId: box.boxId,
+        signalId: `${box.boxId}|HIGH_RETEST|${last.epoch}`,
+        session,
+        sessionKey: `${box.day}-${session}`,
+        boxHigh: box.high,
+        boxLow: box.low,
+        pip,
+        candleTime: last.epoch,
+        volume: getVolumeLabel(last),
+        reason: `${session} orange high rejection`
+      });
     }
 
-    if (!validRetest) continue;
-
-    const signalId = [
-      box.boxId,
-      session,
-      last.epoch,
-      "ORANGE",
-      breakoutDirection
-    ].join("|");
-
-    signals.push({
-      direction: breakoutDirection,
-      boxType: "ORANGE",
-      touchType: "ORANGE RETEST",
-      boxId: box.boxId,
-      signalId,
-      session,
-      sessionKey: `${box.day}-${session}`,
-      boxHigh: box.high,
-      boxLow: box.low,
-      pip,
-      candleTime: last.epoch,
-      volume: getVolumeLabel(last),
-      reason: `${session} orange-box breakout retest`
-    });
+    if (
+      color === "GREEN" &&
+      candleTouchesBottom(last, box) &&
+      last.close >= box.low &&
+      last.close <= box.high
+    ) {
+      signals.push({
+        direction: "SELL",
+        boxType: "ORANGE",
+        touchType: "ORANGE LOW RETEST",
+        boxId: box.boxId,
+        signalId: `${box.boxId}|LOW_RETEST|${last.epoch}`,
+        session,
+        sessionKey: `${box.day}-${session}`,
+        boxHigh: box.high,
+        boxLow: box.low,
+        pip,
+        candleTime: last.epoch,
+        volume: getVolumeLabel(last),
+        reason: `${session} orange low rejection`
+      });
+    }
   }
 
   return signals;
@@ -331,11 +452,8 @@ function buildBlueSignals(candles, boxes, pip) {
 
   if (!last) return [];
 
-  const hour = utcHour(last.epoch);
-
-  if (hour < 1 || hour >= 22) return [];
-
   const color = candleColor(last);
+
   if (color === "NEUTRAL") return [];
 
   const signals = [];
@@ -343,12 +461,15 @@ function buildBlueSignals(candles, boxes, pip) {
   for (const box of boxes) {
     if (lastIndex <= box.createdIndex) continue;
 
-    // BLUE TOUCHES:
-    // High + GREEN = SELL.
-    // Low + RED = BUY.
-    if (candleTouchesTop(last, box) && color === "GREEN") {
+    // Correct blue touch directions:
+    // RED candle touches HIGH = BUY.
+    // GREEN candle touches LOW = SELL.
+    if (
+      color === "RED" &&
+      candleTouchesTop(last, box)
+    ) {
       signals.push({
-        direction: "SELL",
+        direction: "BUY",
         boxType: box.type,
         touchType: "BLUE TOUCH HIGH",
         boxId: box.boxId,
@@ -358,13 +479,16 @@ function buildBlueSignals(candles, boxes, pip) {
         pip,
         candleTime: last.epoch,
         volume: getVolumeLabel(last),
-        reason: "Blue box high touched by GREEN candle"
+        reason: "Red candle rejected blue-box high"
       });
     }
 
-    if (candleTouchesBottom(last, box) && color === "RED") {
+    if (
+      color === "GREEN" &&
+      candleTouchesBottom(last, box)
+    ) {
       signals.push({
-        direction: "BUY",
+        direction: "SELL",
         boxType: box.type,
         touchType: "BLUE TOUCH LOW",
         boxId: box.boxId,
@@ -374,13 +498,13 @@ function buildBlueSignals(candles, boxes, pip) {
         pip,
         candleTime: last.epoch,
         volume: getVolumeLabel(last),
-        reason: "Blue box low touched by RED candle"
+        reason: "Green candle rejected blue-box low"
       });
     }
 
-    // BLUE BREAKOUT:
-    // Break UP -> wait through GREEN candles -> BUY first RED.
-    // Break DOWN -> wait through RED candles -> SELL first GREEN.
+    // Breakout confirmation:
+    // Close above -> first RED candle confirms BUY.
+    // Close below -> first GREEN candle confirms SELL.
     let breakoutIndex = -1;
     let breakoutDirection = null;
 
@@ -436,6 +560,96 @@ function buildBlueSignals(candles, boxes, pip) {
   return signals;
 }
 
+// RSI fade: scan the latest three closed candles.
+// A GREEN breakout candle with RSI >= 90 = SELL fade.
+// A RED breakout candle with RSI <= 10 = BUY fade.
+function buildFadeSignals(candles, boxes, pip) {
+  const signals = [];
+
+  if (candles.length < 5) return signals;
+
+  const start = Math.max(3, candles.length - 3);
+
+  for (let i = start; i < candles.length; i++) {
+    const c = candles[i];
+    const color = candleColor(c);
+    const rsi = rsiAt(candles, i, 3);
+
+    if (rsi === null || color === "NEUTRAL") continue;
+
+    for (const box of boxes) {
+      if (i <= box.createdIndex) continue;
+      if (!insideBox(c, box)) continue;
+
+      const above = c.close > box.high;
+      const below = c.close < box.low;
+
+      if (
+        color === "GREEN" &&
+        above &&
+        rsi >= 90
+      ) {
+        signals.push({
+          direction: "SELL",
+          boxType: box.type,
+          touchType: "RSI FADE SELL",
+          isFade: true,
+          rsi,
+          fadeCandleHigh: c.high,
+          fadeCandleLow: c.low,
+          boxId: box.boxId,
+          signalId: `${box.boxId}|FADE_SELL|${c.epoch}`,
+          boxHigh: box.high,
+          boxLow: box.low,
+          pip,
+          candleTime: c.epoch,
+          volume: getVolumeLabel(c),
+          reason: `RSI(3) ${fmt(rsi, 1)} overbought breakout fade`
+        });
+      }
+
+      if (
+        color === "RED" &&
+        below &&
+        rsi <= 10
+      ) {
+        signals.push({
+          direction: "BUY",
+          boxType: box.type,
+          touchType: "RSI FADE BUY",
+          isFade: true,
+          rsi,
+          fadeCandleHigh: c.high,
+          fadeCandleLow: c.low,
+          boxId: box.boxId,
+          signalId: `${box.boxId}|FADE_BUY|${c.epoch}`,
+          boxHigh: box.high,
+          boxLow: box.low,
+          pip,
+          candleTime: c.epoch,
+          volume: getVolumeLabel(c),
+          reason: `RSI(3) ${fmt(rsi, 1)} oversold breakout fade`
+        });
+      }
+    }
+  }
+
+  // If multiple boxes qualify on the same candle, keep one fade only.
+  const uniqueByCandle = new Map();
+
+  signals
+    .sort((a, b) => b.candleTime - a.candleTime)
+    .forEach(signal => {
+      const key = signal.candleTime;
+
+      if (!uniqueByCandle.has(key)) {
+        uniqueByCandle.set(key, signal);
+      }
+    });
+
+  return [...uniqueByCandle.values()];
+}
+
 function findStrategySignal(candles, symbol, category, marketPip) {
   const empty = {
     direction: "NONE",
@@ -452,37 +666,40 @@ function findStrategySignal(candles, symbol, category, marketPip) {
   const orangeBoxes = buildOrangeBoxes(candles);
   const blueBoxes = buildBlueBoxes(candles);
 
-  const orangeSignals = buildOrangeSignals(
-    candles,
-    orangeBoxes,
-    pip
-  );
+  const allBoxes = [...orangeBoxes, ...blueBoxes];
 
-  const blueSignals = buildBlueSignals(
-    candles,
-    blueBoxes,
-    pip
-  );
+  const fadeSignals = buildFadeSignals(candles, allBoxes, pip);
+  const orangeSignals = buildOrangeSignals(candles, orangeBoxes, pip);
+  const blueSignals = buildBlueSignals(candles, blueBoxes, pip);
 
-  const allSignals = [...orangeSignals, ...blueSignals];
+  // Fade has priority over normal signals.
+  const allSignals = [
+    ...fadeSignals,
+    ...orangeSignals,
+    ...blueSignals
+  ];
 
   if (!allSignals.length) {
     return {
       ...empty,
-      reason: "Waiting for Orange or Blue box setup",
+      reason: "Waiting for Orange, Blue or RSI Fade setup",
       orangeBoxCount: orangeBoxes.length,
       blueBoxCount: blueBoxes.length
     };
   }
 
-  // Prefer the most recently created signal.
-  allSignals.sort((a, b) => b.candleTime - a.candleTime);
+  allSignals.sort((a, b) => {
+    if (Boolean(a.isFade) !== Boolean(b.isFade)) {
+      return a.isFade ? -1 : 1;
+    }
+
+    return b.candleTime - a.candleTime;
+  });
 
   const signal = allSignals[0];
 
   return {
     ...signal,
-    reason: signal.reason,
     orangeBoxCount: orangeBoxes.length,
     blueBoxCount: blueBoxes.length,
     _candles: candles
@@ -493,8 +710,11 @@ function alreadyExecuted(trades, signal, symbol) {
   return trades.some(trade => {
     if (trade.symbol !== symbol) return false;
 
-    if (signal.boxType === "ORANGE") {
-      return trade.sessionKey === signal.sessionKey;
+    if (signal.isFade) {
+      return (
+        trade.isFade &&
+        trade.candleTime === signal.candleTime
+      );
     }
 
     return trade.signalId === signal.signalId;
@@ -512,12 +732,21 @@ function makeDemoOrder(
   timeframe = TIMEFRAME
 ) {
   const buy = signal.direction === "BUY";
-  const offset = signal.pip * SL_OFFSET_PIPS;
+  const offset = signal.pip * (
+    signal.isFade ? FADE_SL_OFFSET_PIPS : SL_OFFSET_PIPS
+  );
 
-  // Required box-based stop loss.
-  const sl = buy
-    ? signal.boxLow - offset
-    : signal.boxHigh + offset;
+  let sl;
+
+  if (signal.isFade) {
+    sl = buy
+      ? signal.fadeCandleLow - offset
+      : signal.fadeCandleHigh + offset;
+  } else {
+    sl = buy
+      ? signal.boxLow - offset
+      : signal.boxHigh + offset;
+  }
 
   const entry = signal.entry;
   const slDistance = Math.abs(entry - sl);
@@ -526,8 +755,8 @@ function makeDemoOrder(
     throw new Error("Invalid stop-loss distance. Trade was not opened.");
   }
 
-  // Fixed 3R target.
-  const tpDistance = slDistance * RISK_REWARD;
+  const rr = signal.isFade ? FADE_RR : NORMAL_RR;
+  const tpDistance = slDistance * rr;
 
   const tp = buy
     ? entry + tpDistance
@@ -549,6 +778,9 @@ function makeDemoOrder(
     boxId: signal.boxId,
     boxType: signal.boxType,
     touchType: signal.touchType,
+    isFade: Boolean(signal.isFade),
+    rsi: signal.rsi ?? null,
+    candleTime: signal.candleTime,
     session: signal.session || null,
     sessionKey: signal.sessionKey || null,
     symbol,
@@ -564,13 +796,16 @@ function makeDemoOrder(
     slDistance,
     tpDistance,
     riskMoney,
+    rewardRatio: rr,
     status: "OPEN DEMO TRADE",
     currentPrice: entry,
     floatingPnl: 0,
     fillPrice: entry,
     filledAt: new Date(createdAtMs).toLocaleTimeString(),
     created: new Date(createdAtMs).toLocaleTimeString(),
-    createdAtMs
+    createdAtMs,
+    openedEpoch: Math.floor(createdAtMs / 1000),
+    openedDay: utcDate(Math.floor(createdAtMs / 1000))
   };
 }
 
@@ -673,7 +908,6 @@ export default function App() {
   );
 
   const [lastScan, setLastScan] = useState("Not scanned");
-  const [latestPrices, setLatestPrices] = useState({});
 
   const [notificationPermission, setNotificationPermission] = useState(
     typeof window !== "undefined" && "Notification" in window
@@ -735,11 +969,6 @@ export default function App() {
     if (!symbol || !Number.isFinite(price)) return;
 
     latestPricesRef.current[symbol] = price;
-
-    setLatestPrices(previous => ({
-      ...previous,
-      [symbol]: price
-    }));
 
     const remaining = [];
     const newlyClosed = [];
@@ -1367,11 +1596,31 @@ export default function App() {
         ...closedTradesRef.current
       ];
 
+      const today = utcDate(Math.floor(Date.now() / 1000));
+
+      const dailyTrades = previousTrades.filter(trade =>
+        trade.openedDay === today
+      );
+
+      const openCount = ordersRef.current.filter(trade =>
+        trade.status === "OPEN DEMO TRADE"
+      ).length;
+
+      if (dailyTrades.length >= MAX_DAILY_TRADES) {
+        setMessage(`Daily limit reached: maximum ${MAX_DAILY_TRADES} trades today.`);
+        return;
+      }
+
+      if (openCount >= MAX_OPEN_TRADES) {
+        setMessage(`Open-trade limit reached: maximum ${MAX_OPEN_TRADES} open trades.`);
+        return;
+      }
+
       if (alreadyExecuted(previousTrades, signal, item.symbol)) {
         setMessage(
-          signal.boxType === "ORANGE"
-            ? `${item.symbol}: one Orange trade has already been taken in this session.`
-            : `${item.symbol}: this exact Blue signal has already been traded.`
+          signal.isFade
+            ? `${item.symbol}: a fade trade was already taken on this candle.`
+            : `${item.symbol}: this exact signal has already been traded.`
         );
         return;
       }
@@ -1394,6 +1643,24 @@ export default function App() {
         ...ordersRef.current,
         ...closedTradesRef.current
       ];
+
+      const latestDailyTrades = tradesAfterSubscription.filter(trade =>
+        trade.openedDay === today
+      );
+
+      const latestOpenCount = ordersRef.current.filter(trade =>
+        trade.status === "OPEN DEMO TRADE"
+      ).length;
+
+      if (latestDailyTrades.length >= MAX_DAILY_TRADES) {
+        setMessage("Daily trade limit reached.");
+        return;
+      }
+
+      if (latestOpenCount >= MAX_OPEN_TRADES) {
+        setMessage("Maximum open trades reached.");
+        return;
+      }
 
       if (alreadyExecuted(tradesAfterSubscription, signal, item.symbol)) {
         setMessage("This signal has already been traded.");
@@ -1498,7 +1765,6 @@ export default function App() {
     };
 
     const handleReconnect = () => recoverRobot();
-
     const handleOnline = () => {
       if (runningRef.current) recoverRobot();
     };
@@ -1542,6 +1808,7 @@ export default function App() {
 
   const visibleSymbols = symbols.filter(item => {
     const signal = signals[item.symbol];
+
     const hasSignal =
       signal?.direction === "BUY" || signal?.direction === "SELL";
 
@@ -1569,6 +1836,14 @@ export default function App() {
   const openTrades = orders.filter(o =>
     o.status === "OPEN DEMO TRADE"
   );
+
+  const today = utcDate(Math.floor(Date.now() / 1000));
+
+  const allTrades = [...orders, ...closedTrades];
+
+  const dailyTradeCount = allTrades.filter(trade =>
+    trade.openedDay === today
+  ).length;
 
   const floatingPnl = openTrades.reduce(
     (total, trade) => total + (trade.floatingPnl || 0),
@@ -1725,7 +2000,7 @@ export default function App() {
             marginTop: 5,
             letterSpacing: 1.5
           }}>
-            M15 · ORANGE + BLUE BOX EDITION
+            M15 · ORANGE + BLUE + RSI FADE
           </div>
         </div>
 
@@ -1842,7 +2117,11 @@ export default function App() {
           </div>
           <div style={stat}>
             <div style={statLabel}>OPEN DEMO TRADES</div>
-            <div style={statValue}>{openTrades.length}</div>
+            <div style={statValue}>{openTrades.length}/4</div>
+          </div>
+          <div style={stat}>
+            <div style={statLabel}>TODAY'S TRADES</div>
+            <div style={statValue}>{dailyTradeCount}/4</div>
           </div>
           <div style={stat}>
             <div style={statLabel}>FLOATING P&L</div>
@@ -1861,10 +2140,6 @@ export default function App() {
             <div style={{ ...statValue, color: moneyColor(totalPnl) }}>
               {totalPnl >= 0 ? "+" : ""}${fmt(totalPnl, 2)}
             </div>
-          </div>
-          <div style={stat}>
-            <div style={statLabel}>TIMEFRAME</div>
-            <div style={statValue}>M15</div>
           </div>
         </section>
 
@@ -1955,10 +2230,15 @@ export default function App() {
                 item.symbol
               );
 
+              const limitReached =
+                dailyTradeCount >= MAX_DAILY_TRADES ||
+                openTrades.length >= MAX_OPEN_TRADES;
+
               return (
                 <button
                   key={item.symbol}
                   className="market-card"
+                  disabled={limitReached || hasOrder}
                   onClick={() => activateSignal(item)}
                   style={{
                     width: "100%",
@@ -1985,11 +2265,16 @@ export default function App() {
 
                     <div style={{
                       fontSize: 9,
-                      color: signal.boxType === "ORANGE" ? "#f4a340" : "#65aaff",
+                      color: signal.isFade
+                        ? "#f4c46a"
+                        : signal.boxType === "ORANGE"
+                        ? "#f4a340"
+                        : "#65aaff",
                       marginTop: 7,
                       fontWeight: 900
                     }}>
                       {signal.boxType} · {signal.touchType}
+                      {signal.isFade ? ` · RSI ${fmt(signal.rsi, 1)}` : ""}
                     </div>
 
                     <div style={{
@@ -1997,9 +2282,7 @@ export default function App() {
                       color: "#a9c9e9",
                       marginTop: 5
                     }}>
-                      VOL {signal.volume ?? "N/A"} · {signal.boxType === "ORANGE"
-                        ? signal.session
-                        : signal.boxType} · {signal.direction}S
+                      VOL {signal.volume ?? "N/A"} · {signal.direction}
                     </div>
 
                     <div style={{
@@ -2013,12 +2296,20 @@ export default function App() {
                     {hasOrder && (
                       <div style={{
                         fontSize: 9,
-                        color: signal.boxType === "ORANGE" ? "#f4c46a" : "#70d9ad",
+                        color: "#f4c46a",
                         marginTop: 5
                       }}>
-                        {signal.boxType === "ORANGE"
-                          ? "ORANGE SESSION ALREADY TRADED"
-                          : "THIS SIGNAL ALREADY TRADED"}
+                        THIS SIGNAL ALREADY TRADED
+                      </div>
+                    )}
+
+                    {limitReached && (
+                      <div style={{
+                        fontSize: 9,
+                        color: "#ff7a82",
+                        marginTop: 5
+                      }}>
+                        TRADE LIMIT REACHED
                       </div>
                     )}
 
@@ -2067,71 +2358,80 @@ export default function App() {
             <br/>
             • First four M15 candles: 00:00–01:00 UTC.
             <br/>
-            • High and low levels are used for the day.
+            • Orange high and low remain active for that day.
             <br/>
-            • London: 07:00–11:00 UTC.
+            • Active sessions: London 07:00–11:00 and New York 15:00–17:00 UTC.
             <br/>
-            • New York: 15:00–17:00 UTC.
+            • Breakout: candle opens inside and closes outside the box.
             <br/>
-            • Breakout close outside the box, followed by a wick retest.
+            • Red candle touching the high and closing inside = BUY.
             <br/>
-            • Maximum one Orange trade per session per market.
+            • Green candle touching the low and closing inside = SELL.
+            <br/>
+            • Normal SL: opposite box boundary plus 5 pips.
+            <br/>
+            • TP: 3R.
             <br/><br/>
 
             <b style={{ color: "#65aaff" }}>BLUE BOX</b>
             <br/>
-            • Active box creation: 01:00–22:00 UTC.
+            • Boxes created from 01:00–22:00 UTC.
             <br/>
-            • ENGULF: previous candle high and low.
+            • ENGULFING and DOJI only. No WICK boxes.
             <br/>
-            • DOJI: candle body no more than 10% of its range.
+            • Box uses the qualifying candle's own high and low.
             <br/>
-            • WICK boxes removed.
+            • Maximum four active blue boxes.
             <br/>
-            • Asia boxes and Asia range removed.
+            • Overlapping boxes: keep the box with fewer touches.
+            <br/>
+            • Red candle touches high = BUY.
+            <br/>
+            • Green candle touches low = SELL.
+            <br/>
+            • Close above box, then first red confirmation = BUY.
+            <br/>
+            • Close below box, then first green confirmation = SELL.
+            <br/>
+            • Normal SL: opposite box boundary plus 5 pips.
+            <br/>
+            • TP: 3R.
             <br/><br/>
 
-            <b style={{ color: "#65aaff" }}>BLUE TOUCHES</b>
+            <b style={{ color: "#f4c46a" }}>RSI(3) FADE</b>
             <br/>
-            • Box high + GREEN candle = SELL.
+            • Green breakout candle with RSI 90 or higher = SELL.
             <br/>
-            • Box low + RED candle = BUY.
+            • Red breakout candle with RSI 10 or lower = BUY.
             <br/>
-            • Unlimited separate qualifying touches.
+            • Fade signals are checked across the latest three closed candles.
+            <br/>
+            • One fade per symbol per candle, even if several boxes qualify.
+            <br/>
+            • Fade SL: signal candle high/low plus 10-pip default offset.
+            <br/>
+            • Fade TP: 2R.
             <br/><br/>
 
-            <b style={{ color: "#65aaff" }}>BLUE BREAKOUT</b>
+            <b style={{ color: "#f4c46a" }}>TRADE PROTECTION</b>
             <br/>
-            • Close above box = Bull Break.
+            • Maximum four trades opened per UTC day.
             <br/>
-            • Skip GREEN candles; BUY on first RED candle.
-            <br/>
-            • Close below box = Bear Break.
-            <br/>
-            • Skip RED candles; SELL on first GREEN candle.
-            <br/><br/>
-
-            <b style={{ color: "#f4c46a" }}>RISK MANAGEMENT</b>
-            <br/>
-            • Stop offset: 5 pips.
-            <br/>
-            • BUY SL: Box Low − 5 pips.
-            <br/>
-            • SELL SL: Box High + 5 pips.
-            <br/>
-            • TP: fixed 3R from actual simulated entry.
-            <br/>
-            • No breakeven.
-            <br/>
-            • No trailing stop.
-            <br/>
-            • No pending orders.
+            • Maximum four simultaneously open trades.
             <br/>
             • Manual tap required to open every trade.
             <br/>
-            • Signals use completed M15 candles only.
+            • No pending orders.
             <br/>
-            • Session times are UTC.
+            • No breakeven or trailing stop.
+            <br/>
+            • All entries use the latest available simulated market price.
+            <br/>
+            • Normal trades: 5-pip SL offset and 3R target.
+            <br/>
+            • Fade trades: 10-pip SL offset and 2R target.
+            <br/>
+            • Timeframe: M15 only.
           </div>
         </details>
 
@@ -2251,21 +2551,27 @@ export default function App() {
           }}>
             TIMEFRAME: M15 ONLY.
             <br/>
-            SCAN INTERVAL: 15 MINUTES.
+            NORMAL SL OFFSET: 5 PIPS.
             <br/>
-            SL OFFSET: 5 PIPS.
+            NORMAL TAKE PROFIT: 3R.
             <br/>
-            TAKE PROFIT: 3R.
+            FADE RSI: 3.
             <br/>
-            BREAKEVEN: OFF.
+            FADE SELL: RSI 90 OR HIGHER.
             <br/>
-            TRAILING STOP: OFF.
+            FADE BUY: RSI 10 OR LOWER.
+            <br/>
+            FADE SL OFFSET: 10 PIPS.
+            <br/>
+            FADE TAKE PROFIT: 2R.
+            <br/>
+            DAILY TRADE CAP: 4.
+            <br/>
+            OPEN TRADE CAP: 4.
             <br/>
             POSITION SIZING: {sizingMode === "RISK_PERCENT"
               ? `${fmt(riskPct, 2)}% of demo balance per trade.`
               : `${fmt(fixedLots, 2)} fixed simulated lots.`}
-            <br/>
-            Settings apply to new trades. Existing trades retain their original settings.
           </div>
 
           {sizingMode === "FIXED_LOTS" && (
@@ -2379,7 +2685,7 @@ export default function App() {
                 <div>
                   REWARD RATIO
                   <b style={{ display: "block", color: "white" }}>
-                    3R
+                    {trade.rewardRatio || 3}R
                   </b>
                 </div>
               </div>
@@ -2465,9 +2771,9 @@ export default function App() {
           letterSpacing: 1.2,
           lineHeight: 1.8
         }}>
-          iFX BILLIONAIRE ROBOT · M15 ORANGE + BLUE BOX EDITION
+          iFX BILLIONAIRE ROBOT · M15 ORANGE + BLUE + RSI FADE
           <br/>
-          Orange Sessions · Engulfing · Doji · Touches · Breakouts · 3R
+          Manual Demo Execution · Max 4 Daily · Max 4 Open
         </footer>
       </main>
     </div>
