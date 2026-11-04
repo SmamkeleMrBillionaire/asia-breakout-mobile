@@ -1,17 +1,14 @@
+
 import React, { useCallback, useEffect, useRef, useState } from "react";
 
 const WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public";
-const DEFAULT_TIMEFRAME = 300;
+const DEFAULT_TIMEFRAME = 3600;
 const CANDLE_COUNT = 1000;
 const BUFFER_PIPS = 2;
 const FX_SL_PIPS = 10;
 const FX_TP_PIPS = 31;
 
 const TIMEFRAMES = [
-  { label: "M1", seconds: 60 },
-  { label: "M5", seconds: 300 },
-  { label: "M15", seconds: 900 },
-  { label: "M30", seconds: 1800 },
   { label: "H1", seconds: 3600 }
 ];
 
@@ -35,7 +32,7 @@ const fmt = (n, digits = 5) =>
   Number.isFinite(Number(n)) ? Number(n).toFixed(digits) : "—";
 
 function timeframeName(seconds) {
-  return TIMEFRAMES.find(t => t.seconds === seconds)?.label || "M5";
+  return TIMEFRAMES.find(t => t.seconds === seconds)?.label || "H1";
 }
 
 function categoryOf(s) {
@@ -234,10 +231,7 @@ function makeBoxId(box, asiaDay) {
 
 function boxTradeAlreadyTaken(trades, symbol, boxId, touchType) {
   return trades.some(trade => {
-    if (
-      trade.symbol !== symbol ||
-      trade.boxId !== boxId
-    ) {
+    if (trade.symbol !== symbol || trade.boxId !== boxId) {
       return false;
     }
 
@@ -624,14 +618,8 @@ function getExitReason(trade, price) {
 }
 
 function getExitPrice(trade, exitReason, observedPrice) {
-  if (exitReason === "STOP LOSS") {
-    return trade.sl;
-  }
-
-  if (exitReason === "TAKE PROFIT") {
-    return trade.tp;
-  }
-
+  if (exitReason === "STOP LOSS") return trade.sl;
+  if (exitReason === "TAKE PROFIT") return trade.tp;
   return observedPrice;
 }
 
@@ -814,16 +802,8 @@ export default function App() {
       const exitReason = getExitReason(trade, price);
 
       if (exitReason) {
-        const exitPrice = getExitPrice(
-          trade,
-          exitReason,
-          price
-        );
-
-        const finalPnl = calculateDemoPnl(
-          trade,
-          exitPrice
-        );
+        const exitPrice = getExitPrice(trade, exitReason, price);
+        const finalPnl = calculateDemoPnl(trade, exitPrice);
 
         newlyClosed.push({
           ...trade,
@@ -1039,10 +1019,7 @@ export default function App() {
 
   const subscribeMarket = useCallback(async symbol => {
     if (subscriptionsRef.current.has(symbol)) return true;
-
-    if (subscribingRef.current.has(symbol)) {
-      return false;
-    }
+    if (subscribingRef.current.has(symbol)) return false;
 
     if (
       !socketRef.current ||
@@ -1313,9 +1290,7 @@ export default function App() {
       scanTimerRef.current = null;
     }
 
-    setMessage(
-      `Timeframe changed to ${timeframeName(nextTimeframe)}. Previous signals cleared.`
-    );
+    setMessage("Timeframe is locked to H1.");
 
     if (runningRef.current) {
       scanAll(marketsRef.current);
@@ -1324,7 +1299,7 @@ export default function App() {
         if (runningRef.current) {
           scanAll(marketsRef.current);
         }
-      }, nextTimeframe * 1000);
+      }, 3600 * 1000);
     }
   };
 
@@ -1379,7 +1354,7 @@ export default function App() {
         }
 
         if (runningRef.current && list.length) {
-          setMessage("Connection restored. Resuming market scans...");
+          setMessage("Connection restored. Resuming H1 market scans...");
           await scanAll(list);
         }
       } catch (error) {
@@ -1451,7 +1426,10 @@ export default function App() {
         await requestNotificationPermission();
       }
 
-      setMessage("Connecting to Deriv...");
+      timeframeRef.current = 3600;
+      setTimeframe(3600);
+
+      setMessage("Connecting to Deriv H1 market data...");
       await connect();
 
       runningRef.current = true;
@@ -1484,7 +1462,7 @@ export default function App() {
         if (runningRef.current) {
           scanAll(marketsRef.current);
         }
-      }, timeframeRef.current * 1000);
+      }, 3600 * 1000);
     } catch (error) {
       runningRef.current = false;
       setRunning(false);
@@ -1655,14 +1633,14 @@ export default function App() {
         sizingMode,
         fixedLots,
         signal._candles || [],
-        timeframeRef.current
+        3600
       );
 
       updateOrders(previous => [order, ...previous]);
 
       setSelected(item);
       setLastActivated(
-        `${signal.direction} · ${signal.boxType} · ${touchType} · ${timeframeName(timeframeRef.current)} · MARKET EXECUTION`
+        `${signal.direction} · ${signal.boxType} · ${touchType} · H1 · MARKET EXECUTION`
       );
 
       setMessage(
@@ -1703,7 +1681,7 @@ export default function App() {
     };
   }, []);
 
-  // ACTIVE RETEST SIGNALS: filter out all markets without BUY or SELL.
+  // ACTIVE RETEST SIGNALS: hide markets without BUY or SELL.
   const visibleSymbols = symbols.filter(item => {
     const direction = signals[item.symbol]?.direction;
 
@@ -1942,7 +1920,7 @@ export default function App() {
             marginTop: 5,
             letterSpacing: 1.5
           }}>
-            HLZ MOBILE ROBOT · RETEST EDITION
+            HLZ MOBILE ROBOT · H1 RETEST EDITION
           </div>
         </div>
 
@@ -2035,7 +2013,7 @@ export default function App() {
           </div>
 
           <div style={small}>
-            Scan progress: {scanned}/{symbols.length} · {progress}%
+            H1 scan progress: {scanned}/{symbols.length} · {progress}%
           </div>
         </section>
 
@@ -2086,9 +2064,9 @@ export default function App() {
         </section>
 
         <section style={card}>
-          <div style={title}>ACTIVE RETEST SIGNALS</div>
+          <div style={title}>ACTIVE H1 RETEST SIGNALS</div>
           <div style={small}>
-            Active BUY and SELL signals only · {timeframeName(timeframe)}
+            H1 completed-candle signals only · BUY and SELL
           </div>
 
           <input
@@ -2140,7 +2118,7 @@ export default function App() {
               fontSize: 11,
               lineHeight: 1.6
             }}>
-              No active BUY or SELL signals for this selection.
+              No active H1 BUY or SELL signals for this selection.
               <br/>
               Inactive markets are hidden.
             </div>
@@ -2202,7 +2180,7 @@ export default function App() {
                       {item.display_name || item.symbol}
                     </div>
                     <div style={small}>
-                      {item.symbol} · {item.category}
+                      {item.symbol} · {item.category} · H1
                     </div>
 
                     {signal.direction !== "NONE" && (
@@ -2252,7 +2230,6 @@ export default function App() {
           </div>
         </section>
 
-        {/* TRADE SETTINGS — collapsed by default */}
         <details style={card}>
           <summary style={collapsibleSummary}>
             TRADE SETTINGS
@@ -2273,15 +2250,11 @@ export default function App() {
             }}>
               <span>Timeframe</span>
               <select
-                value={timeframe}
-                onChange={e => handleTimeframeChange(e.target.value)}
+                value={3600}
+                disabled
                 style={fieldStyle}
               >
-                {TIMEFRAMES.map(t => (
-                  <option key={t.seconds} value={t.seconds}>
-                    {t.label}
-                  </option>
-                ))}
+                <option value={3600}>H1 — 1 Hour</option>
               </select>
             </label>
 
@@ -2371,7 +2344,13 @@ export default function App() {
             padding: 10,
             borderRadius: 7
           }}>
-            ACTIVE TIMEFRAME: {timeframeName(timeframe)}.
+            ACTIVE TIMEFRAME: H1 — 1 HOUR.
+            <br/>
+            SCAN INTERVAL: 60 MINUTES.
+            <br/>
+            SIGNAL CONFIRMATION: COMPLETED H1 CANDLES ONLY.
+            <br/>
+            ASIA SESSION: 00:00–07:00 UTC.
             <br/>
             POSITION SIZING: {sizingMode === "RISK_PERCENT"
               ? `${fmt(riskPct, 2)}% of demo balance per trade.`
@@ -2379,7 +2358,7 @@ export default function App() {
             <br/>
             FOREX: 10-pip SL / 31-pip TP.
             <br/>
-            NON-FOREX: SL based on average range of the latest 14 closed candles on the selected timeframe.
+            NON-FOREX: SL based on average range of the latest 14 closed H1 candles.
             <br/>
             NON-FOREX TP: 3.1 times the calculated SL distance.
             <br/>
@@ -2405,8 +2384,6 @@ export default function App() {
           )}
         </details>
 
-        {/* ALERT NOTIFICATIONS hidden as requested */}
-
         <section style={card}>
           <div style={title}>BROKER CONNECTION</div>
           <div style={small}>
@@ -2431,7 +2408,7 @@ export default function App() {
         <section style={card}>
           <div style={title}>MARKET EXECUTION</div>
           <div style={small}>
-            Trades open immediately at the current live price when you click a valid signal.
+            Trades open immediately at the current live price when you click a valid H1 signal.
           </div>
 
           {!pendingOrders.length && (
@@ -2592,12 +2569,6 @@ export default function App() {
           <div style={small}>Last scan: {lastScan}</div>
         </section>
 
-        {/* DERIV CANDLE DATA DIAGNOSTICS hidden as requested */}
-        {/* STRATEGY RULES hidden as requested */}
-        {/* INDIVIDUAL MARKET DATA hidden as requested */}
-        {/* STRATEGY DIAGNOSTICS hidden as requested */}
-
-        {/* MARKET-BY-MARKET REASONS — collapsed by default */}
         <details style={card}>
           <summary style={collapsibleSummary}>
             MARKET-BY-MARKET REASONS
@@ -2649,9 +2620,9 @@ export default function App() {
           letterSpacing: 1.2,
           lineHeight: 1.8
         }}>
-          iFX BILLIONAIRE ROBOT · HLZ MOBILE
+          iFX BILLIONAIRE ROBOT · HLZ MOBILE · H1 EDITION
           <br/>
-          Breakouts · Retests · FLIPPY · Immediate Market Execution
+          1-Hour Candles · Breakouts · Retests · FLIPPY · Market Execution
         </footer>
       </main>
     </div>
