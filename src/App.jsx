@@ -418,7 +418,6 @@ function buildDailyCandles(candles, today) {
 
   const todayDate = new Date(`${today}T00:00:00Z`);
   const yesterdayDate = new Date(todayDate.getTime() - 86400000);
-
   const yesterday = yesterdayDate.toISOString().slice(0, 10);
 
   return {
@@ -491,12 +490,7 @@ function findClosedEntrySignal(candles, symbol, category, marketPip) {
     };
   }
 
-  const pip = pipSize(
-    symbol,
-    category,
-    candles,
-    marketPip
-  );
+  const pip = pipSize(symbol, category, candles, marketPip);
 
   const boxInfo = {
     boxCount: 1,
@@ -608,11 +602,7 @@ function findClosedEntrySignal(candles, symbol, category, marketPip) {
 
   // BREAK-IN
 
-  if (
-    openAbove &&
-    color === "RED" &&
-    closeInside
-  ) {
+  if (openAbove && color === "RED" && closeInside) {
     return {
       ...makeSignal({
         direction: "SELL",
@@ -626,11 +616,7 @@ function findClosedEntrySignal(candles, symbol, category, marketPip) {
     };
   }
 
-  if (
-    openBelow &&
-    color === "GREEN" &&
-    closeInside
-  ) {
+  if (openBelow && color === "GREEN" && closeInside) {
     return {
       ...makeSignal({
         direction: "BUY",
@@ -740,7 +726,8 @@ function findClosedEntrySignal(candles, symbol, category, marketPip) {
 }
 
 // ======================================================
-// 5. LIVE SCANNER STATES
+// 5. LIVE SCANNER STATE
+// Kept for internal calculations; not displayed.
 // ======================================================
 
 function getLiveScannerState({
@@ -1271,10 +1258,7 @@ export default function App() {
           usablePrice
         );
 
-        const finalPnl = calculateDemoPnl(
-          trade,
-          exitPrice
-        );
+        const finalPnl = calculateDemoPnl(trade, exitPrice);
 
         newlyClosed.push({
           ...trade,
@@ -1290,11 +1274,7 @@ export default function App() {
         continue;
       }
 
-      trade.floatingPnl = calculateDemoPnl(
-        trade,
-        usablePrice
-      );
-
+      trade.floatingPnl = calculateDemoPnl(trade, usablePrice);
       remaining.push(trade);
     }
 
@@ -1416,10 +1396,7 @@ export default function App() {
         }
 
         if (data.msg_type === "tick" && data.tick) {
-          processTick(
-            data.tick.symbol,
-            data.tick
-          );
+          processTick(data.tick.symbol, data.tick);
         }
 
         if (
@@ -1647,9 +1624,7 @@ export default function App() {
         high: Number(c.high),
         low: Number(c.low),
         close: Number(c.close),
-        volume: c.volume === undefined
-          ? null
-          : Number(c.volume)
+        volume: c.volume === undefined ? null : Number(c.volume)
       })).filter(c =>
         Number.isFinite(c.epoch) &&
         Number.isFinite(c.open) &&
@@ -1689,10 +1664,7 @@ export default function App() {
       const currentClosed = closed[closed.length - 1];
       const today = serverDay(now);
 
-      const orangeBox = buildOrangeBox(
-        candles,
-        today
-      );
+      const orangeBox = buildOrangeBox(candles, today);
 
       const zones = orangeBox
         ? buildDojiZones(closed, orangeBox)
@@ -1722,15 +1694,9 @@ export default function App() {
         pip
       });
 
-      const dailyCandles = buildDailyCandles(
-        candles,
-        today
-      );
+      const dailyCandles = buildDailyCandles(candles, today);
 
-      const spreadInfo = getSpreadInfo(
-        tick,
-        livePrice
-      );
+      const spreadInfo = getSpreadInfo(tick, livePrice);
 
       return {
         ...signal,
@@ -1786,10 +1752,7 @@ export default function App() {
     let nextIndex = 0;
 
     const worker = async () => {
-      while (
-        nextIndex < list.length &&
-        runningRef.current
-      ) {
+      while (nextIndex < list.length && runningRef.current) {
         const index = nextIndex++;
         const item = list[index];
 
@@ -1867,15 +1830,11 @@ export default function App() {
     } finally {
       scanLockRef.current = false;
 
-      if (
-        rescanRequestedRef.current &&
-        runningRef.current
-      ) {
+      if (rescanRequestedRef.current && runningRef.current) {
         rescanRequestedRef.current = false;
 
         const queuedList =
-          queuedScanListRef.current ||
-          marketsRef.current;
+          queuedScanListRef.current || marketsRef.current;
 
         queuedScanListRef.current = null;
 
@@ -1926,9 +1885,7 @@ export default function App() {
         return;
       }
 
-      const priorityMarkets = list.filter(item =>
-        item.prioritySymbol
-      );
+      const priorityMarkets = list.filter(item => item.prioritySymbol);
 
       for (const item of priorityMarkets) {
         if (!runningRef.current) break;
@@ -2126,10 +2083,7 @@ export default function App() {
         return;
       }
 
-      const spreadInfo = getSpreadInfo(
-        tick,
-        currentPrice
-      );
+      const spreadInfo = getSpreadInfo(tick, currentPrice);
 
       if (!spreadInfo.known) {
         setMessage(
@@ -2283,7 +2237,6 @@ export default function App() {
     };
 
     const handleReconnect = () => recoverRobot();
-
     const handleOnline = () => {
       if (runningRef.current) recoverRobot();
     };
@@ -2374,23 +2327,6 @@ export default function App() {
       );
     });
 
-  const visibleScannerStates = symbols
-    .filter(item => {
-      const state = scannerStates[item.symbol]?.state;
-
-      return state && state !== "MONITORING";
-    })
-    .sort((a, b) => {
-      if (a.priority !== b.priority) {
-        return a.priority - b.priority;
-      }
-
-      return (
-        (scannerStates[a.symbol]?.proximity ?? Infinity) -
-        (scannerStates[b.symbol]?.proximity ?? Infinity)
-      );
-    });
-
   const buyCount = symbols.filter(s =>
     signals[s.symbol]?.direction === "BUY"
   ).length;
@@ -2430,19 +2366,6 @@ export default function App() {
   const signalColor = direction =>
     direction === "BUY" ? "#16c784" :
     direction === "SELL" ? "#ea5455" : "#8993a4";
-
-  const stateColor = state => {
-    if (
-      state === "BREAKING OUT" ||
-      state === "DOJI TOUCH"
-    ) return "#f4c46a";
-
-    if (state === "BREAKING IN") return "#31a8ff";
-    if (state === "TOUCHING") return "#16c784";
-    if (state === "OUTSIDE RSI EXTREME") return "#d69cff";
-
-    return "#8993a4";
-  };
 
   const card = {
     background: "#101a2b",
@@ -2769,88 +2692,16 @@ export default function App() {
           </section>
         </details>
 
-        {/* LIVE SCANNER */}
+        {/* VALID ENTRY SIGNALS ONLY */}
 
-        <details style={card}>
+        <details open style={card}>
           <summary style={collapsibleSummary}>
-            LIVE MARKET SCANNER
+            VALID M15 BUY / SELL SIGNALS
           </summary>
 
           <div style={small}>
-            Live scanner states · Priority instruments first · 1-minute scan cycle
-          </div>
-
-          {!visibleScannerStates.length && (
-            <div style={{
-              textAlign: "center",
-              padding: 18,
-              color: "#8395af"
-            }}>
-              No active scanner conditions at the moment.
-            </div>
-          )}
-
-          {visibleScannerStates.map(item => {
-            const state = scannerStates[item.symbol];
-
-            return (
-              <div
-                key={item.symbol}
-                style={{
-                  background: "#0b1525",
-                  border: "1px solid #24334b",
-                  borderRadius: 8,
-                  padding: 11,
-                  marginTop: 8
-                }}
-              >
-                <div style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  gap: 8
-                }}>
-                  <strong style={{ fontSize: 11 }}>
-                    {item.display_name || item.symbol}
-                  </strong>
-
-                  <strong style={{
-                    fontSize: 9,
-                    color: stateColor(state.state),
-                    textAlign: "right"
-                  }}>
-                    {state.state}
-                  </strong>
-                </div>
-
-                <div style={small}>
-                  {item.symbol}
-                  {" · "}
-                  {item.prioritySymbol
-                    ? `PRIORITY ${item.prioritySymbol}`
-                    : "NON-PRIORITY"}
-                  {" · "}
-                  Price {fmt(state.livePrice, 8)}
-                </div>
-
-                <div style={small}>
-                  Spread: {state.spreadKnown
-                    ? `${fmt(state.spreadPoints, 1)} points`
-                    : "Unavailable"}
-                </div>
-              </div>
-            );
-          })}
-        </details>
-
-        {/* ACTIVE ENTRY SIGNALS */}
-
-        <details style={card}>
-          <summary style={collapsibleSummary}>
-            CLOSED M15 ENTRY SIGNALS
-          </summary>
-
-          <div style={small}>
-            Only completed M15 candles create entry signals. Use the dedicated BUY or SELL button to open a simulated trade manually.
+            Only valid signals from completed M15 candles are displayed.
+            Tap BUY or SELL to open a simulated demo trade manually.
           </div>
 
           <input
@@ -2914,7 +2765,7 @@ export default function App() {
               }}>
                 No valid closed M15 BUY or SELL entry signals.
                 <br/>
-                Scanner-only alerts do not create trades.
+                Markets without valid entry signals are hidden.
               </div>
             )}
 
