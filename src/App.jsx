@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-const WS_URL = "wss://ws.derivws.com/websockets/v3?app_id=1089";
+const WS_URL = "wss://ws.derivws.com/websockets/v3?app_id=36544";
 const TIMEFRAME = 900;
 const CANDLE_COUNT = 220;
 const SCAN_INTERVAL = 300000; // 5 MINUTES
