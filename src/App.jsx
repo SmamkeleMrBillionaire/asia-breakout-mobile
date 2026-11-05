@@ -6,7 +6,10 @@ import React, {
   useState
 } from "react";
 
-const WS_URL = "wss://ws.derivws.com/websockets/v3?app_id=1089";
+// Deriv connections
+const APP_ID = "34Snkab6STNb2JNY3zRZp";
+const WS_URL = `wss://ws.derivws.com/websockets/v3?app_id=${APP_ID}`;
+const DERIV_REST_URL = "https://api.derivws.com";
 
 const TIMEFRAME = 900;
 const CANDLE_COUNT = 220;
@@ -1028,12 +1031,17 @@ function sendBrowserNotification(title, body) {
 
   return false;
 }
-
 export default function App() {
+  // PUBLIC MARKET-DATA SOCKET
   const socketRef = useRef(null);
   const connectionPromiseRef = useRef(null);
   const requestRef = useRef(0);
   const pendingRequestsRef = useRef(new Map());
+
+  // AUTHENTICATED DEMO-TRADING SOCKET
+  const tradeSocketRef = useRef(null);
+  const tradeRequestRef = useRef(0);
+  const tradePendingRequestsRef = useRef(new Map());
 
   const scanLockRef = useRef(false);
   const rescanRequestedRef = useRef(false);
@@ -1091,13 +1099,8 @@ export default function App() {
   const [showStats, setShowStats] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
 
-  const [demoToken, setDemoToken] = useState(() => {
-    try {
-      return localStorage.getItem("ifx_demo_token") || "";
-    } catch {
-      return "";
-    }
-  });
+  // Do not save the API token in localStorage.
+  const [demoToken, setDemoToken] = useState("");
 
   const [isLiveDemo, setIsLiveDemo] = useState(false);
   const [demoAccountInfo, setDemoAccountInfo] = useState(null);
@@ -1131,13 +1134,13 @@ export default function App() {
     setClosedTrades(n);
   }, []);
 
-  // REQUEST HANDLER WITH TIMEOUT AND CLEANUP
+  // REQUEST HANDLER FOR PUBLIC MARKET-DATA SOCKET
   const request = useCallback(payload => new Promise((resolve, reject) => {
     const ws = socketRef.current;
 
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       reject(new Error(
-        "Deriv WebSocket is not connected. Please reconnect."
+        "Deriv market-data WebSocket is not connected. Please reconnect."
       ));
       return;
     }
@@ -1147,7 +1150,7 @@ export default function App() {
     const timeout = setTimeout(() => {
       pendingRequestsRef.current.delete(id);
       reject(new Error(
-        "Deriv API request timed out. Check your connection."
+        "Deriv market-data request timed out."
       ));
     }, REQUEST_TIMEOUT);
 
@@ -1165,10 +1168,45 @@ export default function App() {
     } catch (error) {
       clearTimeout(timeout);
       pendingRequestsRef.current.delete(id);
+      reject(new Error(`Could not send request: ${error.message}`));
+    }
+  }), []);
 
+  // REQUEST HANDLER FOR AUTHENTICATED DEMO-TRADING SOCKET
+  const requestTrade = useCallback(payload => new Promise((resolve, reject) => {
+    const ws = tradeSocketRef.current;
+
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
       reject(new Error(
-        `Could not send request: ${error.message}`
+        "Authenticated Deriv DEMO trading connection is not open. Reconnect your demo account."
       ));
+      return;
+    }
+
+    const id = ++tradeRequestRef.current;
+
+    const timeout = setTimeout(() => {
+      tradePendingRequestsRef.current.delete(id);
+      reject(new Error(
+        "Deriv DEMO trading request timed out."
+      ));
+    }, REQUEST_TIMEOUT);
+
+    tradePendingRequestsRef.current.set(id, {
+      resolve,
+      reject,
+      timeout
+    });
+
+    try {
+      ws.send(JSON.stringify({
+        ...payload,
+        req_id: id
+      }));
+    } catch (error) {
+      clearTimeout(timeout);
+      tradePendingRequestsRef.current.delete(id);
+      reject(new Error(`Could not send DEMO trade request: ${error.message}`));
     }
   }), []);
 
@@ -1272,7 +1310,7 @@ export default function App() {
     }, RECONNECT_DELAY);
   }, []);
 
-  // REPAIRED LEGACY DERIV WEBSOCKET CONNECTION
+  // PUBLIC MARKET-DATA CONNECTION
   const connect = useCallback(() => {
     const existing = socketRef.current;
 
@@ -1286,7 +1324,7 @@ export default function App() {
 
     setConnected(false);
     setConnectionText("CONNECTING");
-    setMessage("Opening secure connection to Deriv...");
+    setMessage("Opening Deriv public market-data connection...");
 
     let ws;
     let settled = false;
@@ -1311,7 +1349,6 @@ export default function App() {
 
     const settleSuccess = () => {
       if (settled) return;
-
       settled = true;
 
       if (connectionTimer) {
@@ -1325,7 +1362,6 @@ export default function App() {
 
     const settleFailure = errorMessage => {
       if (settled) return;
-
       settled = true;
 
       if (connectionTimer) {
@@ -1343,9 +1379,7 @@ export default function App() {
     } catch (error) {
       setConnectionText("CONNECTION ERROR");
       setMessage(`WebSocket could not start: ${error.message}`);
-
       settleFailure(`WebSocket could not start: ${error.message}`);
-
       return connectionPromise;
     }
 
@@ -1354,7 +1388,7 @@ export default function App() {
         setConnectionText("CONNECTION TIMEOUT");
 
         setMessage(
-          "Deriv did not open the connection within 15 seconds. Check internet access and your Deriv App ID."
+          "Deriv did not open the market-data connection within 15 seconds. Check internet access and your registered App ID."
         );
 
         settleFailure(
@@ -1380,7 +1414,7 @@ export default function App() {
 
       setConnected(true);
       setConnectionText("DATA CONNECTED");
-      setMessage("Deriv WebSocket connected. Testing API response...");
+      setMessage("Deriv market-data connection opened.");
 
       pingTimer = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
@@ -1399,7 +1433,7 @@ export default function App() {
       request({ ping: 1 })
         .then(() => {
           if (socketRef.current === ws) {
-            setMessage("Deriv API connection verified successfully.");
+            setMessage("Deriv market-data connection verified.");
           }
         })
         .catch(error => {
@@ -1450,7 +1484,7 @@ export default function App() {
       setConnected(false);
 
       settleFailure(
-        "WebSocket connection error. Check your network, browser connection and Deriv App ID."
+        "Market-data WebSocket error. Check your network and registered Deriv App ID."
       );
     };
 
@@ -1476,7 +1510,7 @@ export default function App() {
       subscribingRef.current.clear();
 
       const closeDetails =
-        `Connection closed. Code: ${event.code}` +
+        `Market-data connection closed. Code: ${event.code}` +
         (event.reason ? ` · Reason: ${event.reason}` : "");
 
       pendingRequestsRef.current.forEach(pending => {
@@ -1485,7 +1519,6 @@ export default function App() {
       });
 
       pendingRequestsRef.current.clear();
-
       clearConnectionPromise();
 
       if (!settled) {
@@ -1496,7 +1529,6 @@ export default function App() {
         setMessage(
           `${closeDetails}. Automatic reconnection will be attempted.`
         );
-
         scheduleReconnect();
       } else {
         setMessage(closeDetails);
@@ -1506,85 +1538,346 @@ export default function App() {
     return connectionPromise;
   }, [processTick, scheduleReconnect, request]);
 
-  // LEGACY TOKEN AUTHORIZATION
+  // DERIV REST HELPER
+  const derivRest = useCallback(async (path, token, method = "GET") => {
+    const response = await fetch(`${DERIV_REST_URL}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Deriv-App-ID": APP_ID,
+        Accept: "application/json",
+        "Content-Type": "application/json"
+      }
+    });
+
+    let data;
+
+    try {
+      data = await response.json();
+    } catch {
+      throw new Error(
+        `Deriv REST returned an unreadable response (HTTP ${response.status}).`
+      );
+    }
+
+    if (!response.ok) {
+      const apiMessage =
+        data?.errors?.[0]?.message ||
+        data?.error?.message ||
+        data?.message ||
+        `HTTP ${response.status}`;
+
+      throw new Error(apiMessage);
+    }
+
+    if (data?.errors?.length) {
+      throw new Error(
+        data.errors[0]?.message || "Deriv REST request failed."
+      );
+    }
+
+    return data;
+  }, []);
+
+  // CONNECT TO A DEMO OPTIONS ACCOUNT USING REST + ONE-TIME OTP
   const connectDemo = async () => {
     const token = demoToken.trim();
 
     if (!token || token.length < 10) {
-      setMessage("Enter your Deriv DEMO API token first.");
+      setMessage("Enter your Deriv API token with Trade scope.");
       return;
     }
 
     try {
-      setMessage("Connecting to Deriv...");
-      setConnectionText("CONNECTING");
-
-      setIsLiveDemo(false);
-      setDemoAccountInfo(null);
-
-      await connect();
-
-      setMessage("WebSocket connected. Authorizing your DEMO account...");
-
-      const auth = await request({
-        authorize: token
-      });
-
-      const account = auth.authorize;
-
-      if (!account) {
-        throw new Error(
-          "Deriv did not return account authorization details."
-        );
-      }
-
-      if (Number(account.is_virtual) !== 1) {
-        setIsLiveDemo(false);
-        setLiveMode("SIMULATED");
-
-        throw new Error(
-          "This is not a DEMO account. Real accounts are blocked for safety."
-        );
-      }
-
-      setDemoAccountInfo(account);
-      setIsLiveDemo(true);
-      setLiveMode("LIVE_DEMO");
-
-      try {
-        localStorage.setItem("ifx_demo_token", token);
-      } catch {}
-
-      setMessage(
-        `LIVE DEMO CONNECTED: ${account.loginid} · Balance: ${account.balance} ${account.currency}`
-      );
-
-    } catch (error) {
+      setMessage("Checking Deriv accounts using your API token...");
       setIsLiveDemo(false);
       setDemoAccountInfo(null);
       setLiveMode("SIMULATED");
 
-      setConnectionText(
-        socketRef.current?.readyState === WebSocket.OPEN
-          ? "DATA CONNECTED"
-          : "CONNECTION ERROR"
+      const accountsResponse = await derivRest(
+        "/trading/v1/options/accounts",
+        token,
+        "GET"
       );
+
+      const accountPayload = accountsResponse?.data;
+
+      let accounts = [];
+
+      if (Array.isArray(accountPayload)) {
+        accounts = accountPayload;
+      } else if (Array.isArray(accountPayload?.accounts)) {
+        accounts = accountPayload.accounts;
+      } else if (Array.isArray(accountPayload?.items)) {
+        accounts = accountPayload.items;
+      } else if (accountPayload && typeof accountPayload === "object") {
+        accounts = [accountPayload];
+      }
+
+      const demoAccount = accounts.find(account => {
+        const type = String(
+          account.account_type ||
+          account.account_category ||
+          account.type ||
+          ""
+        ).toLowerCase();
+
+        return (
+          type === "demo" ||
+          type === "virtual" ||
+          Number(account.is_virtual) === 1
+        );
+      });
+
+      if (!demoAccount) {
+        throw new Error(
+          "No DEMO Options account was returned for this token. Check that the token belongs to your Deriv account and has Trade scope."
+        );
+      }
+
+      const accountId =
+        demoAccount.account_id ||
+        demoAccount.id;
+
+      if (!accountId) {
+        throw new Error(
+          "Deriv returned a DEMO account without an account ID. Check the account response."
+        );
+      }
+
+      setMessage("DEMO account found. Requesting secure one-time connection...");
+
+      const otpResponse = await derivRest(
+        `/trading/v1/options/accounts/${encodeURIComponent(accountId)}/otp`,
+        token,
+        "POST"
+      );
+
+      const wsUrl = otpResponse?.data?.url;
+
+      if (
+        typeof wsUrl !== "string" ||
+        !wsUrl.startsWith("wss://api.derivws.com/trading/v1/options/ws/demo")
+      ) {
+        throw new Error(
+          "Deriv did not return a valid DEMO WebSocket URL. No trading connection was opened."
+        );
+      }
+
+      // Close any previous authenticated trade socket.
+      if (tradeSocketRef.current) {
+        try {
+          tradeSocketRef.current.close();
+        } catch {}
+        tradeSocketRef.current = null;
+      }
+
+      tradePendingRequestsRef.current.forEach(pending => {
+        clearTimeout(pending.timeout);
+        pending.reject(new Error("A new DEMO connection is being opened."));
+      });
+
+      tradePendingRequestsRef.current.clear();
+
+      setMessage("Opening authenticated Deriv DEMO trading connection...");
+
+      const tradeWs = new WebSocket(wsUrl);
+      tradeSocketRef.current = tradeWs;
+
+      await new Promise((resolve, reject) => {
+        let settled = false;
+
+        const timeout = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+
+          try {
+            tradeWs.close();
+          } catch {}
+
+          reject(new Error(
+            "DEMO trading connection timed out. Please reconnect."
+          ));
+        }, CONNECTION_TIMEOUT);
+
+        tradeWs.onopen = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          resolve();
+        };
+
+        tradeWs.onerror = () => {
+          if (settled) {
+            setIsLiveDemo(false);
+            setLiveMode("SIMULATED");
+            setMessage("DEMO trading WebSocket encountered a connection error.");
+            return;
+          }
+
+          settled = true;
+          clearTimeout(timeout);
+          reject(new Error(
+            "Could not open the authenticated DEMO trading connection."
+          ));
+        };
+
+        tradeWs.onclose = event => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timeout);
+            reject(new Error(
+              `DEMO connection closed before opening. Code ${event.code}.`
+            ));
+          }
+        };
+      });
+
+      if (tradeSocketRef.current !== tradeWs) {
+        throw new Error("DEMO connection was replaced before setup completed.");
+      }
+
+      // Install the permanent message handler after the socket opens.
+      tradeWs.onmessage = event => {
+        if (tradeSocketRef.current !== tradeWs) return;
+
+        let data;
+
+        try {
+          data = JSON.parse(event.data);
+        } catch {
+          return;
+        }
+
+        if (
+          data.req_id &&
+          tradePendingRequestsRef.current.has(data.req_id)
+        ) {
+          const pending = tradePendingRequestsRef.current.get(data.req_id);
+
+          clearTimeout(pending.timeout);
+          tradePendingRequestsRef.current.delete(data.req_id);
+
+          if (data.error) {
+            pending.reject(
+              new Error(data.error.message || "Deriv DEMO trade request failed.")
+            );
+          } else {
+            pending.resolve(data);
+          }
+        }
+
+        if (data.msg_type === "balance" && data.balance) {
+          const amount = Number(data.balance.balance);
+
+          if (Number.isFinite(amount)) {
+            setDemoAccountInfo(current => current
+              ? {
+                  ...current,
+                  balance: amount,
+                  currency: data.balance.currency || current.currency
+                }
+              : current
+            );
+          }
+        }
+      };
+
+      tradeWs.onclose = event => {
+        if (tradeSocketRef.current !== tradeWs) return;
+
+        tradeSocketRef.current = null;
+
+        tradePendingRequestsRef.current.forEach(pending => {
+          clearTimeout(pending.timeout);
+          pending.reject(new Error(
+            `DEMO trading connection closed. Code ${event.code}.`
+          ));
+        });
+
+        tradePendingRequestsRef.current.clear();
+
+        setIsLiveDemo(false);
+        setLiveMode("SIMULATED");
+        setDemoAccountInfo(null);
+
+        setMessage(
+          "DEMO trading connection closed. The app has returned to SIMULATED mode."
+        );
+      };
+
+      const normalizedAccount = {
+        account_id: accountId,
+        loginid: demoAccount.loginid || demoAccount.account_id || accountId,
+        balance: Number(demoAccount.balance) || 0,
+        currency: demoAccount.currency || "USD",
+        account_type: "demo",
+        is_virtual: 1
+      };
+
+      setDemoAccountInfo(normalizedAccount);
+      setIsLiveDemo(true);
+      setLiveMode("LIVE_DEMO");
+
+      // Request current account balance. This is best-effort.
+      try {
+        await requestTrade({ balance: 1 });
+      } catch {}
+
+      // Remove token from the input after a successful connection.
+      setDemoToken("");
+
+      setMessage(
+        `LIVE DEMO CONNECTED: ${normalizedAccount.loginid} · ${normalizedAccount.balance} ${normalizedAccount.currency}`
+      );
+
+    } catch (error) {
+      if (tradeSocketRef.current) {
+        try {
+          tradeSocketRef.current.close();
+        } catch {}
+        tradeSocketRef.current = null;
+      }
+
+      tradePendingRequestsRef.current.forEach(pending => {
+        clearTimeout(pending.timeout);
+        pending.reject(error);
+      });
+
+      tradePendingRequestsRef.current.clear();
+
+      setIsLiveDemo(false);
+      setDemoAccountInfo(null);
+      setLiveMode("SIMULATED");
 
       setMessage(`DEMO CONNECTION FAILED: ${error.message}`);
     }
   };
 
   const disconnectDemo = () => {
+    const ws = tradeSocketRef.current;
+
+    tradeSocketRef.current = null;
+
+    if (ws) {
+      try {
+        ws.close();
+      } catch {}
+    }
+
+    tradePendingRequestsRef.current.forEach(pending => {
+      clearTimeout(pending.timeout);
+      pending.reject(new Error("DEMO account disconnected."));
+    });
+
+    tradePendingRequestsRef.current.clear();
+
     setIsLiveDemo(false);
     setLiveMode("SIMULATED");
     setDemoAccountInfo(null);
-
-    try {
-      localStorage.removeItem("ifx_demo_token");
-    } catch {}
-
     setDemoToken("");
-    setMessage("Disconnected from Demo. Back to SIMULATED mode.");
+
+    setMessage("Disconnected from Deriv DEMO. Back to SIMULATED mode.");
   };
 
   const subscribeMarket = useCallback(async symbol => {
@@ -1981,35 +2274,8 @@ export default function App() {
 
       await connect();
 
-      // Legacy authorization remains on the legacy WebSocket.
-      if (
-        demoToken &&
-        demoToken.length > 10 &&
-        !isLiveDemo
-      ) {
-        try {
-          const auth = await request({
-            authorize: demoToken.trim()
-          });
-
-          if (
-            !auth.error &&
-            Number(auth.authorize?.is_virtual) === 1
-          ) {
-            setDemoAccountInfo(auth.authorize);
-            setIsLiveDemo(true);
-            setLiveMode("LIVE_DEMO");
-          } else if (auth.authorize) {
-            setMessage(
-              "The saved token is not a DEMO account token. Simulated mode remains active."
-            );
-          }
-        } catch (error) {
-          setMessage(
-            `Market connection is available, but saved DEMO authorization failed: ${error.message}`
-          );
-        }
-      }
+      // Do not authorize the API token on the public market-data socket.
+      // The demo trading connection is established separately by connectDemo.
 
       runningRef.current = true;
       setRunning(true);
@@ -2050,7 +2316,7 @@ export default function App() {
       }, SCAN_INTERVAL);
 
       setMessage(
-        "Robot running. Scanner checks every 30s now. Entries require a completed M15 candle + TOUCHING box."
+        "Robot running. Scanner checks every 30s. Entries require a completed M15 candle and a touching box."
       );
 
     } catch (error) {
@@ -2163,6 +2429,15 @@ export default function App() {
         isLiveDemo &&
         demoAccountInfo
       ) {
+        if (
+          !tradeSocketRef.current ||
+          tradeSocketRef.current.readyState !== WebSocket.OPEN
+        ) {
+          throw new Error(
+            "DEMO trading socket is not connected. Reconnect your DEMO account."
+          );
+        }
+
         const contractType =
           signal.direction === "BUY" ? "CALL" : "PUT";
 
@@ -2174,10 +2449,10 @@ export default function App() {
         }
 
         setMessage(
-          `${item.symbol}: Placing LIVE DEMO trade ${contractType} $${safeStake}...`
+          `${item.symbol}: Requesting LIVE DEMO ${contractType} proposal for $${safeStake}...`
         );
 
-        const proposal = await request({
+        const proposalResponse = await requestTrade({
           proposal: 1,
           amount: safeStake,
           basis: "stake",
@@ -2185,30 +2460,32 @@ export default function App() {
           currency: demoAccountInfo.currency || "USD",
           duration: 5,
           duration_unit: "m",
-          symbol: item.symbol
+          underlying_symbol: item.symbol
         });
 
-        if (!proposal.proposal?.id) {
+        const proposal = proposalResponse.proposal;
+
+        if (!proposal?.id) {
           throw new Error(
             "Deriv did not return a valid proposal ID."
           );
         }
 
-        const buyRes = await request({
-          buy: proposal.proposal.id,
+        const buyResponse = await requestTrade({
+          buy: proposal.id,
           price: safeStake
         });
 
-        if (!buyRes.buy) {
+        if (!buyResponse.buy) {
           throw new Error(
             "Deriv did not return a successful buy confirmation."
           );
         }
 
-        const c = buyRes.buy;
+        const contract = buyResponse.buy;
 
         setMessage(
-          `LIVE DEMO TRADE OPENED: ${item.symbol} ${signal.direction} $${safeStake} - Contract ID ${c.contract_id} - Payout ${c.payout}`
+          `LIVE DEMO TRADE OPENED: ${item.symbol} ${signal.direction} · Stake $${safeStake} · Contract ${contract.contract_id} · Payout ${contract.payout}`
         );
 
         setLastActivated(
@@ -2349,7 +2626,7 @@ export default function App() {
 
       try {
         setConnectionText("RECONNECTING");
-        setMessage("Restoring Deriv connection...");
+        setMessage("Restoring Deriv market-data connection...");
 
         await connect();
 
@@ -2385,7 +2662,7 @@ export default function App() {
         }
 
         if (runningRef.current && list.length) {
-          setMessage("Connection restored. Resuming scans...");
+          setMessage("Market-data connection restored. Resuming scans...");
           await scanAll(list);
         }
 
@@ -2432,6 +2709,7 @@ export default function App() {
     scheduleReconnect
   ]);
 
+  // CLEANUP BOTH SOCKETS AND THEIR PENDING REQUESTS
   useEffect(() => {
     return () => {
       runningRef.current = false;
@@ -2448,12 +2726,23 @@ export default function App() {
         socketRef.current.close();
       }
 
+      if (tradeSocketRef.current) {
+        tradeSocketRef.current.close();
+      }
+
       pendingRequestsRef.current.forEach(p => {
         clearTimeout(p.timeout);
-        p.reject(new Error("App closed or connection cleaned up."));
+        p.reject(new Error("App closed or market connection cleaned up."));
       });
 
       pendingRequestsRef.current.clear();
+
+      tradePendingRequestsRef.current.forEach(p => {
+        clearTimeout(p.timeout);
+        p.reject(new Error("App closed or DEMO connection cleaned up."));
+      });
+
+      tradePendingRequestsRef.current.clear();
     };
   }, []);
 
@@ -2527,7 +2816,7 @@ export default function App() {
   const isTradingHours = isTradingTime(clock);
   const todayDay = serverDay(clock);
 
-  return (
+   return (
     <div style={{
       background: "#0a0f1a",
       minHeight: "100vh",
@@ -2633,7 +2922,8 @@ export default function App() {
             marginBottom: 8
           }}>
             Deriv.com → DEMO account → Settings → API Token →
-            Create token with Trade scope. Paste DEMO token only.
+            Create token with Trade scope. Paste your DEMO token only.
+            Your token is not saved in browser storage.
           </div>
 
           <input
@@ -2729,7 +3019,8 @@ export default function App() {
               marginTop: 8,
               color: "#4ade80"
             }}>
-              Balance: {demoAccountInfo.balance} {demoAccountInfo.currency}
+              Balance: {fmt(demoAccountInfo.balance, 2)}{" "}
+              {demoAccountInfo.currency}
               (Virtual) • ID: {demoAccountInfo.loginid}
             </div>
           )}
@@ -2880,8 +3171,8 @@ export default function App() {
         }}>
           Signals on top, touching & waiting below.{" "}
           {liveMode === "LIVE_DEMO"
-            ? "TAP will place REAL DEMO trade on Deriv."
-            : "TAP will open simulated trade."}
+            ? "TAP will place a Deriv DEMO trade."
+            : "TAP will open a simulated trade."}
         </p>
 
         <input
