@@ -1,3 +1,4 @@
+
 import React, {
   useCallback,
   useEffect,
@@ -6,9 +7,14 @@ import React, {
   useState
 } from "react";
 
-// Deriv connections
+// DERIV CONNECTIONS
 const APP_ID = "34Snkab6STNb2JNY3zRZp";
-const WS_URL = `wss://ws.derivws.com/websockets/v3?app_id=${APP_ID}`;
+
+// New Deriv public market-data endpoint.
+// No API token or app_id query parameter is required here.
+const WS_URL =
+  "wss://api.derivws.com/trading/v1/options/ws/public";
+
 const DERIV_REST_URL = "https://api.derivws.com";
 
 const TIMEFRAME = 900;
@@ -1031,6 +1037,7 @@ function sendBrowserNotification(title, body) {
 
   return false;
 }
+
 export default function App() {
   // PUBLIC MARKET-DATA SOCKET
   const socketRef = useRef(null);
@@ -1099,7 +1106,7 @@ export default function App() {
   const [showStats, setShowStats] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
 
-  // Do not save the API token in localStorage.
+  // API TOKEN IS NOT SAVED IN LOCAL STORAGE
   const [demoToken, setDemoToken] = useState("");
 
   const [isLiveDemo, setIsLiveDemo] = useState(false);
@@ -1134,7 +1141,7 @@ export default function App() {
     setClosedTrades(n);
   }, []);
 
-  // REQUEST HANDLER FOR PUBLIC MARKET-DATA SOCKET
+  // PUBLIC MARKET-DATA REQUEST HANDLER
   const request = useCallback(payload => new Promise((resolve, reject) => {
     const ws = socketRef.current;
 
@@ -1149,9 +1156,7 @@ export default function App() {
 
     const timeout = setTimeout(() => {
       pendingRequestsRef.current.delete(id);
-      reject(new Error(
-        "Deriv market-data request timed out."
-      ));
+      reject(new Error("Deriv market-data request timed out."));
     }, REQUEST_TIMEOUT);
 
     pendingRequestsRef.current.set(id, {
@@ -1172,7 +1177,7 @@ export default function App() {
     }
   }), []);
 
-  // REQUEST HANDLER FOR AUTHENTICATED DEMO-TRADING SOCKET
+  // AUTHENTICATED DEMO-TRADING REQUEST HANDLER
   const requestTrade = useCallback(payload => new Promise((resolve, reject) => {
     const ws = tradeSocketRef.current;
 
@@ -1187,9 +1192,7 @@ export default function App() {
 
     const timeout = setTimeout(() => {
       tradePendingRequestsRef.current.delete(id);
-      reject(new Error(
-        "Deriv DEMO trading request timed out."
-      ));
+      reject(new Error("Deriv DEMO trading request timed out."));
     }, REQUEST_TIMEOUT);
 
     tradePendingRequestsRef.current.set(id, {
@@ -1374,6 +1377,7 @@ export default function App() {
     };
 
     try {
+      // IMPORTANT: use the new public endpoint without app_id.
       ws = new WebSocket(WS_URL);
       socketRef.current = ws;
     } catch (error) {
@@ -1388,11 +1392,11 @@ export default function App() {
         setConnectionText("CONNECTION TIMEOUT");
 
         setMessage(
-          "Deriv did not open the market-data connection within 15 seconds. Check internet access and your registered App ID."
+          "Deriv did not open the market-data connection within 15 seconds. Check your internet connection."
         );
 
         settleFailure(
-          "Connection timed out. Check your internet connection and App ID."
+          "Connection timed out. Check your internet connection and Deriv endpoint."
         );
 
         try {
@@ -1484,7 +1488,7 @@ export default function App() {
       setConnected(false);
 
       settleFailure(
-        "Market-data WebSocket error. Check your network and registered Deriv App ID."
+        "Market-data WebSocket error. Check your network and Deriv connection."
       );
     };
 
@@ -1579,7 +1583,7 @@ export default function App() {
     return data;
   }, []);
 
-  // CONNECT TO A DEMO OPTIONS ACCOUNT USING REST + ONE-TIME OTP
+  // CONNECT TO DEMO OPTIONS ACCOUNT
   const connectDemo = async () => {
     const token = demoToken.trim();
 
@@ -1664,7 +1668,6 @@ export default function App() {
         );
       }
 
-      // Close any previous authenticated trade socket.
       if (tradeSocketRef.current) {
         try {
           tradeSocketRef.current.close();
@@ -1737,7 +1740,6 @@ export default function App() {
         throw new Error("DEMO connection was replaced before setup completed.");
       }
 
-      // Install the permanent message handler after the socket opens.
       tradeWs.onmessage = event => {
         if (tradeSocketRef.current !== tradeWs) return;
 
@@ -1819,12 +1821,10 @@ export default function App() {
       setIsLiveDemo(true);
       setLiveMode("LIVE_DEMO");
 
-      // Request current account balance. This is best-effort.
       try {
         await requestTrade({ balance: 1 });
       } catch {}
 
-      // Remove token from the input after a successful connection.
       setDemoToken("");
 
       setMessage(
@@ -2273,9 +2273,6 @@ export default function App() {
       setMessage("Connecting to Deriv M15 market data...");
 
       await connect();
-
-      // Do not authorize the API token on the public market-data socket.
-      // The demo trading connection is established separately by connectDemo.
 
       runningRef.current = true;
       setRunning(true);
@@ -2816,7 +2813,7 @@ export default function App() {
   const isTradingHours = isTradingTime(clock);
   const todayDay = serverDay(clock);
 
-   return (
+  return (
     <div style={{
       background: "#0a0f1a",
       minHeight: "100vh",
