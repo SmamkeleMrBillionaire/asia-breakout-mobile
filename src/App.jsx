@@ -1,4 +1,3 @@
-
 import React, {
   useCallback,
   useEffect,
@@ -12,12 +11,15 @@ import React, {
 // DERIV PUBLIC MARKETS - SIMULATED DEMO
 // ======================================================
 
+// Current Deriv public market-data WebSocket endpoint.
+// No API token is required for public market data.
 const WS_URL =
-  "wss://ws.derivws.com/websockets/v3?app_id=1089";
+  "wss://api.derivws.com/trading/v1/options/ws/public";
 
 const TIMEFRAME = 900;
 const CANDLE_COUNT = 220;
 const SCAN_INTERVAL = 300000;
+
 const TRADING_START_HOUR = 7;
 const TRADING_END_HOUR = 22;
 
@@ -78,14 +80,16 @@ function priorityIndex(s) {
 }
 
 function categoryOf(s) {
-  const m = String(s.market || "").toLowerCase();
+  const m = String(
+    s.market || s.market_display_name || ""
+  ).toLowerCase();
 
-  if (m === "forex") return "Forex";
-  if (m === "synthetic_index") return "Synthetics";
-  if (m === "cryptocurrency") return "Crypto";
-  if (m === "indices") return "Indices";
-  if (m === "commodities") return "Metals";
-  if (m === "stocks") return "Stocks";
+  if (m.includes("forex")) return "Forex";
+  if (m.includes("synthetic")) return "Synthetics";
+  if (m.includes("crypto")) return "Crypto";
+  if (m.includes("indices") || m.includes("index")) return "Indices";
+  if (m.includes("commodit") || m.includes("metal")) return "Metals";
+  if (m.includes("stock")) return "Stocks";
 
   return "Other";
 }
@@ -753,6 +757,7 @@ export default function App() {
   const scanTimerRef = useRef(null);
   const reconnectTimerRef = useRef(null);
   const reconnectingRef = useRef(false);
+  const pingTimerRef = useRef(null);
 
   const marketsRef = useRef([]);
   const activationLocksRef = useRef(new Set());
@@ -1044,21 +1049,41 @@ export default function App() {
     cp = new Promise((resolve, reject) => {
       let settled = false;
       let ws;
+      let connectionTimeout;
 
       try {
         ws = new WebSocket(WS_URL);
       } catch (e) {
-        reject(e);
+        reject(new Error(`WebSocket creation failed: ${e.message}`));
         return;
       }
 
       socketRef.current = ws;
 
       const clear = () => {
+        if (connectionTimeout) {
+          clearTimeout(connectionTimeout);
+          connectionTimeout = null;
+        }
+
         if (connectionPromiseRef.current === cp) {
           connectionPromiseRef.current = null;
         }
       };
+
+      connectionTimeout = setTimeout(() => {
+        if (!settled && ws.readyState !== WebSocket.OPEN) {
+          settled = true;
+          setConnectionText("CONNECTION TIMEOUT");
+          reject(
+            new Error("Connection timed out. Check internet or Deriv availability.")
+          );
+
+          try {
+            ws.close();
+          } catch {}
+        }
+      }, 15000);
 
       ws.onopen = () => {
         if (socketRef.current !== ws) {
@@ -1070,6 +1095,19 @@ export default function App() {
           clearTimeout(reconnectTimerRef.current);
           reconnectTimerRef.current = null;
         }
+
+        if (pingTimerRef.current) {
+          clearInterval(pingTimerRef.current);
+        }
+
+        // Keep the public WebSocket alive.
+        pingTimerRef.current = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            try {
+              ws.send(JSON.stringify({ ping: 1 }));
+            } catch {}
+          }
+        }, 30000);
 
         setConnected(true);
         setConnectionText("DERIV PUBLIC MARKET CONNECTED");
@@ -1107,7 +1145,9 @@ export default function App() {
           pendingRequestsRef.current.delete(d.req_id);
 
           if (d.error) {
-            p.reject(new Error(d.error.message));
+            p.reject(
+              new Error(d.error.message || "Deriv API error")
+            );
           } else {
             p.resolve(d);
           }
@@ -1117,25 +1157,25 @@ export default function App() {
       ws.onerror = () => {
         if (socketRef.current !== ws) return;
 
-        setConnectionText("CONNECTION ERROR");
+        setConnectionText("WEBSOCKET NETWORK ERROR");
 
-        if (!settled) {
-          settled = true;
-          reject(new Error("Deriv WebSocket connection failed"));
-        }
-
-        try {
-          ws.close();
-        } catch {}
+        // The close event supplies additional diagnostics.
       };
 
-      ws.onclose = () => {
+      ws.onclose = event => {
         if (socketRef.current !== ws) return;
 
         socketRef.current = null;
 
+        if (pingTimerRef.current) {
+          clearInterval(pingTimerRef.current);
+          pingTimerRef.current = null;
+        }
+
         setConnected(false);
-        setConnectionText("DISCONNECTED");
+        setConnectionText(
+          `DISCONNECTED (${event.code || "NO CODE"})`
+        );
 
         subscriptionsRef.current.clear();
         subscribingRef.current.clear();
@@ -1149,13 +1189,22 @@ export default function App() {
 
         clear();
 
+        const detail =
+          event.reason
+            ? ` ${event.reason}`
+            : "";
+
         if (runningRef.current) {
           scheduleReconnect();
         }
 
         if (!settled) {
           settled = true;
-          reject(new Error("Deriv connection closed"));
+          reject(
+            new Error(
+              `Deriv connection closed. Code: ${event.code || "unknown"}.${detail}`
+            )
+          );
         }
       };
     });
@@ -1302,6 +1351,8 @@ export default function App() {
           Number.isFinite(c.epoch) &&
           Number.isFinite(c.open) &&
           Number.isFinite(c.close) &&
+          Number.isFinite(c.high) &&
+          Number.isFinite(c.low) &&
           c.high >= c.low
         )
         .sort((a, b) => a.epoch - b.epoch);
@@ -1400,6 +1451,7 @@ export default function App() {
     const results = {};
 
     let completed = 0;
+    let failed = 0;
     let nextIndex = 0;
 
     const worker = async () => {
@@ -1413,6 +1465,10 @@ export default function App() {
         const r = await scanSymbol(item);
 
         results[item.symbol] = r;
+
+        if (r.scannerState === "DATA ERROR") {
+          failed++;
+        }
 
         completed++;
 
@@ -1483,7 +1539,7 @@ export default function App() {
       }));
 
       setMessage(
-        `Scan complete: ${completed}/${list.length} markets - R10.22`
+        `Scan complete: ${completed}/${list.length} markets · ${failed} data errors · R10.22`
       );
 
       setLastScan(new Date().toLocaleTimeString());
@@ -1853,6 +1909,7 @@ export default function App() {
         }
       } catch (e) {
         if (runningRef.current) {
+          setMessage(`Reconnect failed: ${e.message}`);
           scheduleReconnect();
         }
       } finally {
@@ -1916,6 +1973,17 @@ export default function App() {
         clearTimeout(reconnectTimerRef.current);
       }
 
+      if (pingTimerRef.current) {
+        clearInterval(pingTimerRef.current);
+      }
+
+      pendingRequestsRef.current.forEach(p => {
+        clearTimeout(p.timeout);
+        p.reject(new Error("App closed"));
+      });
+
+      pendingRequestsRef.current.clear();
+
       if (socketRef.current) {
         try {
           socketRef.current.close();
@@ -1946,7 +2014,18 @@ export default function App() {
 
         if (!sc) return false;
 
-        if (!sc.touching && !sc.breaking) return false;
+        // Breakout first-opposite-candle signals do not
+        // require the current candle to touch the box.
+        const breakoutSignal =
+          String(sig.strategy || "").startsWith("BREAKOUT ");
+
+        if (
+          !sc.touching &&
+          !sc.breaking &&
+          !breakoutSignal
+        ) {
+          return false;
+        }
 
         if (
           category !== "All" &&
@@ -2039,7 +2118,7 @@ export default function App() {
             fontSize: 9,
             color: "#8a9bb5"
           }}>
-            M15 • NO DOJI • ORANGE BOX ONLY • NORMAL MARKET
+            M15 • NO DOJI • ORANGE BOX ONLY • SIMULATED DEMO
           </div>
         </div>
 
@@ -2137,7 +2216,8 @@ export default function App() {
         <div style={{
           fontSize: 11,
           color: "#8a9bb5",
-          marginTop: 10
+          marginTop: 10,
+          overflowWrap: "anywhere"
         }}>
           {message}
         </div>
@@ -2325,7 +2405,7 @@ export default function App() {
           fontSize: 12,
           fontWeight: 900
         }}>
-          VALID M15 SIGNALS - TOUCHING OR BREAKING ORANGE BOX ONLY - R10.22
+          VALID M15 SIGNALS - ORANGE BOX STRATEGIES - R10.22
         </div>
 
         <p style={{
@@ -2333,7 +2413,7 @@ export default function App() {
           color: "#8a9bb5",
           marginTop: 8
         }}>
-          No Doji. A) Retest High/Low, B) Break-in, C) Breakout + 1st Red/Green even if not touching. Scan every 5 min.
+          No Doji. A) Retest High/Low, B) Break-in, C) Breakout + 1st Red/Green. Breakout signals do not require a current box touch. Scan every 5 min.
         </p>
 
         <input
@@ -2388,7 +2468,7 @@ export default function App() {
             }}>
               {symbols.length === 0
                 ? "No markets loaded. Press START ROBOT to connect."
-                : "No pairs touching/breaking Orange Box."}
+                : "No valid M15 Orange Box signals currently available."}
 
               <br />
 
