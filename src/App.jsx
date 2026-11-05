@@ -9,10 +9,9 @@ import React, {
 // ======================================================
 // iFX BILLIONAIRE R10.22
 // DERIV PUBLIC MARKETS - SIMULATED DEMO
+// ESTIMATED SPREAD FALLBACK
 // ======================================================
 
-// Current Deriv public market-data WebSocket endpoint.
-// No API token is required for public market data.
 const WS_URL =
   "wss://api.derivws.com/trading/v1/options/ws/public";
 
@@ -95,8 +94,16 @@ function categoryOf(s) {
 }
 
 function pipSize(sym, cat, candles, mp) {
-  if (Number.isFinite(Number(mp)) && Number(mp) > 0) {
-    return Number(mp);
+  const supplied = Number(mp);
+
+  if (
+    mp !== null &&
+    mp !== undefined &&
+    mp !== "" &&
+    Number.isFinite(supplied) &&
+    supplied > 0
+  ) {
+    return supplied;
   }
 
   if (cat === "Forex") {
@@ -105,7 +112,9 @@ function pipSize(sym, cat, candles, mp) {
       : 0.0001;
   }
 
-  const last = candles[candles.length - 1]?.close || 1;
+  const last =
+    candles?.[candles.length - 1]?.close || 1;
+
   const dec = (String(last).split(".")[1] || "").length;
 
   return Math.pow(10, -Math.min(dec, 8));
@@ -385,7 +394,6 @@ function findClosedEntrySignal(
   }
 
   // C) BREAKOUT + FIRST OPPOSITE CANDLE
-  // No box-touch requirement for this entry condition.
 
   for (let shift = 2; shift <= 10; shift++) {
     if (li - shift < 0) break;
@@ -563,31 +571,104 @@ function getLiveScannerState({
   };
 }
 
-function getSpreadInfo(tick, price) {
-  if (!tick) return { known: false };
+// ======================================================
+// SPREAD HANDLING
+// LIVE BID/ASK FIRST, ESTIMATE IF UNAVAILABLE
+// ======================================================
 
-  const bid = Number(tick.bid);
-  const ask = Number(tick.ask);
+function getSpreadInfo(
+  tick,
+  price,
+  symbol = "",
+  category = "Other",
+  marketPip = null
+) {
+  const bid = Number(tick?.bid);
+  const ask = Number(tick?.ask);
 
+  // Use real bid/ask when both are supplied.
   if (
-    !Number.isFinite(bid) ||
-    !Number.isFinite(ask) ||
-    bid <= 0 ||
-    ask <= 0 ||
-    ask < bid
+    Number.isFinite(bid) &&
+    Number.isFinite(ask) &&
+    bid > 0 &&
+    ask > 0 &&
+    ask >= bid
   ) {
-    return { known: false };
+    const spread = ask - bid;
+    const point = pointSize(price || bid);
+
+    return {
+      known: true,
+      estimated: false,
+      source: "LIVE BID/ASK",
+      bid,
+      ask,
+      spread,
+      points: spread / point
+    };
   }
 
-  const spread = ask - bid;
-  const point = pointSize(price || bid);
+  // If bid/ask is unavailable, use a clearly labelled estimate.
+  const p = Number(price);
+
+  if (!Number.isFinite(p) || p <= 0) {
+    return {
+      known: false,
+      estimated: true,
+      source: "ESTIMATED",
+      spread: 0,
+      points: 0
+    };
+  }
+
+  const point = pointSize(p);
+  const pip = pipSize(
+    symbol,
+    category,
+    [{ close: p }],
+    marketPip
+  );
+
+  let estimatedSpread;
+
+  switch (category) {
+    case "Forex":
+      estimatedSpread = pip * 1.5;
+      break;
+
+    case "Metals":
+      estimatedSpread = pip * 3;
+      break;
+
+    case "Indices":
+      estimatedSpread = point * 2;
+      break;
+
+    case "Synthetics":
+      estimatedSpread = point * 2;
+      break;
+
+    case "Crypto":
+      estimatedSpread = Math.max(point * 2, p * 0.0005);
+      break;
+
+    case "Stocks":
+      estimatedSpread = point * 2;
+      break;
+
+    default:
+      estimatedSpread = point * 2;
+      break;
+  }
 
   return {
     known: true,
-    bid,
-    ask,
-    spread,
-    points: spread / point
+    estimated: true,
+    source: "ESTIMATED",
+    bid: null,
+    ask: null,
+    spread: estimatedSpread,
+    points: estimatedSpread / point
   };
 }
 
@@ -615,12 +696,17 @@ function makeDemoOrder(
   tick
 ) {
   if (!spreadInfo?.known) {
-    throw new Error("Spread unavailable - waiting for bid/ask");
+    throw new Error("Price unavailable for spread estimate");
   }
 
-  if (spreadInfo.points > MAX_SPREAD_POINTS) {
+  // The live-spread limit applies only to actual bid/ask.
+  // Estimated spreads are not rejected by this live-data filter.
+  if (
+    !spreadInfo.estimated &&
+    spreadInfo.points > MAX_SPREAD_POINTS
+  ) {
     throw new Error(
-      `Spread ${fmt(spreadInfo.points, 1)} > 300`
+      `Live spread ${fmt(spreadInfo.points, 1)} > 300`
     );
   }
 
@@ -664,10 +750,16 @@ function makeDemoOrder(
     }
   }
 
+  const safeBalance = Math.max(0, Number(balance) || 0);
+
   const riskMoney =
     sizingMode === "FIXED_LOTS"
-      ? balance * 0.01 * ((Number(fixedLots) || 0) / 0.10)
-      : balance * (Number(riskPct) || 0) / 100;
+      ? safeBalance * 0.01 * (
+          (Number(fixedLots) || 0) / 0.10
+        )
+      : safeBalance * (
+          Math.max(0, Number(riskPct) || 0) / 100
+        );
 
   const nowMs = Date.now();
   const ep = Math.floor(nowMs / 1000);
@@ -694,11 +786,18 @@ function makeDemoOrder(
     boxSize,
     spread,
     spreadPoints: spreadInfo.points,
+    spreadEstimated: Boolean(spreadInfo.estimated),
+    spreadSource: spreadInfo.source,
     riskMoney,
     rewardRatio: tpD / slD,
     status: "PENDING DEMO TRADE",
     pendingExpiry: nowMs + PENDING_EXPIRY_SECONDS * 1000,
-    currentPrice: Number.isFinite(bid) ? bid : entry,
+    currentPrice:
+      Number.isFinite(bid)
+        ? bid
+        : Number.isFinite(tick?.quote)
+          ? tick.quote
+          : entry,
     floatingPnl: 0,
     created: new Date(nowMs).toLocaleTimeString(),
     createdAtMs: nowMs,
@@ -882,7 +981,7 @@ export default function App() {
         ? bid
         : quote;
 
-    if (!Number.isFinite(usable)) return;
+    if (!Number.isFinite(usable) || usable <= 0) return;
 
     latestPricesRef.current[symbol] = usable;
 
@@ -1075,6 +1174,7 @@ export default function App() {
         if (!settled && ws.readyState !== WebSocket.OPEN) {
           settled = true;
           setConnectionText("CONNECTION TIMEOUT");
+
           reject(
             new Error("Connection timed out. Check internet or Deriv availability.")
           );
@@ -1100,7 +1200,6 @@ export default function App() {
           clearInterval(pingTimerRef.current);
         }
 
-        // Keep the public WebSocket alive.
         pingTimerRef.current = setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) {
             try {
@@ -1158,8 +1257,6 @@ export default function App() {
         if (socketRef.current !== ws) return;
 
         setConnectionText("WEBSOCKET NETWORK ERROR");
-
-        // The close event supplies additional diagnostics.
       };
 
       ws.onclose = event => {
@@ -1189,10 +1286,9 @@ export default function App() {
 
         clear();
 
-        const detail =
-          event.reason
-            ? ` ${event.reason}`
-            : "";
+        const detail = event.reason
+          ? ` ${event.reason}`
+          : "";
 
         if (runningRef.current) {
           scheduleReconnect();
@@ -1200,6 +1296,7 @@ export default function App() {
 
         if (!settled) {
           settled = true;
+
           reject(
             new Error(
               `Deriv connection closed. Code: ${event.code || "unknown"}.${detail}`
@@ -1291,7 +1388,9 @@ export default function App() {
         category: categoryOf(s),
         prioritySymbol: priorityMatch(s.symbol),
         priority: priorityIndex(s.symbol),
-        pip: s.pip || null
+
+        // Accept either field if supplied by the API.
+        pip: s.pip_size || s.pip || null
       }))
       .sort((a, b) =>
         a.priority !== b.priority
@@ -1398,7 +1497,13 @@ export default function App() {
         orangeBox
       });
 
-      const spreadInfo = getSpreadInfo(tick, livePrice);
+      const spreadInfo = getSpreadInfo(
+        tick,
+        livePrice,
+        item.symbol,
+        item.category,
+        item.pip
+      );
 
       return {
         ...signal,
@@ -1408,6 +1513,8 @@ export default function App() {
         isBreaking: scanner.breaking,
         livePrice,
         spreadKnown: spreadInfo.known,
+        spreadEstimated: spreadInfo.estimated,
+        spreadSource: spreadInfo.source,
         spreadPoints: spreadInfo.points,
         spread: spreadInfo.spread,
         orangeBox,
@@ -1494,6 +1601,8 @@ export default function App() {
                   proximity: v.scannerProximity,
                   livePrice: v.livePrice,
                   spreadKnown: v.spreadKnown,
+                  spreadEstimated: v.spreadEstimated,
+                  spreadSource: v.spreadSource,
                   spreadPoints: v.spreadPoints,
                   touching: v.isTouching,
                   breaking: v.isBreaking
@@ -1530,6 +1639,8 @@ export default function App() {
               proximity: v.scannerProximity,
               livePrice: v.livePrice,
               spreadKnown: v.spreadKnown,
+              spreadEstimated: v.spreadEstimated,
+              spreadSource: v.spreadSource,
               spreadPoints: v.spreadPoints,
               touching: v.isTouching,
               breaking: v.isBreaking
@@ -1587,7 +1698,6 @@ export default function App() {
         return;
       }
 
-      // Subscribe to priority instruments first.
       const prio = list.filter(i => i.prioritySymbol);
 
       for (const it of prio) {
@@ -1786,22 +1896,31 @@ export default function App() {
           ? tick.bid
           : tick?.quote;
 
-      if (!Number.isFinite(curPrice)) {
+      if (!Number.isFinite(curPrice) || curPrice <= 0) {
         setMessage("Waiting for a live market price");
         return;
       }
 
-      const spreadInfo = getSpreadInfo(tick, curPrice);
+      // Real bid/ask is preferred. If unavailable,
+      // estimate spread using the market category.
+      const spreadInfo = getSpreadInfo(
+        tick,
+        curPrice,
+        item.symbol,
+        item.category,
+        item.pip
+      );
 
       if (!spreadInfo.known) {
-        setMessage(
-          "Bid/ask spread unavailable. Simulated trade not created."
-        );
+        setMessage("Unable to calculate spread. Waiting for price.");
         return;
       }
 
-      if (spreadInfo.points > MAX_SPREAD_POINTS) {
-        setMessage("Spread too high");
+      if (
+        !spreadInfo.estimated &&
+        spreadInfo.points > MAX_SPREAD_POINTS
+      ) {
+        setMessage("Live spread too high");
         return;
       }
 
@@ -1828,7 +1947,7 @@ export default function App() {
       );
 
       setMessage(
-        `${item.display_name}: ${order.pendingType} ${signal.direction} at ${fmt(order.entry, 5)} SL ${fmt(order.sl, 5)} TP ${fmt(order.tp, 5)}`
+        `${item.display_name}: ${order.pendingType} ${signal.direction} at ${fmt(order.entry, 5)} · ${spreadInfo.estimated ? "EST. SPREAD" : "LIVE SPREAD"} · SL ${fmt(order.sl, 5)} · TP ${fmt(order.tp, 5)}`
       );
     } catch (e) {
       setMessage(`${item.symbol}: ${e.message}`);
@@ -2014,8 +2133,6 @@ export default function App() {
 
         if (!sc) return false;
 
-        // Breakout first-opposite-candle signals do not
-        // require the current candle to touch the box.
         const breakoutSignal =
           String(sig.strategy || "").startsWith("BREAKOUT ");
 
@@ -2416,6 +2533,20 @@ export default function App() {
           No Doji. A) Retest High/Low, B) Break-in, C) Breakout + 1st Red/Green. Breakout signals do not require a current box touch. Scan every 5 min.
         </p>
 
+        <div style={{
+          background: "#332b16",
+          border: "1px solid #66501b",
+          borderRadius: 7,
+          padding: 9,
+          color: "#fbbf24",
+          fontSize: 10,
+          marginTop: 8
+        }}>
+          SPREAD MODE: ESTIMATED WHEN LIVE BID/ASK IS UNAVAILABLE.
+          Estimated spreads are modelling assumptions, not confirmed market spreads.
+          P/L and risk are simulated estimates, not broker-calculated values.
+        </div>
+
         <input
           value={search}
           onChange={e => setSearch(e.target.value)}
@@ -2545,6 +2676,21 @@ export default function App() {
                     }}>
                       ENTRY: {fmt(sig.entryLevel, 5)} · {sig.pendingType} · SL BoxSize+spread · TP 4x Box
                     </div>
+
+                    <div style={{
+                      fontSize: 10,
+                      color: "#fbbf24",
+                      marginTop: 4
+                    }}>
+                      {sc?.spreadEstimated
+                        ? "ESTIMATED SPREAD"
+                        : sc?.spreadKnown
+                          ? "LIVE BID/ASK SPREAD"
+                          : "SPREAD NOT YET AVAILABLE"}
+                      {Number.isFinite(sc?.spreadPoints)
+                        ? ` · ${fmt(sc.spreadPoints, 1)} points`
+                        : ""}
+                    </div>
                   </div>
 
                   <div style={{
@@ -2612,6 +2758,10 @@ export default function App() {
 
                 <br />
 
+                SPREAD: {t.spreadEstimated ? "ESTIMATED" : "LIVE BID/ASK"} · {fmt(t.spreadPoints, 1)} points
+
+                <br />
+
                 {t.status} · P/L ${fmt(t.floatingPnl, 2)}
               </div>
             ))}
@@ -2649,6 +2799,14 @@ export default function App() {
                 }}>
                   {" "}${fmt(t.realisedPnl, 2)}
                 </span>
+
+                <div style={{
+                  color: "#fbbf24",
+                  fontSize: 10,
+                  marginTop: 3
+                }}>
+                  {t.spreadEstimated ? "ESTIMATED SPREAD" : "LIVE BID/ASK SPREAD"}
+                </div>
               </div>
             ))}
           </div>
