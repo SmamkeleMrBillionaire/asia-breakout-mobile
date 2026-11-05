@@ -6,7 +6,7 @@ import React, {
   useState
 } from "react";
 
-const WS_URL = "wss://ws.derivws.com/websockets/v3?app_id=36544";
+const WS_URL = "wss://ws.derivws.com/websockets/v3?app_id=1089";
 
 const TIMEFRAME = 900;
 const CANDLE_COUNT = 220;
