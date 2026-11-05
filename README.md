@@ -1,2 +1,2 @@
-# asia-breakout-mobile
-Wait for asia breakout before trading.
+# iFX-Billionaire-mobile
+Wait for breakout before trading.
