@@ -1,3 +1,4 @@
+
 import React, {
   useCallback,
   useEffect,
@@ -7,9 +8,9 @@ import React, {
 } from "react";
 
 // ======================================================
-// iFX BILLIONAIRE R10.23
+// iFX BILLIONAIRE R10.24
 // DERIV PUBLIC MARKETS - SIMULATED DEMO
-// IMPROVED MARKET DISCOVERY + CONNECTION DIAGNOSTICS
+// FIXED UNDERLYING SYMBOL DISCOVERY
 // ======================================================
 
 const WS_URL =
@@ -78,17 +79,26 @@ function priorityIndex(s) {
   return m ? PRIORITY_SYMBOLS.indexOf(m) : 999;
 }
 
-// Improved category detection: checks both market codes
-// and market display names.
+// ======================================================
+// MARKET CATEGORY DETECTION
+// ======================================================
+
 function categoryOf(s) {
   const m = [
     s.market,
     s.market_display_name,
     s.submarket,
     s.submarket_display_name,
+    s.subgroup,
+    s.subgroup_display_name,
     s.symbol_type,
-    s.display_name
-  ].filter(Boolean).join(" ").toLowerCase();
+    s.underlying_symbol_type,
+    s.display_name,
+    s.underlying_symbol_name
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
 
   if (
     m.includes("forex") ||
@@ -103,7 +113,8 @@ function categoryOf(s) {
     m.includes("volatility") ||
     m.includes("crash") ||
     m.includes("boom") ||
-    m.includes("step index")
+    m.includes("step index") ||
+    m.includes("random index")
   ) return "Synthetics";
 
   if (m.includes("crypto")) return "Crypto";
@@ -129,6 +140,10 @@ function categoryOf(s) {
 
   return "Other";
 }
+
+// ======================================================
+// PRICE / PIP HELPERS
+// ======================================================
 
 function pipSize(sym, cat, candles, mp) {
   const supplied = Number(mp);
@@ -177,6 +192,10 @@ function isTradingTime(e) {
   return h >= TRADING_START_HOUR && h < TRADING_END_HOUR;
 }
 
+// ======================================================
+// RSI
+// ======================================================
+
 function calculateRSI(candles, idx, period = 3) {
   if (!candles || idx < period) return null;
 
@@ -207,6 +226,10 @@ function calculateRSI(candles, idx, period = 3) {
   const rs = ag / al;
   return 100 - 100 / (1 + rs);
 }
+
+// ======================================================
+// ORANGE BOX
+// ======================================================
 
 function buildOrangeBox(candles, day) {
   const f = candles
@@ -243,6 +266,10 @@ function buildOrangeBox(candles, day) {
   };
 }
 
+// ======================================================
+// SIGNAL CREATION
+// ======================================================
+
 function makeSignal({
   direction,
   strategy,
@@ -276,7 +303,7 @@ function makeSignal({
 }
 
 // ======================================================
-// R10.23 SIGNAL ENGINE - NO DOJI
+// R10.24 SIGNAL ENGINE - NO DOJI
 // ======================================================
 
 function findClosedEntrySignal(
@@ -302,7 +329,10 @@ function findClosedEntrySignal(
   const orangeBox = buildOrangeBox(candles, today);
 
   if (!orangeBox) {
-    return { ...empty, reason: "Waiting for 00:00-01:00 box" };
+    return {
+      ...empty,
+      reason: "Waiting for 00:00-01:00 box"
+    };
   }
 
   const pip = pipSize(symbol, category, candles, marketPip);
@@ -523,7 +553,7 @@ function findClosedEntrySignal(
 }
 
 // ======================================================
-// LIVE SCANNER
+// LIVE SCANNER STATE
 // ======================================================
 
 function getLiveScannerState({
@@ -809,7 +839,7 @@ function makeDemoOrder(
   return {
     id: `${symbol}-${signal.signalId}-${nowMs}`,
     signalId: signal.signalId,
-    comment: "Ifx Billionaire R10.23",
+    comment: "Ifx Billionaire R10.24",
     boxId: signal.boxId,
     boxType: "ORANGE",
     strategy: signal.strategy,
@@ -934,7 +964,7 @@ export default function App() {
   const [sizingMode, setSizingMode] = useState("RISK_PERCENT");
 
   const [message, setMessage] = useState(
-    "Connect to Deriv Public Market - R10.23"
+    "Connect to Deriv Public Market - R10.24"
   );
 
   const [lastScan, setLastScan] = useState("Not scanned");
@@ -1418,25 +1448,24 @@ export default function App() {
   }, [request, processTick]);
 
   // ====================================================
-  // MARKET DISCOVERY - UPDATED
+  // MARKET DISCOVERY - R10.24 FIX
   // ====================================================
 
   const discoverMarkets = useCallback(async () => {
     setMessage("Requesting Deriv active market list...");
 
-    // "brief" is used here to request the compact active-symbol
-    // list demonstrated in Deriv's public market-data workflow.
     const res = await request({
       active_symbols: "brief"
     });
 
     if (res.error) {
       throw new Error(
-        `Deriv market discovery error: ${res.error.message || "Unknown API error"}`
+        `Deriv market discovery error: ${
+          res.error.message || "Unknown API error"
+        }`
       );
     }
 
-    // Support the common response shapes.
     const raw =
       res.active_symbols ??
       res.data?.active_symbols ??
@@ -1445,32 +1474,75 @@ export default function App() {
       [];
 
     if (!Array.isArray(raw) || raw.length === 0) {
-      const responsePreview = JSON.stringify(res).slice(0, 700);
-
       throw new Error(
-        `Deriv connected, but active_symbols returned no market array. Response type: ${res.msg_type || "unknown"}. Response: ${responsePreview}`
+        `Deriv returned no market array. Response: ${
+          JSON.stringify(res).slice(0, 700)
+        }`
       );
     }
 
+    // Accept both Deriv response formats:
+    // underlying_symbol / underlying_symbol_name
+    // symbol / display_name
+
     const list = raw
-      .filter(s =>
-        s &&
-        typeof s.symbol === "string" &&
-        s.symbol.length > 0 &&
-        Number(s.is_trading_suspended || 0) !== 1
-      )
-      .map(s => ({
-        ...s,
-        symbol: s.symbol,
-        display_name:
-          s.display_name ||
-          s.symbol ||
-          "Unknown market",
-        category: categoryOf(s),
-        prioritySymbol: priorityMatch(s.symbol),
-        priority: priorityIndex(s.symbol),
-        pip: s.pip_size || s.pip || null
-      }))
+      .filter(s => {
+        if (!s) return false;
+
+        const symbol =
+          s.underlying_symbol ||
+          s.symbol;
+
+        if (
+          typeof symbol !== "string" ||
+          !symbol.trim()
+        ) {
+          return false;
+        }
+
+        const suspended =
+          Number(s.is_trading_suspended ?? 0);
+
+        const exchangeOpen =
+          Number(s.exchange_is_open ?? 1);
+
+        return suspended !== 1 && exchangeOpen !== 0;
+      })
+      .map(s => {
+        const symbol = (
+          s.underlying_symbol ||
+          s.symbol
+        ).trim();
+
+        const normalized = {
+          ...s,
+          symbol,
+
+          display_name:
+            s.underlying_symbol_name ||
+            s.display_name ||
+            s.symbol_name ||
+            symbol,
+
+          market:
+            s.market ||
+            s.market_display_name ||
+            "other",
+
+          category: "Other",
+
+          pip:
+            s.pip_size ||
+            s.pip ||
+            null
+        };
+
+        normalized.category = categoryOf(normalized);
+        normalized.prioritySymbol = priorityMatch(symbol);
+        normalized.priority = priorityIndex(symbol);
+
+        return normalized;
+      })
       .sort((a, b) =>
         a.priority !== b.priority
           ? a.priority - b.priority
@@ -1480,10 +1552,10 @@ export default function App() {
       );
 
     if (!list.length) {
-      const sample = JSON.stringify(raw[0] || {}).slice(0, 500);
+      const sample = JSON.stringify(raw[0] || {}).slice(0, 700);
 
       throw new Error(
-        `Deriv returned ${raw.length} symbols, but none passed the tradable-symbol filter. First item: ${sample}`
+        `Deriv returned ${raw.length} markets, but none passed the filter. First item: ${sample}`
       );
     }
 
@@ -1494,7 +1566,9 @@ export default function App() {
     setProgress(0);
 
     const categoryCounts = list.reduce((acc, item) => {
-      acc[item.category] = (acc[item.category] || 0) + 1;
+      acc[item.category] =
+        (acc[item.category] || 0) + 1;
+
       return acc;
     }, {});
 
@@ -1743,7 +1817,7 @@ export default function App() {
       }));
 
       setMessage(
-        `Scan complete: ${completed}/${list.length} markets · ${failed} data errors · R10.23`
+        `Scan complete: ${completed}/${list.length} markets · ${failed} data errors · R10.24`
       );
 
       setLastScan(new Date().toLocaleTimeString());
@@ -1815,7 +1889,7 @@ export default function App() {
       }, SCAN_INTERVAL);
 
       setMessage(
-        "Robot running R10.23 - Public markets - 5 MIN scan - NO DOJI"
+        "Robot running R10.24 - Public markets - 5 MIN scan - NO DOJI"
       );
     } catch (e) {
       runningRef.current = false;
@@ -2319,7 +2393,7 @@ export default function App() {
             fontSize: 22,
             fontWeight: 900
           }}>
-            iFX BILLIONAIRE R10.23
+            iFX BILLIONAIRE R10.24
           </div>
 
           <div style={{
@@ -2355,7 +2429,7 @@ export default function App() {
           fontSize: 12,
           fontWeight: 900
         }}>
-          ROBOT CONTROL - R10.23 - 5 MIN SCAN
+          ROBOT CONTROL - R10.24 - 5 MIN SCAN
         </div>
 
         <div style={{
@@ -2380,7 +2454,7 @@ export default function App() {
             fontSize: 10,
             fontWeight: 800
           }}>
-            SIMULATED DEMO - R10.23
+            SIMULATED DEMO - R10.24
           </span>
         </div>
 
@@ -2461,7 +2535,7 @@ export default function App() {
           textAlign: "center",
           marginTop: 10
         }}>
-          TRADING: {isTradingHours ? "ACTIVE" : "PAUSED"} · 07:00-21:59 UTC · R10.23 NO DOJI
+          TRADING: {isTradingHours ? "ACTIVE" : "PAUSED"} · 07:00-21:59 UTC · R10.24 NO DOJI
         </div>
 
         {/* ACCOUNT SETTINGS */}
@@ -2613,7 +2687,7 @@ export default function App() {
           fontSize: 12,
           fontWeight: 900
         }}>
-          VALID M15 SIGNALS - ORANGE BOX STRATEGIES - R10.23
+          VALID M15 SIGNALS - ORANGE BOX STRATEGIES - R10.24
         </div>
 
         <p style={{
@@ -2694,7 +2768,7 @@ export default function App() {
 
               <br />
 
-              Scanner runs every 5 min. R10.23 - No Doji.
+              Scanner runs every 5 min. R10.24 - No Doji.
             </div>
           )}
 
@@ -2827,7 +2901,7 @@ export default function App() {
             <b style={{
               fontSize: 12
             }}>
-              OPEN / PENDING - R10.23
+              OPEN / PENDING - R10.24
             </b>
 
             {openTrades.map(t => (
@@ -2910,7 +2984,7 @@ export default function App() {
         fontSize: 10,
         padding: 12
       }}>
-        iFX BILLIONAIRE R10.23 · DERIV PUBLIC DATA · SIMULATED EXECUTION ONLY
+        iFX BILLIONAIRE R10.24 · DERIV PUBLIC DATA · SIMULATED EXECUTION ONLY
       </div>
     </div>
   );
