@@ -1,3 +1,4 @@
+
 import React, {
   useCallback,
   useEffect,
@@ -9,7 +10,7 @@ import React, {
 // ======================================================
 // iFX BILLIONAIRE R10.22
 // DERIV PUBLIC MARKETS - SIMULATED DEMO
-// ESTIMATED SPREAD FALLBACK
+// IMPROVED CONNECTION + ESTIMATED SPREAD FALLBACK
 // ======================================================
 
 const WS_URL =
@@ -586,7 +587,6 @@ function getSpreadInfo(
   const bid = Number(tick?.bid);
   const ask = Number(tick?.ask);
 
-  // Use real bid/ask when both are supplied.
   if (
     Number.isFinite(bid) &&
     Number.isFinite(ask) &&
@@ -608,7 +608,6 @@ function getSpreadInfo(
     };
   }
 
-  // If bid/ask is unavailable, use a clearly labelled estimate.
   const p = Number(price);
 
   if (!Number.isFinite(p) || p <= 0) {
@@ -699,8 +698,6 @@ function makeDemoOrder(
     throw new Error("Price unavailable for spread estimate");
   }
 
-  // The live-spread limit applies only to actual bid/ask.
-  // Estimated spreads are not rejected by this live-data filter.
   if (
     !spreadInfo.estimated &&
     spreadInfo.points > MAX_SPREAD_POINTS
@@ -936,7 +933,7 @@ export default function App() {
       const ws = socketRef.current;
 
       if (!ws || ws.readyState !== WebSocket.OPEN) {
-        reject(new Error("Not connected"));
+        reject(new Error("Not connected to Deriv"));
         return;
       }
 
@@ -1000,8 +997,6 @@ export default function App() {
         remaining.push(orig);
         continue;
       }
-
-      // PENDING ORDER ACTIVATION
 
       if (orig.status === "PENDING DEMO TRADE") {
         const expired = Date.now() > orig.pendingExpiry;
@@ -1127,7 +1122,7 @@ export default function App() {
   }, []);
 
   // ====================================================
-  // DERIV CONNECTION
+  // DERIV CONNECTION - IMPROVED
   // ====================================================
 
   const connect = useCallback(() => {
@@ -1141,25 +1136,29 @@ export default function App() {
       return connectionPromiseRef.current;
     }
 
-    setConnectionText("CONNECTING");
+    setConnectionText("CONNECTING TO DERIV PUBLIC DATA...");
+
+    let ws;
+
+    try {
+      ws = new WebSocket(WS_URL);
+      socketRef.current = ws;
+    } catch (e) {
+      setConnected(false);
+      setConnectionText("WEBSOCKET CREATION FAILED");
+
+      return Promise.reject(
+        new Error(`WebSocket creation failed: ${e.message}`)
+      );
+    }
 
     let cp;
 
     cp = new Promise((resolve, reject) => {
       let settled = false;
-      let ws;
-      let connectionTimeout;
+      let connectionTimeout = null;
 
-      try {
-        ws = new WebSocket(WS_URL);
-      } catch (e) {
-        reject(new Error(`WebSocket creation failed: ${e.message}`));
-        return;
-      }
-
-      socketRef.current = ws;
-
-      const clear = () => {
+      const clearConnection = () => {
         if (connectionTimeout) {
           clearTimeout(connectionTimeout);
           connectionTimeout = null;
@@ -1170,20 +1169,31 @@ export default function App() {
         }
       };
 
-      connectionTimeout = setTimeout(() => {
-        if (!settled && ws.readyState !== WebSocket.OPEN) {
-          settled = true;
-          setConnectionText("CONNECTION TIMEOUT");
+      const failConnection = error => {
+        if (settled) return;
 
-          reject(
-            new Error("Connection timed out. Check internet or Deriv availability.")
+        settled = true;
+        clearConnection();
+
+        setConnected(false);
+        setConnectionText("CONNECTION FAILED");
+
+        reject(error);
+      };
+
+      connectionTimeout = setTimeout(() => {
+        if (ws.readyState !== WebSocket.OPEN) {
+          failConnection(
+            new Error(
+              "Deriv connection timeout after 20 seconds. Check internet access and whether your hosting provider allows WebSocket connections."
+            )
           );
 
           try {
             ws.close();
           } catch {}
         }
-      }, 15000);
+      }, 20000);
 
       ws.onopen = () => {
         if (socketRef.current !== ws) {
@@ -1211,7 +1221,7 @@ export default function App() {
         setConnected(true);
         setConnectionText("DERIV PUBLIC MARKET CONNECTED");
 
-        clear();
+        clearConnection();
 
         if (!settled) {
           settled = true;
@@ -1235,7 +1245,7 @@ export default function App() {
         }
 
         if (
-          d.req_id &&
+          d.req_id !== undefined &&
           pendingRequestsRef.current.has(d.req_id)
         ) {
           const p = pendingRequestsRef.current.get(d.req_id);
@@ -1245,7 +1255,7 @@ export default function App() {
 
           if (d.error) {
             p.reject(
-              new Error(d.error.message || "Deriv API error")
+              new Error(d.error.message || "Deriv API request failed")
             );
           } else {
             p.resolve(d);
@@ -1257,6 +1267,12 @@ export default function App() {
         if (socketRef.current !== ws) return;
 
         setConnectionText("WEBSOCKET NETWORK ERROR");
+
+        failConnection(
+          new Error(
+            "The browser could not establish a reliable Deriv WebSocket connection. Check your internet connection, browser and hosting restrictions."
+          )
+        );
       };
 
       ws.onclose = event => {
@@ -1270,8 +1286,9 @@ export default function App() {
         }
 
         setConnected(false);
+
         setConnectionText(
-          `DISCONNECTED (${event.code || "NO CODE"})`
+          `DISCONNECTED - CODE ${event.code || "UNKNOWN"}`
         );
 
         subscriptionsRef.current.clear();
@@ -1279,12 +1296,12 @@ export default function App() {
 
         pendingRequestsRef.current.forEach(p => {
           clearTimeout(p.timeout);
-          p.reject(new Error("Connection closed"));
+          p.reject(new Error("Deriv connection closed"));
         });
 
         pendingRequestsRef.current.clear();
 
-        clear();
+        clearConnection();
 
         const detail = event.reason
           ? ` ${event.reason}`
@@ -1294,15 +1311,11 @@ export default function App() {
           scheduleReconnect();
         }
 
-        if (!settled) {
-          settled = true;
-
-          reject(
-            new Error(
-              `Deriv connection closed. Code: ${event.code || "unknown"}.${detail}`
-            )
-          );
-        }
+        failConnection(
+          new Error(
+            `Deriv disconnected. Code: ${event.code || "unknown"}.${detail || " No server reason supplied."}`
+          )
+        );
       };
     });
 
@@ -1356,24 +1369,31 @@ export default function App() {
   }, [request, processTick]);
 
   // ====================================================
-  // AUTOMATIC MARKET DISCOVERY
+  // AUTOMATIC MARKET DISCOVERY - IMPROVED
   // ====================================================
 
   const discoverMarkets = useCallback(async () => {
-    setMessage("Discovering all active Deriv markets...");
+    setMessage("Requesting all active Deriv markets...");
 
     const res = await request({
-      active_symbols: "brief"
+      active_symbols: "full"
     });
 
     if (res.error) {
-      throw new Error(res.error.message);
+      throw new Error(
+        res.error.message || "Deriv market discovery failed"
+      );
     }
 
-    const raw = res.active_symbols || [];
+    const raw =
+      res.active_symbols ||
+      res.data?.active_symbols ||
+      [];
 
     if (!Array.isArray(raw) || raw.length === 0) {
-      throw new Error("Deriv returned zero active markets");
+      throw new Error(
+        "Deriv connected, but returned no active markets. Check the active_symbols response."
+      );
     }
 
     const list = raw
@@ -1388,8 +1408,6 @@ export default function App() {
         category: categoryOf(s),
         prioritySymbol: priorityMatch(s.symbol),
         priority: priorityIndex(s.symbol),
-
-        // Accept either field if supplied by the API.
         pip: s.pip_size || s.pip || null
       }))
       .sort((a, b) =>
@@ -1401,16 +1419,17 @@ export default function App() {
       );
 
     if (!list.length) {
-      throw new Error("No tradable Deriv markets found");
+      throw new Error("No tradable Deriv markets were returned.");
     }
 
     marketsRef.current = list;
+
     setSymbols(list);
     setScanned(0);
     setProgress(0);
 
     setMessage(
-      `${list.length} active Deriv markets discovered`
+      `SUCCESS: ${list.length} active Deriv markets discovered.`
     );
 
     return list;
@@ -1901,8 +1920,6 @@ export default function App() {
         return;
       }
 
-      // Real bid/ask is preferred. If unavailable,
-      // estimate spread using the market category.
       const spreadInfo = getSpreadInfo(
         tick,
         curPrice,
