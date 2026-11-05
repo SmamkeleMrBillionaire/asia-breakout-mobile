@@ -11,6 +11,7 @@ import React, {
 // iFX BILLIONAIRE R10.24
 // DERIV PUBLIC MARKETS - SIMULATED DEMO
 // FIXED UNDERLYING SYMBOL DISCOVERY
+// UI UPDATE: COLLAPSIBLE VALID M15 SIGNALS
 // ======================================================
 
 const WS_URL =
@@ -955,6 +956,9 @@ export default function App() {
   const [category, setCategory] = useState("All");
   const [search, setSearch] = useState("");
 
+  // NEW UI STATE: SIGNALS COLLAPSED BY DEFAULT
+  const [signalsCollapsed, setSignalsCollapsed] = useState(true);
+
   const [progress, setProgress] = useState(0);
   const [scanned, setScanned] = useState(0);
 
@@ -1480,10 +1484,6 @@ export default function App() {
         }`
       );
     }
-
-    // Accept both Deriv response formats:
-    // underlying_symbol / underlying_symbol_name
-    // symbol / display_name
 
     const list = raw
       .filter(s => {
@@ -2674,7 +2674,7 @@ export default function App() {
         </div>
       </div>
 
-      {/* VALID SIGNALS */}
+      {/* VALID SIGNALS PANEL */}
 
       <div style={{
         background: "#131e32",
@@ -2683,216 +2683,253 @@ export default function App() {
         margin: 12,
         padding: 14
       }}>
-        <div style={{
-          fontSize: 12,
-          fontWeight: 900
-        }}>
-          VALID M15 SIGNALS - ORANGE BOX STRATEGIES - R10.24
-        </div>
 
-        <p style={{
-          fontSize: 11,
-          color: "#8a9bb5",
-          marginTop: 8
-        }}>
-          No Doji. A) Retest High/Low, B) Break-in, C) Breakout + 1st Red/Green. Breakout signals do not require a current box touch. Scan every 5 min.
-        </p>
+        {/* COLLAPSIBLE HEADING */}
 
-        <div style={{
-          background: "#332b16",
-          border: "1px solid #66501b",
-          borderRadius: 7,
-          padding: 9,
-          color: "#fbbf24",
-          fontSize: 10,
-          marginTop: 8
-        }}>
-          SPREAD MODE: ESTIMATED WHEN LIVE BID/ASK IS UNAVAILABLE.
-          Estimated spreads are modelling assumptions, not confirmed market spreads.
-          P/L and risk are simulated estimates, not broker-calculated values.
-        </div>
-
-        <input
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          placeholder="Search..."
+        <button
+          onClick={() => setSignalsCollapsed(v => !v)}
+          aria-expanded={!signalsCollapsed}
           style={{
             width: "100%",
-            padding: 12,
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: 8,
             background: "#0f172a",
+            color: "#e6edf7",
             border: "1px solid #334155",
             borderRadius: 8,
-            color: "white",
-            margin: "12px 0",
-            boxSizing: "border-box"
+            padding: 13,
+            fontSize: 12,
+            fontWeight: 900,
+            textAlign: "left",
+            cursor: "pointer"
           }}
-        />
+        >
+          <span>
+            VALID M15 SIGNALS - ORANGE BOX STRATEGIES - R10.24
+          </span>
 
-        <div style={{
-          display: "flex",
-          gap: 6,
-          overflowX: "auto"
-        }}>
-          {CATEGORIES.map(c => (
-            <button
-              key={c}
-              onClick={() => setCategory(c)}
-              style={{
-                padding: "7px 14px",
-                borderRadius: 20,
-                background: category === c ? "#0ea5e9" : "#1e293b",
-                color: category === c ? "white" : "#94a3b8",
-                fontSize: 12,
-                border: "none",
-                whiteSpace: "nowrap"
-              }}
-            >
-              {c}
-            </button>
-          ))}
-        </div>
+          <span style={{
+            color: "#fbbf24",
+            fontSize: 16,
+            flexShrink: 0
+          }}>
+            {signalsCollapsed ? "▼" : "▲"}
+          </span>
+        </button>
 
-        <div style={{
-          marginTop: 10
-        }}>
-          {visibleSymbols.length === 0 && (
-            <div style={{
-              padding: 20,
-              textAlign: "center",
-              color: "#64748b",
-              fontSize: 12
+        {/* COLLAPSIBLE SIGNAL CONTENT */}
+
+        {!signalsCollapsed && (
+          <>
+
+            <p style={{
+              fontSize: 11,
+              color: "#8a9bb5",
+              marginTop: 8
             }}>
-              {symbols.length === 0
-                ? "No markets loaded. Press START ROBOT to connect."
-                : "No valid M15 Orange Box signals currently available."}
+              No Doji. A) Retest High/Low, B) Break-in, C) Breakout + 1st Red/Green. Breakout signals do not require a current box touch. Scan every 5 min.
+            </p>
 
-              <br />
-
-              Scanner runs every 5 min. R10.24 - No Doji.
+            <div style={{
+              background: "#332b16",
+              border: "1px solid #66501b",
+              borderRadius: 7,
+              padding: 9,
+              color: "#fbbf24",
+              fontSize: 10,
+              marginTop: 8
+            }}>
+              SPREAD MODE: ESTIMATED WHEN LIVE BID/ASK IS UNAVAILABLE.
+              Estimated spreads are modelling assumptions, not confirmed market spreads.
+              P/L and risk are simulated estimates, not broker-calculated values.
             </div>
-          )}
 
-          {visibleSymbols.map(item => {
-            const sig = signals[item.symbol];
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search..."
+              style={{
+                width: "100%",
+                padding: 12,
+                background: "#0f172a",
+                border: "1px solid #334155",
+                borderRadius: 8,
+                color: "white",
+                margin: "12px 0",
+                boxSizing: "border-box"
+              }}
+            />
 
-            if (!sig) return null;
-
-            const isBuy = sig.direction === "BUY";
-            const sc = scannerStates[item.symbol];
-
-            return (
-              <div
-                key={item.symbol}
-                style={{
-                  background: "#0f172a",
-                  border: "1px solid #1e293b",
-                  borderRadius: 8,
-                  padding: 12,
-                  marginTop: 10
-                }}
-              >
-                <div style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  gap: 8
-                }}>
-                  <div style={{
-                    minWidth: 0
-                  }}>
-                    <b>
-                      {item.display_name || item.symbol} {item.prioritySymbol ? "*" : ""}
-                    </b>
-
-                    <div style={{
-                      fontSize: 10,
-                      color: "#94a3b8"
-                    }}>
-                      {item.symbol} · {item.category} · {sc?.state} · {sig.pendingType}
-                    </div>
-
-                    <div style={{
-                      fontSize: 11,
-                      color: "#fbbf24",
-                      fontWeight: 800,
-                      marginTop: 6
-                    }}>
-                      {sig.strategy}
-                    </div>
-
-                    <div style={{
-                      fontSize: 11,
-                      color: "#cbd5e1",
-                      marginTop: 4
-                    }}>
-                      {sig.reason}
-                    </div>
-
-                    <div style={{
-                      fontSize: 11,
-                      marginTop: 6
-                    }}>
-                      ORANGE HIGH {fmt(sig.boxHigh, 5)} · LOW {fmt(sig.boxLow, 5)}
-                    </div>
-
-                    <div style={{
-                      fontSize: 11,
-                      color: "#fbbf24",
-                      fontWeight: 700
-                    }}>
-                      ENTRY: {fmt(sig.entryLevel, 5)} · {sig.pendingType} · SL BoxSize+spread · TP 4x Box
-                    </div>
-
-                    <div style={{
-                      fontSize: 10,
-                      color: "#fbbf24",
-                      marginTop: 4
-                    }}>
-                      {sc?.spreadEstimated
-                        ? "ESTIMATED SPREAD"
-                        : sc?.spreadKnown
-                          ? "LIVE BID/ASK SPREAD"
-                          : "SPREAD NOT YET AVAILABLE"}
-                      {Number.isFinite(sc?.spreadPoints)
-                        ? ` · ${fmt(sc.spreadPoints, 1)} points`
-                        : ""}
-                    </div>
-                  </div>
-
-                  <div style={{
-                    background: isBuy ? "#16a34a" : "#dc2626",
-                    color: "white",
-                    padding: "6px 12px",
-                    borderRadius: 6,
-                    fontWeight: 900,
-                    fontSize: 12,
-                    height: "fit-content"
-                  }}>
-                    {sig.direction}
-                  </div>
-                </div>
-
+            <div style={{
+              display: "flex",
+              gap: 6,
+              overflowX: "auto"
+            }}>
+              {CATEGORIES.map(c => (
                 <button
-                  onClick={() => activateSignal(item)}
+                  key={c}
+                  onClick={() => setCategory(c)}
                   style={{
-                    width: "100%",
-                    marginTop: 12,
-                    padding: 14,
+                    padding: "7px 14px",
+                    borderRadius: 20,
+                    background: category === c ? "#0ea5e9" : "#1e293b",
+                    color: category === c ? "white" : "#94a3b8",
+                    fontSize: 12,
                     border: "none",
-                    borderRadius: 8,
-                    fontWeight: 900,
-                    fontSize: 14,
-                    color: "white",
-                    background: isBuy ? "#16a34a" : "#dc2626"
+                    whiteSpace: "nowrap"
                   }}
                 >
-                  {isBuy ? "▲" : "▼"} TAP {sig.direction} — {sig.pendingType}
+                  {c}
                 </button>
-              </div>
-            );
-          })}
-        </div>
+              ))}
+            </div>
 
-        {/* OPEN TRADES */}
+            <div style={{
+              marginTop: 10
+            }}>
+              {visibleSymbols.length === 0 && (
+                <div style={{
+                  padding: 20,
+                  textAlign: "center",
+                  color: "#64748b",
+                  fontSize: 12
+                }}>
+                  {symbols.length === 0
+                    ? "No markets loaded. Press START ROBOT to connect."
+                    : "No valid M15 Orange Box signals currently available."}
+
+                  <br />
+
+                  Scanner runs every 5 min. R10.24 - No Doji.
+                </div>
+              )}
+
+              {visibleSymbols.map(item => {
+                const sig = signals[item.symbol];
+
+                if (!sig) return null;
+
+                const isBuy = sig.direction === "BUY";
+                const sc = scannerStates[item.symbol];
+
+                return (
+                  <div
+                    key={item.symbol}
+                    style={{
+                      background: "#0f172a",
+                      border: "1px solid #1e293b",
+                      borderRadius: 8,
+                      padding: 12,
+                      marginTop: 10
+                    }}
+                  >
+                    <div style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      gap: 8
+                    }}>
+                      <div style={{
+                        minWidth: 0
+                      }}>
+                        <b>
+                          {item.display_name || item.symbol} {item.prioritySymbol ? "*" : ""}
+                        </b>
+
+                        <div style={{
+                          fontSize: 10,
+                          color: "#94a3b8"
+                        }}>
+                          {item.symbol} · {item.category} · {sc?.state} · {sig.pendingType}
+                        </div>
+
+                        <div style={{
+                          fontSize: 11,
+                          color: "#fbbf24",
+                          fontWeight: 800,
+                          marginTop: 6
+                        }}>
+                          {sig.strategy}
+                        </div>
+
+                        <div style={{
+                          fontSize: 11,
+                          color: "#cbd5e1",
+                          marginTop: 4
+                        }}>
+                          {sig.reason}
+                        </div>
+
+                        <div style={{
+                          fontSize: 11,
+                          marginTop: 6
+                        }}>
+                          ORANGE HIGH {fmt(sig.boxHigh, 5)} · LOW {fmt(sig.boxLow, 5)}
+                        </div>
+
+                        <div style={{
+                          fontSize: 11,
+                          color: "#fbbf24",
+                          fontWeight: 700
+                        }}>
+                          ENTRY: {fmt(sig.entryLevel, 5)} · {sig.pendingType} · SL BoxSize+spread · TP 4x Box
+                        </div>
+
+                        <div style={{
+                          fontSize: 10,
+                          color: "#fbbf24",
+                          marginTop: 4
+                        }}>
+                          {sc?.spreadEstimated
+                            ? "ESTIMATED SPREAD"
+                            : sc?.spreadKnown
+                              ? "LIVE BID/ASK SPREAD"
+                              : "SPREAD NOT YET AVAILABLE"}
+                          {Number.isFinite(sc?.spreadPoints)
+                            ? ` · ${fmt(sc.spreadPoints, 1)} points`
+                            : ""}
+                        </div>
+                      </div>
+
+                      <div style={{
+                        background: isBuy ? "#16a34a" : "#dc2626",
+                        color: "white",
+                        padding: "6px 12px",
+                        borderRadius: 6,
+                        fontWeight: 900,
+                        fontSize: 12,
+                        height: "fit-content"
+                      }}>
+                        {sig.direction}
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={() => activateSignal(item)}
+                      style={{
+                        width: "100%",
+                        marginTop: 12,
+                        padding: 14,
+                        border: "none",
+                        borderRadius: 8,
+                        fontWeight: 900,
+                        fontSize: 14,
+                        color: "white",
+                        background: isBuy ? "#16a34a" : "#dc2626"
+                      }}
+                    >
+                      {isBuy ? "▲" : "▼"} TAP {sig.direction} — {sig.pendingType}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+
+          </>
+        )}
+
+        {/* OPEN TRADES - ALWAYS VISIBLE */}
 
         {openTrades.length > 0 && (
           <div style={{
@@ -2933,7 +2970,7 @@ export default function App() {
           </div>
         )}
 
-        {/* CLOSED TRADES */}
+        {/* CLOSED TRADES - ALWAYS VISIBLE */}
 
         {closedTrades.length > 0 && (
           <div style={{
@@ -2976,6 +3013,7 @@ export default function App() {
             ))}
           </div>
         )}
+
       </div>
 
       <div style={{
