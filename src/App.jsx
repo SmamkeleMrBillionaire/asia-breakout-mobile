@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-const WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public";
+const WS_URL = "wss://ws.derivws.com/websockets/v3?app_id=1089";
 const TIMEFRAME = 900;
 const CANDLE_COUNT = 220;
-const SCAN_INTERVAL = 300000; // 5 MINUTES - CHANGED FROM 10 SECONDS
+const SCAN_INTERVAL = 300000; // 5 MINUTES
 const TRADING_START_HOUR = 7;
 const TRADING_END_HOUR = 22;
 const ARM_DISTANCE_PIPS = 3;
@@ -50,7 +50,6 @@ function isEngulfing(cur,prev){
 }
 function makeBoxId(type,day,high,low,epoch=""){ return [type,day,Number(high).toPrecision(12),Number(low).toPrecision(12),epoch].join("-"); }
 function isTradingTime(epoch){ const h=serverHour(epoch); return h>=TRADING_START_HOUR&&h<TRADING_END_HOUR; }
-
 function calculateRSI(candles,index,period=3){
   if(!candles||index<period) return null;
   let gains=0,losses=0;
@@ -195,15 +194,52 @@ export default function App(){
   const [notificationPermission,setNotificationPermission]=useState(typeof window!=="undefined"&&"Notification" in window?Notification.permission:"unsupported");
   const [showStats,setShowStats]=useState(false), [showScanner,setShowScanner]=useState(false);
 
+  // === LIVE DEMO ACCOUNT - SAFER WAY ===
+  const [demoToken,setDemoToken]=useState(()=>{ try{ return localStorage.getItem("ifx_demo_token")||""; }catch{ return ""; } });
+  const [isLiveDemo,setIsLiveDemo]=useState(false);
+  const [demoAccountInfo,setDemoAccountInfo]=useState(null);
+  const [liveMode,setLiveMode]=useState("SIMULATED"); // SIMULATED or LIVE_DEMO
+  const [stake,setStake]=useState(10);
+
   useEffect(()=>{ const t=setInterval(()=>setClock(Math.floor(Date.now()/1000)),1000); return ()=>clearInterval(t); },[]);
   const updateOrders=useCallback(u=>{ const n=typeof u==="function"?u(ordersRef.current):u; ordersRef.current=n; setOrders(n); },[]);
   const updateClosedTrades=useCallback(u=>{ const n=typeof u==="function"?u(closedTradesRef.current):u; closedTradesRef.current=n; setClosedTrades(n); },[]);
   const request=useCallback(payload=>new Promise((resolve,reject)=>{
     const ws=socketRef.current; if(!ws||ws.readyState!==WebSocket.OPEN){ reject(new Error("Deriv data connection is not open.")); return; }
-    const id=++requestRef.current; const timeout=setTimeout(()=>{ pendingRequestsRef.current.delete(id); reject(new Error("Deriv request timed out.")); },12000);
+    const id=++requestRef.current; const timeout=setTimeout(()=>{ pendingRequestsRef.current.delete(id); reject(new Error("Deriv request timed out.")); },15000);
     pendingRequestsRef.current.set(id,{resolve,reject,timeout});
     try{ ws.send(JSON.stringify({...payload,req_id:id})); }catch(e){ clearTimeout(timeout); pendingRequestsRef.current.delete(id); reject(e); }
   }),[]);
+
+  const connectDemo = async () => {
+    if(!demoToken || demoToken.length < 10){ setMessage("Paste your DEMO API Token first. Get it from Deriv > Settings > API Token (Demo account only)."); return; }
+    try{
+      setMessage("Authorizing Demo account...");
+      await connect();
+      const auth = await request({ authorize: demoToken.trim() });
+      if(auth.error){ setMessage(`Authorize failed: ${auth.error.message} - Make sure you used DEMO token, not Real.`); setIsLiveDemo(false); return; }
+      // Check if demo
+      const isDemo = auth.authorize?.is_virtual === 1;
+      if(!isDemo){
+        setMessage("⚠️ This looks like a REAL account token. For safety, disconnecting. Please use DEMO token only.");
+        setIsLiveDemo(false);
+        return;
+      }
+      setDemoAccountInfo(auth.authorize);
+      setIsLiveDemo(true);
+      setLiveMode("LIVE_DEMO");
+      try{ localStorage.setItem("ifx_demo_token", demoToken.trim()); }catch{}
+      setMessage(`✅ LIVE DEMO CONNECTED: ${auth.authorize.loginid} - Balance: ${auth.authorize.balance} ${auth.authorize.currency} (VIRTUAL)`);
+      sendBrowserNotification("iFX BILLIONAIRE - Demo Connected", `${auth.authorize.loginid} - Virtual Balance ${auth.authorize.balance}`);
+    }catch(e){ setMessage(`Demo connect failed: ${e.message}`); setIsLiveDemo(false); }
+  };
+
+  const disconnectDemo = () => {
+    setIsLiveDemo(false); setLiveMode("SIMULATED"); setDemoAccountInfo(null);
+    try{ localStorage.removeItem("ifx_demo_token"); }catch{}
+    setDemoToken(""); setMessage("Disconnected from Demo. Back to SIMULATED mode.");
+  };
+
   const processTick=useCallback((symbol,tick)=>{
     if(!symbol||!tick) return; const quote=Number(tick.quote),bid=Number(tick.bid),ask=Number(tick.ask);
     const usable=Number.isFinite(bid)&&bid>0?bid:quote; if(!Number.isFinite(usable)) return;
@@ -272,7 +308,12 @@ export default function App(){
     if(runningRef.current) return;
     try{
       if(typeof window!=="undefined"&&"Notification" in window&&Notification.permission==="default"){ try{ const p=await Notification.requestPermission(); setNotificationPermission(p); }catch{} }
-      setMessage("Connecting to Deriv M15 market data..."); await connect(); runningRef.current=true; setRunning(true); setSignals({}); setScannerStates({}); setScanned(0); setProgress(0);
+      setMessage("Connecting to Deriv M15 market data..."); await connect(); 
+      // If demo token exists, auto authorize
+      if(demoToken && demoToken.length>10 && !isLiveDemo){
+        try{ const auth=await request({authorize: demoToken.trim()}); if(!auth.error && auth.authorize?.is_virtual===1){ setDemoAccountInfo(auth.authorize); setIsLiveDemo(true); setLiveMode("LIVE_DEMO"); } }catch{}
+      }
+      runningRef.current=true; setRunning(true); setSignals({}); setScannerStates({}); setScanned(0); setProgress(0);
       const list=await discoverMarkets(); if(!list.length){ setMessage("No active markets returned by Deriv."); runningRef.current=false; setRunning(false); return; }
       const prio=list.filter(i=>i.prioritySymbol); for(const it of prio){ if(!runningRef.current) break; await subscribeMarket(it.symbol); }
       await scanAll(list); if(!runningRef.current) return;
@@ -299,6 +340,32 @@ export default function App(){
     const lockKey=`${item.symbol}|${signal.signalId}`; if(activationLocksRef.current.has(lockKey)){ setMessage(`${item.symbol}: this signal is already processing.`); return; }
     activationLocksRef.current.add(lockKey);
     try{
+      // === LIVE DEMO TRADE ===
+      if(liveMode==="LIVE_DEMO" && isLiveDemo && demoAccountInfo){
+        // Use Deriv Multiplier / Rise-Fall for demo - simplified: CALL/PUT 5m
+        const contractType = signal.direction==="BUY" ? "CALL" : "PUT";
+        setMessage(`${item.symbol}: Placing LIVE DEMO trade ${contractType} $${stake}...`);
+        const proposal = await request({
+          proposal: 1,
+          amount: stake,
+          basis: "stake",
+          contract_type: contractType,
+          currency: "USD",
+          duration: 5,
+          duration_unit: "m",
+          symbol: item.symbol
+        });
+        if(proposal.error){ setMessage(`Deriv rejected proposal: ${proposal.error.message}`); return; }
+        const buyRes = await request({ buy: proposal.proposal.id, price: stake });
+        if(buyRes.error){ setMessage(`Buy failed: ${buyRes.error.message}`); return; }
+        const c = buyRes.buy;
+        setMessage(`✅ LIVE DEMO TRADE OPENED: ${item.symbol} ${signal.direction} $${stake} - Contract ID ${c.contract_id} - Payout ${c.payout}`);
+        sendBrowserNotification("iFX BILLIONAIRE - LIVE DEMO TRADE", `${item.symbol} ${signal.direction} $${stake} opened on Deriv Demo`);
+        setLastActivated(`${signal.direction} · LIVE DEMO · ${signal.strategy}`);
+        return;
+      }
+
+      // === SIMULATED MODE (default) ===
       const prev=[...ordersRef.current,...closedTradesRef.current]; const today=serverDay(now);
       const daily=prev.filter(t=>t.openedDay===today); const openCount=ordersRef.current.filter(t=>t.status==="OPEN DEMO TRADE").length;
       if(daily.length>=MAX_DAILY_TRADES){ setMessage(`Daily limit reached: maximum ${MAX_DAILY_TRADES} trades.`); return; }
@@ -360,9 +427,35 @@ export default function App(){
         <div><div style={{fontSize:22,fontWeight:900,letterSpacing:1}}>iFX BILLIONAIRE</div><div style={{fontSize:9,color:"#8a9bb5",letterSpacing:1.5}}>M15 • ORANGE BOX • DOJI • ENGULFING</div></div>
         <div style={{background:running?"#0f3d1e":"#3a1a1a",color:running?"#4ade80":"#ff6b6b",padding:"6px 12px",borderRadius:20,fontSize:11,fontWeight:800}}>● {running?"RUNNING":"STOPPED"}</div>
       </div>
+
+      {/* ROBOT CONTROL + LIVE DEMO CONNECT */}
       <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:12,margin:12,padding:14}}>
         <div style={{fontSize:12,fontWeight:900,letterSpacing:1}}>ROBOT CONTROL</div>
-        <div style={{display:"flex",gap:10,alignItems:"center",margin:"10px 0",fontSize:11}}><span>● {connectionText}</span><span style={{background:"#4a3a12",color:"#fbbf24",padding:"3px 8px",borderRadius:4,fontSize:10,fontWeight:800}}>SIMULATED DEMO</span></div>
+        <div style={{display:"flex",gap:10,alignItems:"center",margin:"10px 0",fontSize:11}}><span>● {connectionText}</span><span style={{background:isLiveDemo?"#14532d":"#4a3a12",color:isLiveDemo?"#4ade80":"#fbbf24",padding:"3px 8px",borderRadius:4,fontSize:10,fontWeight:800}}>{isLiveDemo?`LIVE DEMO: ${demoAccountInfo?.loginid||""}`:"SIMULATED DEMO"}</span></div>
+
+        {/* SAFER DEMO TOKEN BOX */}
+        <div style={{background:"#0f172a",border:"1px solid #334155",borderRadius:8,padding:10,marginBottom:10}}>
+          <div style={{fontSize:11,fontWeight:800,marginBottom:6}}>🔐 DERIV DEMO ACCOUNT (Optional - Safer Way)</div>
+          <div style={{fontSize:10,color:"#8a9bb5",lineHeight:1.4,marginBottom:8}}>1. Go to Deriv.com → Switch to DEMO account → Settings → API Token → Create token with Trade scope.<br/>2. Paste DEMO token below. Never use REAL token. Token stays only on your phone.</div>
+          <input type="password" value={demoToken} onChange={e=>setDemoToken(e.target.value)} placeholder="Paste DEMO API Token here..." style={{width:"100%",padding:10,background:"#1e293b",border:"1px solid #475569",borderRadius:6,color:"white",fontSize:12,marginBottom:8}} />
+          <div style={{display:"flex",gap:8}}>
+            {!isLiveDemo ? (
+              <button onClick={connectDemo} style={{flex:1,padding:10,background:"#0ea5e9",color:"white",border:"none",borderRadius:6,fontWeight:800,fontSize:12}}>CONNECT DEMO ACCOUNT</button>
+            ) : (
+              <button onClick={disconnectDemo} style={{flex:1,padding:10,background:"#7f1d1d",color:"white",border:"none",borderRadius:6,fontWeight:800,fontSize:12}}>DISCONNECT DEMO</button>
+            )}
+            <button onClick={()=>setLiveMode(liveMode==="SIMULATED"?"LIVE_DEMO":"SIMULATED")} disabled={!isLiveDemo} style={{flex:1,padding:10,background:liveMode==="LIVE_DEMO"?"#16a34a":"#334155",color:"white",border:"none",borderRadius:6,fontWeight:800,fontSize:12,opacity:!isLiveDemo?0.5:1}}>
+              MODE: {liveMode==="LIVE_DEMO"?"LIVE DEMO TRADE":"SIMULATED"}
+            </button>
+          </div>
+          {demoAccountInfo && <div style={{fontSize:11,marginTop:8,color:"#4ade80"}}>Balance: {demoAccountInfo.balance} {demoAccountInfo.currency} (Virtual) • ID: {demoAccountInfo.loginid}</div>}
+          <div style={{display:"flex",gap:8,marginTop:8,alignItems:"center"}}>
+            <span style={{fontSize:11}}>Stake $</span>
+            <input type="number" value={stake} onChange={e=>setStake(Number(e.target.value))} style={{width:70,background:"#1e293b",color:"white",border:"1px solid #475569",borderRadius:4,padding:5}} />
+            <span style={{fontSize:10,color:"#8a9bb5"}}>for LIVE DEMO trades only (5 min Rise/Fall)</span>
+          </div>
+        </div>
+
         <div style={{display:"flex",gap:10}}>
           <button onClick={startRobot} disabled={running} style={{flex:1,padding:14,border:"none",borderRadius:8,fontWeight:900,background:"#10b981",color:"white",opacity:running?0.5:1}}>▶ START ROBOT</button>
           <button onClick={stopRobot} style={{flex:1,padding:14,border:"none",borderRadius:8,fontWeight:900,background:"#dc2626",color:"white"}}>■ STOP</button>
@@ -371,28 +464,23 @@ export default function App(){
         <div style={{height:5,background:"#1e2d45",borderRadius:3,margin:"12px 0 8px"}}><div style={{height:"100%",background:"#3b82f6",width:`${progress}%`}} /></div>
         <div style={{fontSize:11,color:"#8a9bb5"}}>Scan progress: {scanned}/{symbols.length} · {progress}% · Every 5m · UTC: {new Date(clock*1000).toISOString().slice(11,19)} · Last scan: {lastScan}</div>
         <div style={{background:isTradingHours?"#14532d":"#3f1d1d",color:isTradingHours?"#4ade80":"#f87171",padding:10,borderRadius:8,fontSize:12,fontWeight:800,textAlign:"center",marginTop:10}}>TRADING HOURS: {isTradingHours?"ACTIVE":"PAUSED"} · 07:00–21:59 UTC</div>
-        <div style={{display:"flex",gap:8,marginTop:12,fontSize:11}}>
-          <label>Balance $ <input type="number" value={balance} onChange={e=>setBalance(Number(e.target.value))} style={{width:80,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:4,padding:4}} /></label>
-          <label>Risk % <input type="number" value={riskPct} onChange={e=>setRiskPct(Number(e.target.value))} style={{width:50,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:4,padding:4}} /></label>
-          <label>Lots <input type="number" step="0.01" value={fixedLots} onChange={e=>setFixedLots(Number(e.target.value))} style={{width:60,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:4,padding:4}} /></label>
-        </div>
       </div>
+
       <div onClick={()=>setShowStats(!showStats)} style={{background:"#131e32",border:"1px solid #24334b",borderRadius:12,margin:12,padding:14,display:"flex",justifyContent:"space-between",cursor:"pointer"}}>
         <span style={{fontSize:12,fontWeight:900}}>ROBOT STATISTICS</span><span style={{color:"#60a5fa",fontSize:18}}>{showStats?"−":"+"}</span>
       </div>
       {showStats&&(
         <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:12,margin:"0 12px 12px",padding:14,display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+          <div style={{background:"#0f172a",padding:10,borderRadius:8}}><span style={{fontSize:10,color:"#8a9bb5"}}>MODE</span><b style={{display:"block",fontSize:14}}>{liveMode}</b></div>
+          <div style={{background:"#0f172a",padding:10,borderRadius:8}}><span style={{fontSize:10,color:"#8a9bb5"}}>DEMO BALANCE</span><b style={{display:"block",fontSize:14}}>{demoAccountInfo?`${demoAccountInfo.balance} ${demoAccountInfo.currency}`:"—"}</b></div>
           <div style={{background:"#0f172a",padding:10,borderRadius:8}}><span style={{fontSize:10,color:"#8a9bb5"}}>OPEN TRADES</span><b style={{display:"block",fontSize:18}}>{openTrades.length} / 4</b></div>
-          <div style={{background:"#0f172a",padding:10,borderRadius:8}}><span style={{fontSize:10,color:"#8a9bb5"}}>DAILY TRADES</span><b style={{display:"block",fontSize:18}}>{dailyCount} / 4</b></div>
           <div style={{background:"#0f172a",padding:10,borderRadius:8}}><span style={{fontSize:10,color:"#8a9bb5"}}>TOUCHING NOW</span><b style={{display:"block",fontSize:18}}>{touchingSymbols.length}</b></div>
-          <div style={{background:"#0f172a",padding:10,borderRadius:8}}><span style={{fontSize:10,color:"#8a9bb5"}}>FLOATING P/L</span><b style={{display:"block",fontSize:18,color:floatingPnl>=0?"#4ade80":"#f87171"}}>${fmt(floatingPnl,2)}</b></div>
-          <div style={{background:"#0f172a",padding:10,borderRadius:8}}><span style={{fontSize:10,color:"#8a9bb5"}}>BUY / SELL TOUCHING</span><b style={{display:"block"}}>{buyCount} BUY · {sellCount} SELL</b></div>
-          <div style={{background:"#0f172a",padding:10,borderRadius:8}}><span style={{fontSize:10,color:"#8a9bb5"}}>LAST ACTIVATED</span><b style={{display:"block",fontSize:11}}>{lastActivated}</b></div>
         </div>
       )}
+
       <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:12,margin:12,padding:14}}>
         <div style={{display:"flex",justifyContent:"space-between"}}><span style={{fontSize:12,fontWeight:900}}>VALID M15 BUY / SELL SIGNALS - TOUCHING ONLY</span><span>−</span></div>
-        <p style={{fontSize:11,color:"#8a9bb5",marginTop:8,lineHeight:1.5}}>Only valid signals from completed M15 candles that are CURRENTLY TOUCHING a box are displayed. Tap BUY or SELL to open a simulated demo market trade manually.</p>
+        <p style={{fontSize:11,color:"#8a9bb5",marginTop:8,lineHeight:1.5}}>Only valid signals from completed M15 candles that are CURRENTLY TOUCHING a box. {liveMode==="LIVE_DEMO"?"TAP will place REAL DEMO trade on Deriv.":"TAP will open simulated trade."}</p>
         <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search symbol or market..." style={{width:"100%",padding:12,background:"#0f172a",border:"1px solid #334155",borderRadius:8,color:"white",margin:"12px 0"}} />
         <div style={{display:"flex",gap:6,overflowX:"auto"}}>
           {CATEGORIES.slice(0,6).map(c=>(
@@ -409,46 +497,30 @@ export default function App(){
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
                   <div>
                     <b>{item.display_name||item.symbol}</b>
-                    <div style={{fontSize:10,color:"#94a3b8",marginTop:3}}>fx{item.symbol} · {item.category} · M15 · {item.prioritySymbol?`PRIORITY ${item.prioritySymbol}`:""} · {sig.scannerState}</div>
+                    <div style={{fontSize:10,color:"#94a3b8",marginTop:3}}>{item.category} · M15 · {sig.scannerState}</div>
                     <div style={{fontSize:11,color:"#fbbf24",fontWeight:800,marginTop:6}}>{sig.strategy}</div>
                     <div style={{fontSize:11,color:"#cbd5e1",marginTop:4,lineHeight:1.4}}>{sig.reason}</div>
                     <div style={{fontSize:11,marginTop:6}}>ORANGE HIGH {fmt(sig.boxHigh,7)} · LOW {fmt(sig.boxLow,7)}</div>
-                    {sig.dojiHigh&&<div style={{fontSize:11}}>ZONE HIGH {fmt(sig.dojiHigh,7)} · LOW {fmt(sig.dojiLow,7)}</div>}
-                    <div style={{fontSize:11,color:"#fbbf24",fontWeight:700}}>STRATEGY ENTRY LEVEL: {fmt(sig.entryLevel,7)}</div>
-                    <div style={{fontSize:11,color:"#94a3b8",marginTop:4}}>RSI(3): {sig.rsi?fmt(sig.rsi,1):"—"} · Spread: {sig.spreadKnown?`${fmt(sig.spreadPoints,1)} points`:"Unavailable"} · Touching: YES</div>
+                    <div style={{fontSize:11,color:"#fbbf24",fontWeight:700}}>ENTRY: {fmt(sig.entryLevel,7)}</div>
+                    <div style={{fontSize:11,color:"#94a3b8",marginTop:4}}>RSI: {sig.rsi?fmt(sig.rsi,1):"—"} · Spread: {sig.spreadKnown?`${fmt(sig.spreadPoints,1)} points`:"—"} · Touching: YES</div>
                   </div>
                   <div style={{background:isBuy?"#16a34a":"#dc2626",color:"white",padding:"6px 12px",borderRadius:6,fontWeight:900,fontSize:12}}>{sig.direction}</div>
                 </div>
                 <button onClick={()=>activateSignal(item)} style={{width:"100%",marginTop:12,padding:"14px",border:"none",borderRadius:8,fontWeight:900,fontSize:14,color:"white",background:isBuy?"#16a34a":"#dc2626",cursor:"pointer"}}>
-                  {isBuy?"▲":"▼"} TAP {sig.direction} — OPEN DEMO TRADE
+                  {isBuy?"▲":"▼"} TAP {sig.direction} — {liveMode==="LIVE_DEMO"?`OPEN LIVE DEMO $${stake}`:"OPEN DEMO TRADE"}
                 </button>
               </div>
             );
           })}
         </div>
-        {openTrades.length>0&&<div style={{marginTop:16}}><b style={{fontSize:12}}>OPEN DEMO TRADES</b>{openTrades.map(t=>(
-          <div key={t.id} style={{background:"#0f172a",padding:10,borderRadius:8,marginTop:8,fontSize:11}}>
-            {t.symbol} {t.direction} @ {fmt(t.entry,5)} · SL {fmt(t.sl,5)} TP {fmt(t.tp,5)} · P/L ${fmt(t.floatingPnl,2)}
-          </div>
-        ))}</div>}
-        {closedTrades.length>0&&<div style={{marginTop:12}}><b style={{fontSize:12}}>CLOSED TRADES</b>{closedTrades.slice(0,5).map(t=>(
-          <div key={t.id} style={{background:"#0f172a",padding:8,borderRadius:6,marginTop:6,fontSize:11}}>{t.symbol} {t.direction} {t.exitReason} ${fmt(t.realisedPnl,2)}</div>
-        ))}</div>}
       </div>
+
       <div onClick={()=>setShowScanner(!showScanner)} style={{background:"#131e32",border:"1px solid #24334b",borderRadius:12,margin:12,padding:14,display:"flex",justifyContent:"space-between",cursor:"pointer"}}>
         <span style={{fontSize:12,fontWeight:900}}>BACKGROUND SCANNER - TOUCHING ONLY</span><span style={{color:"#60a5fa",fontSize:18}}>{showScanner?"−":"+"}</span>
       </div>
       {showScanner&&(
         <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:12,margin:"0 12px 12px",padding:14,fontSize:11,color:"#8a9bb5",lineHeight:1.6}}>
-          Scanner runs every 5 minutes. Only pairs currently touching Orange or Doji box are listed above.
-          <div style={{marginTop:8}}>
-            {symbols.filter(s=>signals[s.symbol]?.isTouching).slice(0,20).map(s=>(
-              <div key={s.symbol} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #1e293b",color:"#e6edf7"}}>
-                <span>{s.display_name||s.symbol}</span><span>{signals[s.symbol]?.scannerState} · RSI {signals[s.symbol]?.scannerRsi?fmt(signals[s.symbol].scannerRsi,0):"—"}</span>
-              </div>
-            ))}
-            {symbols.filter(s=>signals[s.symbol]?.isTouching).length===0&&<div>No pairs touching right now.</div>}
-          </div>
+          Scanner runs every 5 minutes. Only touching pairs listed above.
         </div>
       )}
     </div>
