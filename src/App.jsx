@@ -3,7 +3,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 const WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public";
 const TIMEFRAME = 900;
 const CANDLE_COUNT = 220;
-const SCAN_INTERVAL = 120000;
+const SCAN_INTERVAL = 300000; // 5 MINUTES - CHANGED FROM 10 SECONDS
 const TRADING_START_HOUR = 7;
 const TRADING_END_HOUR = 22;
 const ARM_DISTANCE_PIPS = 3;
@@ -122,14 +122,10 @@ function findClosedEntrySignal(candles,symbol,category,marketPip){
   if(!isTradingTime(candle.epoch)) return {...empty,...boxInfo,reason:"Trading paused outside 07:00–22:00 UTC"};
   const color=candleColor(candle);
   const openAbove=candle.open>orangeBox.high, openBelow=candle.open<orangeBox.low, closeAbove=candle.close>orangeBox.high, closeBelow=candle.close<orangeBox.low, closeInside=candle.close>=orangeBox.low&&candle.close<=orangeBox.high;
-
-  // ORANGE RETEST
   if(openAbove&&color==="RED"&&candle.low>=orangeBox.low&&candle.low<=orangeBox.high&&closeAbove) return {...makeSignal({direction:"BUY",strategy:"ORANGE RETEST BUY",candle,orangeBox,pip,entryLevel:orangeBox.high,rsi,reason:"Red candle opened above, wicked into Orange Box and closed above"}),...boxInfo};
   if(openBelow&&color==="GREEN"&&candle.high>=orangeBox.low&&candle.high<=orangeBox.high&&closeBelow) return {...makeSignal({direction:"SELL",strategy:"ORANGE RETEST SELL",candle,orangeBox,pip,entryLevel:orangeBox.low,rsi,reason:"Green candle opened below, wicked into Orange Box and closed below"}),...boxInfo};
-  // ORANGE BREAK-IN - CONTINUATION
   if(openAbove&&color==="RED"&&closeInside) return {...makeSignal({direction:"SELL",strategy:"ORANGE BREAK-IN SELL",candle,orangeBox,pip,entryLevel:orangeBox.low-pip,rsi,reason:"Red candle opened above Orange Box and closed inside - continuation"}),...boxInfo};
   if(openBelow&&color==="GREEN"&&closeInside) return {...makeSignal({direction:"BUY",strategy:"ORANGE BREAK-IN BUY",candle,orangeBox,pip,entryLevel:orangeBox.high+pip,rsi,reason:"Green candle opened below Orange Box and closed inside - continuation"}),...boxInfo};
-
   for(const zone of zones){
     if(!zone.armed||zone.touchCount>=2) continue;
     const zoA=candle.open>zone.high, zoB=candle.open<zone.low, zcA=candle.close>zone.high, zcB=candle.close<zone.low, zcI=candle.close>=zone.low&&candle.close<=zone.high;
@@ -145,8 +141,6 @@ function findClosedEntrySignal(candles,symbol,category,marketPip){
   }
   return {...empty,...boxInfo,reason:"No valid closed M15 entry. Waiting for next candle."};
 }
-
-// === TOUCHING ONLY SCANNER ===
 function getLiveScannerState({candles,liveCandle,price,orangeBox,zones,pip}){
   if(!orangeBox||!Number.isFinite(price)) return {state:"WAITING FOR ORANGE BOX",proximity:Infinity,distance:null,touching:false};
   const current=liveCandle||candles[candles.length-1]; if(!current) return {state:"WAITING",proximity:Infinity,distance:null,touching:false};
@@ -284,7 +278,7 @@ export default function App(){
       await scanAll(list); if(!runningRef.current) return;
       if(scanTimerRef.current) clearInterval(scanTimerRef.current);
       scanTimerRef.current=setInterval(()=>{ if(runningRef.current) scanAll(marketsRef.current); },SCAN_INTERVAL);
-      setMessage("Robot running. Scanner checks every 10 seconds. Entries require a completed M15 candle + TOUCHING box.");
+      setMessage("Robot running. Scanner checks every 5 minutes. Entries require a completed M15 candle + TOUCHING box.");
     }catch(e){ runningRef.current=false; setRunning(false); setMessage(e.message); }
   };
   const stopRobot=()=>{
@@ -330,7 +324,7 @@ export default function App(){
         const openSyms=[...new Set(ordersRef.current.filter(o=>o.status==="OPEN DEMO TRADE").map(o=>o.symbol))];
         const prioSyms=[...new Set(marketsRef.current.filter(i=>i.prioritySymbol).map(i=>i.symbol))];
         for(const s of [...new Set([...prioSyms,...openSyms])]){ if(!runningRef.current) break; await subscribeMarket(s); }
-        if(!runningRef.current) return; let list=marketsRef.current; if(!list.length) list=await discoverMarkets(); if(runningRef.current&&list.length){ setMessage("Connection restored. Resuming 10-second scans..."); await scanAll(list); }
+        if(!runningRef.current) return; let list=marketsRef.current; if(!list.length) list=await discoverMarkets(); if(runningRef.current&&list.length){ setMessage("Connection restored. Resuming 5-minute scans..."); await scanAll(list); }
       }catch(e){ if(runningRef.current){ setMessage(`Reconnection failed: ${e.message}`); scheduleReconnect(); } }finally{ reconnectingRef.current=false; }
     };
     const hR=()=>recover(), hO=()=>{ if(runningRef.current) recover(); }, hV=()=>{ if(document.visibilityState==="visible"&&runningRef.current) recover(); };
@@ -339,10 +333,9 @@ export default function App(){
   },[connect,scanAll,subscribeMarket,discoverMarkets,scheduleReconnect]);
   useEffect(()=>()=>{ runningRef.current=false; if(scanTimerRef.current) clearInterval(scanTimerRef.current); if(reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current); if(socketRef.current) socketRef.current.close(); pendingRequestsRef.current.forEach(p=>clearTimeout(p.timeout)); pendingRequestsRef.current.clear(); },[]);
 
-  // TOUCHING ONLY FILTER
   const touchingSymbols = useMemo(()=> symbols.filter(item=>{
     const sig=signals[item.symbol]; if(!sig) return false;
-    if(!sig.isTouching) return false; // ONLY TOUCHING
+    if(!sig.isTouching) return false;
     if(sig.direction!=="BUY"&&sig.direction!=="SELL") return false;
     if(category!=="All"&&item.category!==category) return false;
     const term=search.toLowerCase(); if(term&&!String(item.display_name||"").toLowerCase().includes(term)&&!String(item.symbol||"").toLowerCase().includes(term)) return false;
@@ -367,8 +360,6 @@ export default function App(){
         <div><div style={{fontSize:22,fontWeight:900,letterSpacing:1}}>iFX BILLIONAIRE</div><div style={{fontSize:9,color:"#8a9bb5",letterSpacing:1.5}}>M15 • ORANGE BOX • DOJI • ENGULFING</div></div>
         <div style={{background:running?"#0f3d1e":"#3a1a1a",color:running?"#4ade80":"#ff6b6b",padding:"6px 12px",borderRadius:20,fontSize:11,fontWeight:800}}>● {running?"RUNNING":"STOPPED"}</div>
       </div>
-
-      {/* ROBOT CONTROL */}
       <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:12,margin:12,padding:14}}>
         <div style={{fontSize:12,fontWeight:900,letterSpacing:1}}>ROBOT CONTROL</div>
         <div style={{display:"flex",gap:10,alignItems:"center",margin:"10px 0",fontSize:11}}><span>● {connectionText}</span><span style={{background:"#4a3a12",color:"#fbbf24",padding:"3px 8px",borderRadius:4,fontSize:10,fontWeight:800}}>SIMULATED DEMO</span></div>
@@ -378,7 +369,7 @@ export default function App(){
         </div>
         <div style={{fontSize:11,color:"#8a9bb5",marginTop:10,lineHeight:1.5}}>{message}</div>
         <div style={{height:5,background:"#1e2d45",borderRadius:3,margin:"12px 0 8px"}}><div style={{height:"100%",background:"#3b82f6",width:`${progress}%`}} /></div>
-        <div style={{fontSize:11,color:"#8a9bb5"}}>Scan progress: {scanned}/{symbols.length} · {progress}% · Every 10s · UTC: {new Date(clock*1000).toISOString().slice(11,19)} · Last scan: {lastScan}</div>
+        <div style={{fontSize:11,color:"#8a9bb5"}}>Scan progress: {scanned}/{symbols.length} · {progress}% · Every 5m · UTC: {new Date(clock*1000).toISOString().slice(11,19)} · Last scan: {lastScan}</div>
         <div style={{background:isTradingHours?"#14532d":"#3f1d1d",color:isTradingHours?"#4ade80":"#f87171",padding:10,borderRadius:8,fontSize:12,fontWeight:800,textAlign:"center",marginTop:10}}>TRADING HOURS: {isTradingHours?"ACTIVE":"PAUSED"} · 07:00–21:59 UTC</div>
         <div style={{display:"flex",gap:8,marginTop:12,fontSize:11}}>
           <label>Balance $ <input type="number" value={balance} onChange={e=>setBalance(Number(e.target.value))} style={{width:80,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:4,padding:4}} /></label>
@@ -386,8 +377,6 @@ export default function App(){
           <label>Lots <input type="number" step="0.01" value={fixedLots} onChange={e=>setFixedLots(Number(e.target.value))} style={{width:60,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:4,padding:4}} /></label>
         </div>
       </div>
-
-      {/* ROBOT STATISTICS */}
       <div onClick={()=>setShowStats(!showStats)} style={{background:"#131e32",border:"1px solid #24334b",borderRadius:12,margin:12,padding:14,display:"flex",justifyContent:"space-between",cursor:"pointer"}}>
         <span style={{fontSize:12,fontWeight:900}}>ROBOT STATISTICS</span><span style={{color:"#60a5fa",fontSize:18}}>{showStats?"−":"+"}</span>
       </div>
@@ -401,8 +390,6 @@ export default function App(){
           <div style={{background:"#0f172a",padding:10,borderRadius:8}}><span style={{fontSize:10,color:"#8a9bb5"}}>LAST ACTIVATED</span><b style={{display:"block",fontSize:11}}>{lastActivated}</b></div>
         </div>
       )}
-
-      {/* VALID SIGNALS - TOUCHING ONLY */}
       <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:12,margin:12,padding:14}}>
         <div style={{display:"flex",justifyContent:"space-between"}}><span style={{fontSize:12,fontWeight:900}}>VALID M15 BUY / SELL SIGNALS - TOUCHING ONLY</span><span>−</span></div>
         <p style={{fontSize:11,color:"#8a9bb5",marginTop:8,lineHeight:1.5}}>Only valid signals from completed M15 candles that are CURRENTLY TOUCHING a box are displayed. Tap BUY or SELL to open a simulated demo market trade manually.</p>
@@ -412,9 +399,8 @@ export default function App(){
             <button key={c} onClick={()=>setCategory(c)} style={{padding:"7px 14px",borderRadius:20,background:category===c?"#0ea5e9":"#1e293b",color:category===c?"white":"#94a3b8",fontSize:12,border:"none",whiteSpace:"nowrap"}}>{c}</button>
           ))}
         </div>
-
         <div style={{marginTop:10}}>
-          {visibleSymbols.length===0&&(<div style={{padding:20,textAlign:"center",color:"#64748b",fontSize:12}}>No pairs currently touching a box.<br/>Scanner runs every 10s. Waiting for touch...</div>)}
+          {visibleSymbols.length===0&&(<div style={{padding:20,textAlign:"center",color:"#64748b",fontSize:12}}>No pairs currently touching a box.<br/>Scanner runs every 5 minutes. Waiting for touch...</div>)}
           {visibleSymbols.map(item=>{
             const sig=signals[item.symbol]; if(!sig) return null;
             const isBuy=sig.direction==="BUY";
@@ -433,7 +419,6 @@ export default function App(){
                   </div>
                   <div style={{background:isBuy?"#16a34a":"#dc2626",color:"white",padding:"6px 12px",borderRadius:6,fontWeight:900,fontSize:12}}>{sig.direction}</div>
                 </div>
-                {/* TAP BUTTON - BIG */}
                 <button onClick={()=>activateSignal(item)} style={{width:"100%",marginTop:12,padding:"14px",border:"none",borderRadius:8,fontWeight:900,fontSize:14,color:"white",background:isBuy?"#16a34a":"#dc2626",cursor:"pointer"}}>
                   {isBuy?"▲":"▼"} TAP {sig.direction} — OPEN DEMO TRADE
                 </button>
@@ -441,8 +426,6 @@ export default function App(){
             );
           })}
         </div>
-
-        {/* OPEN TRADES */}
         {openTrades.length>0&&<div style={{marginTop:16}}><b style={{fontSize:12}}>OPEN DEMO TRADES</b>{openTrades.map(t=>(
           <div key={t.id} style={{background:"#0f172a",padding:10,borderRadius:8,marginTop:8,fontSize:11}}>
             {t.symbol} {t.direction} @ {fmt(t.entry,5)} · SL {fmt(t.sl,5)} TP {fmt(t.tp,5)} · P/L ${fmt(t.floatingPnl,2)}
@@ -452,14 +435,12 @@ export default function App(){
           <div key={t.id} style={{background:"#0f172a",padding:8,borderRadius:6,marginTop:6,fontSize:11}}>{t.symbol} {t.direction} {t.exitReason} ${fmt(t.realisedPnl,2)}</div>
         ))}</div>}
       </div>
-
-      {/* BACKGROUND SCANNER - LAST */}
       <div onClick={()=>setShowScanner(!showScanner)} style={{background:"#131e32",border:"1px solid #24334b",borderRadius:12,margin:12,padding:14,display:"flex",justifyContent:"space-between",cursor:"pointer"}}>
         <span style={{fontSize:12,fontWeight:900}}>BACKGROUND SCANNER - TOUCHING ONLY</span><span style={{color:"#60a5fa",fontSize:18}}>{showScanner?"−":"+"}</span>
       </div>
       {showScanner&&(
         <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:12,margin:"0 12px 12px",padding:14,fontSize:11,color:"#8a9bb5",lineHeight:1.6}}>
-          Scanner runs every 10 seconds. Only pairs currently touching Orange or Doji box are listed above.
+          Scanner runs every 5 minutes. Only pairs currently touching Orange or Doji box are listed above.
           <div style={{marginTop:8}}>
             {symbols.filter(s=>signals[s.symbol]?.isTouching).slice(0,20).map(s=>(
               <div key={s.symbol} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #1e293b",color:"#e6edf7"}}>
