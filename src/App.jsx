@@ -1,19 +1,25 @@
-
 import React, { useCallback, useEffect, useRef, useState } from "react";
 
 const WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public";
 
 const TIMEFRAME = 900;
-const CANDLE_COUNT = 1000;
-const SA_OFFSET = 7200;
+const CANDLE_COUNT = 220;
+const SCAN_INTERVAL = 10000;
 
 const SL_OFFSET_PIPS = 15;
-const NORMAL_RR = 4;
-const FADE_SL_OFFSET_PIPS = 7000;
-const FADE_RR = 4;
-
+const TAKE_PROFIT_MULTIPLE = 4;
+const TOUCH_BUFFER_PIPS = 2;
+const MAX_SPREAD_POINTS = 300;
 const MAX_DAILY_TRADES = 4;
 const MAX_OPEN_TRADES = 4;
+
+const PRIORITY_SYMBOLS = [
+  "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD",
+  "USDCAD", "NZDUSD", "EURJPY", "GBPJPY", "EURGBP",
+  "XAUUSD", "US30", "NAS100", "AUDCAD", "NZDJPY",
+  "GBPCAD", "AUDJPY", "EURAUD", "EURCAD", "NZDCHF",
+  "CADJPY"
+];
 
 const CATEGORIES = [
   "All", "Forex", "Indices", "Metals",
@@ -23,23 +29,39 @@ const CATEGORIES = [
 const fmt = (n, digits = 5) =>
   Number.isFinite(Number(n)) ? Number(n).toFixed(digits) : "—";
 
-function saDate(epoch) {
-  return new Date((epoch + SA_OFFSET) * 1000)
-    .toISOString().slice(0, 10);
+function serverDay(epoch) {
+  return new Date(epoch * 1000).toISOString().slice(0, 10);
 }
 
-function saHour(epoch) {
-  return new Date((epoch + SA_OFFSET) * 1000).getUTCHours();
+function serverHour(epoch) {
+  return new Date(epoch * 1000).getUTCHours();
 }
 
-function saMinute(epoch) {
-  return new Date((epoch + SA_OFFSET) * 1000).getUTCMinutes();
+function serverMinute(epoch) {
+  return new Date(epoch * 1000).getUTCMinutes();
 }
 
 function candleColor(c) {
   if (c.close > c.open) return "GREEN";
   if (c.close < c.open) return "RED";
   return "NEUTRAL";
+}
+
+function normalizeSymbol(symbol) {
+  return String(symbol || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+function priorityMatch(symbol) {
+  const normalized = normalizeSymbol(symbol);
+
+  return PRIORITY_SYMBOLS.find(priority =>
+    normalized.includes(priority)
+  ) || null;
+}
+
+function priorityIndex(symbol) {
+  const match = priorityMatch(symbol);
+  return match ? PRIORITY_SYMBOLS.indexOf(match) : 999;
 }
 
 function categoryOf(s) {
@@ -50,46 +72,70 @@ function categoryOf(s) {
   const symbol = String(s.symbol || "").toLowerCase();
   const type = String(s.symbol_type || "").toLowerCase();
 
-  if (market.includes("forex") || sub.includes("forex") ||
-      type.includes("forex")) return "Forex";
+  if (
+    market.includes("forex") ||
+    sub.includes("forex") ||
+    type.includes("forex")
+  ) return "Forex";
 
-  if (market.includes("synthetic") || sub.includes("synthetic") ||
-      subgroup.includes("synthetic") || symbol.startsWith("1hz") ||
-      symbol.startsWith("r_") || symbol.includes("boom") ||
-      symbol.includes("crash") || symbol.includes("step")) {
-    return "Synthetics";
-  }
+  if (
+    market.includes("synthetic") ||
+    sub.includes("synthetic") ||
+    subgroup.includes("synthetic") ||
+    symbol.startsWith("1hz") ||
+    symbol.startsWith("r_") ||
+    symbol.includes("boom") ||
+    symbol.includes("crash") ||
+    symbol.includes("step")
+  ) return "Synthetics";
 
-  if (market.includes("crypt") || sub.includes("crypt") ||
-      subgroup.includes("crypt") || name.includes("bitcoin") ||
-      name.includes("ethereum") || type.includes("crypt")) {
-    return "Crypto";
-  }
+  if (
+    market.includes("crypt") ||
+    sub.includes("crypt") ||
+    subgroup.includes("crypt") ||
+    name.includes("bitcoin") ||
+    name.includes("ethereum") ||
+    type.includes("crypt")
+  ) return "Crypto";
 
-  if (market.includes("stock") || sub.includes("stock") ||
-      subgroup.includes("stock") || market.includes("share") ||
-      type.includes("stock")) return "Stocks";
+  if (
+    market.includes("stock") ||
+    sub.includes("stock") ||
+    subgroup.includes("stock") ||
+    market.includes("share") ||
+    type.includes("stock")
+  ) return "Stocks";
 
-  if (market.includes("index") || sub.includes("index") ||
-      subgroup.includes("index") || type.includes("index")) {
-    return "Indices";
-  }
+  if (
+    market.includes("index") ||
+    sub.includes("index") ||
+    subgroup.includes("index") ||
+    type.includes("index")
+  ) return "Indices";
 
-  if (market.includes("commodit") || sub.includes("metal") ||
-      subgroup.includes("metal") || name.includes("gold") ||
-      name.includes("silver") || name.includes("platinum") ||
-      name.includes("palladium")) return "Metals";
+  if (
+    market.includes("commodit") ||
+    sub.includes("metal") ||
+    subgroup.includes("metal") ||
+    name.includes("gold") ||
+    name.includes("silver") ||
+    name.includes("platinum") ||
+    name.includes("palladium")
+  ) return "Metals";
 
   return "Other";
 }
 
 function pipSize(symbol, category, candles, marketPip) {
-  if (Number.isFinite(Number(marketPip)) && Number(marketPip) > 0) {
-    return Number(marketPip);
-  }
+  if (
+    Number.isFinite(Number(marketPip)) &&
+    Number(marketPip) > 0
+  ) return Number(marketPip);
 
   if (category === "Forex") {
-    return symbol.toUpperCase().includes("JPY") ? 0.01 : 0.0001;
+    return String(symbol).toUpperCase().includes("JPY")
+      ? 0.01
+      : 0.0001;
   }
 
   const last = candles[candles.length - 1]?.close || 1;
@@ -98,17 +144,51 @@ function pipSize(symbol, category, candles, marketPip) {
   return Math.pow(10, -Math.min(decimals, 8));
 }
 
-function getVolumeLabel(candle) {
-  if (candle && Number.isFinite(Number(candle.volume)) &&
-      candle.volume !== null && candle.volume !== "") {
-    return fmt(candle.volume, 0);
-  }
-  return "N/A";
+function pointSize(price) {
+  const decimals = (String(price).split(".")[1] || "").length;
+  return Math.pow(10, -Math.min(decimals, 10));
+}
+
+function candleBody(c) {
+  return {
+    high: Math.max(c.open, c.close),
+    low: Math.min(c.open, c.close)
+  };
+}
+
+function isDoji(c) {
+  const range = c.high - c.low;
+
+  if (range <= 0) return false;
+
+  const body = Math.abs(c.close - c.open);
+
+  return body <= range * 0.20;
+}
+
+function isEngulfing(current, previous) {
+  const currentColor = candleColor(current);
+  const previousColor = candleColor(previous);
+
+  if (
+    currentColor === "NEUTRAL" ||
+    previousColor === "NEUTRAL" ||
+    currentColor === previousColor
+  ) return false;
+
+  const currentBody = candleBody(current);
+  const previousBody = candleBody(previous);
+
+  return (
+    currentBody.high >= previousBody.high &&
+    currentBody.low <= previousBody.low
+  );
 }
 
 function makeBoxId(day, high, low) {
   return [
-    "BLUE", day,
+    "ORANGE",
+    day,
     Number(high).toPrecision(12),
     Number(low).toPrecision(12)
   ].join("-");
@@ -126,6 +206,7 @@ function calculateRSI(candles, index, period = 3) {
 
   for (let i = 1; i <= period; i++) {
     const change = candles[i].close - candles[i - 1].close;
+
     if (change > 0) gains += change;
     if (change < 0) losses += Math.abs(change);
   }
@@ -150,369 +231,729 @@ function calculateRSI(candles, index, period = 3) {
   if (averageGain === 0) return 0;
 
   const rs = averageGain / averageLoss;
+
   return 100 - 100 / (1 + rs);
 }
 
-function insideBox(c, box) {
-  return c.open >= box.low && c.open <= box.high;
+// ======================================================
+// 1. ORANGE BOX
+// ======================================================
+
+function buildOrangeBox(candles, day) {
+  const sessionCandles = candles.filter(c =>
+    serverDay(c.epoch) === day &&
+    serverHour(c.epoch) === 0 &&
+    [0, 15, 30, 45].includes(serverMinute(c.epoch))
+  ).sort((a, b) => a.epoch - b.epoch);
+
+  const firstFour = sessionCandles.slice(0, 4);
+
+  if (firstFour.length !== 4) return null;
+
+  const consecutive = firstFour.every((c, i) =>
+    i === 0 ||
+    c.epoch - firstFour[i - 1].epoch === TIMEFRAME
+  );
+
+  if (!consecutive) return null;
+
+  const high = Math.max(...firstFour.map(c => c.high));
+  const low = Math.min(...firstFour.map(c => c.low));
+
+  if (!(high > low)) return null;
+
+  return {
+    type: "ORANGE",
+    day,
+    high,
+    low,
+    size: high - low,
+    createdEpoch: firstFour[0].epoch,
+    createdIndex: candles.indexOf(firstFour[3]),
+    boxId: makeBoxId(day, high, low)
+  };
 }
 
 // ======================================================
-// 1. THE ONLY BLUE BOX
+// 2. DOJI / ENGULFING ZONES
 // ======================================================
 
-function buildBlueBoxes(candles) {
-  const byDay = new Map();
+function buildDojiZones(candles, orangeBox) {
+  if (!orangeBox) {
+    return {
+      above: null,
+      below: null
+    };
+  }
 
-  candles.forEach((c, index) => {
-    if (
-      saHour(c.epoch) !== 0 ||
-      ![0, 15, 30, 45].includes(saMinute(c.epoch))
-    ) return;
+  const start = Math.max(1, candles.length - 25);
+  const candidates = [];
 
-    const day = saDate(c.epoch);
+  for (let i = start; i < candles.length; i++) {
+    const c = candles[i];
+    const previous = candles[i - 1];
 
-    if (!byDay.has(day)) byDay.set(day, []);
+    const doji = isDoji(c);
+    const engulfing = isEngulfing(c, previous);
 
-    byDay.get(day).push({ ...c, index });
-  });
+    if (!doji && !engulfing) continue;
 
-  const boxes = [];
+    let side = null;
 
-  for (const [day, dayCandles] of byDay.entries()) {
-    const firstFour = dayCandles
-      .sort((a, b) => a.epoch - b.epoch)
-      .slice(0, 4);
+    if (c.low > orangeBox.high) {
+      side = "ABOVE";
+    } else if (c.high < orangeBox.low) {
+      side = "BELOW";
+    }
 
-    if (firstFour.length !== 4) continue;
+    if (!side) continue;
 
-    const consecutive = firstFour.every((c, i) =>
-      i === 0 ||
-      c.epoch - firstFour[i - 1].epoch === TIMEFRAME
-    );
-
-    if (!consecutive) continue;
-
-    const high = Math.max(...firstFour.map(c => c.high));
-    const low = Math.min(...firstFour.map(c => c.low));
-
-    boxes.push({
-      type: "BLUE",
-      day,
-      high,
-      low,
-      createdEpoch: firstFour[0].epoch,
-      createdIndex: firstFour[3].index,
-      boxId: makeBoxId(day, high, low)
+    candidates.push({
+      type: doji ? "DOJI" : "ENGULFING",
+      side,
+      high: c.high,
+      low: c.low,
+      sourceIndex: i,
+      sourceEpoch: c.epoch,
+      sourceCandle: c,
+      touchCount: 0,
+      invalidated: false,
+      id: `${orangeBox.boxId}|${side}|${c.epoch}`
     });
   }
 
-  return boxes;
-}
+  const latestAbove = candidates
+    .filter(z => z.side === "ABOVE")
+    .sort((a, b) => b.sourceIndex - a.sourceIndex)[0] || null;
 
-// ======================================================
-// 2. BREAKOUT - MOST RECENT CONFIRMED BREAKOUT
-// ======================================================
+  const latestBelow = candidates
+    .filter(z => z.side === "BELOW")
+    .sort((a, b) => b.sourceIndex - a.sourceIndex)[0] || null;
 
-function findBreakout(candles, box, endIndex) {
-  for (let i = endIndex; i > box.createdIndex; i--) {
-    const c = candles[i];
+  function calculateTouches(zone) {
+    if (!zone) return null;
 
-    if (!insideBox(c, box)) continue;
+    let touches = 0;
+    let lastTouchIndex = -1;
 
-    if (c.close > box.high) {
-      return {
-        index: i,
-        epoch: c.epoch,
-        direction: "BUY",
-        candle: c
-      };
+    for (
+      let i = zone.sourceIndex + 1;
+      i < candles.length;
+      i++
+    ) {
+      const c = candles[i];
+
+      const intersects =
+        c.high >= zone.low &&
+        c.low <= zone.high;
+
+      if (intersects && i !== lastTouchIndex) {
+        touches++;
+        lastTouchIndex = i;
+      }
     }
 
-    if (c.close < box.low) {
-      return {
-        index: i,
-        epoch: c.epoch,
-        direction: "SELL",
-        candle: c
-      };
+    return {
+      ...zone,
+      touchCount: touches,
+      invalidated: touches >= 2,
+      firstTouchIndex: touches >= 1
+        ? lastTouchIndex
+        : null
+    };
+  }
+
+  const above = calculateTouches(latestAbove);
+  const below = calculateTouches(latestBelow);
+
+  return {
+    above: above && !above.invalidated ? above : null,
+    below: below && !below.invalidated ? below : null
+  };
+}
+
+// ======================================================
+// 3. DAILY REFERENCE CANDLES
+// ======================================================
+
+function buildDailyCandles(candles, today) {
+  const daily = new Map();
+
+  for (const c of candles) {
+    const day = serverDay(c.epoch);
+
+    if (!daily.has(day)) {
+      daily.set(day, {
+        day,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        firstEpoch: c.epoch,
+        lastEpoch: c.epoch
+      });
+    } else {
+      const d = daily.get(day);
+
+      d.high = Math.max(d.high, c.high);
+      d.low = Math.min(d.low, c.low);
+
+      if (c.epoch < d.firstEpoch) {
+        d.open = c.open;
+        d.firstEpoch = c.epoch;
+      }
+
+      if (c.epoch > d.lastEpoch) {
+        d.close = c.close;
+        d.lastEpoch = c.epoch;
+      }
     }
   }
 
-  return null;
+  const todayDate = new Date(`${today}T00:00:00Z`);
+  const yesterdayDate = new Date(todayDate.getTime() - 86400000);
+
+  const yesterday = yesterdayDate.toISOString().slice(0, 10);
+
+  return {
+    today: daily.get(today) || null,
+    yesterday: daily.get(yesterday) || null
+  };
 }
 
 // ======================================================
-// 3. RETEST
+// 4. CLOSED-CANDLE ENTRY LOGIC
 // ======================================================
 
-function buildRetestSignal(c, box, pip) {
-  const color = candleColor(c);
-
-  // HIGH POKE + RED + CLOSE INSIDE = BUY
-  if (
-    color === "RED" &&
-    c.high > box.high &&
-    c.close >= box.low &&
-    c.close <= box.high
-  ) {
-    return {
-      direction: "BUY",
-      boxType: "BLUE",
-      touchType: "BLUE HIGH RETEST",
-      signalId: `${box.boxId}|HIGH_RETEST|${c.epoch}`,
-      boxId: box.boxId,
-      boxHigh: box.high,
-      boxLow: box.low,
-      pip,
-      candleTime: c.epoch,
-      volume: getVolumeLabel(c),
-      reason: "Red candle poked above blue high and closed inside"
-    };
-  }
-
-  // LOW POKE + GREEN + CLOSE INSIDE = SELL
-  if (
-    color === "GREEN" &&
-    c.low < box.low &&
-    c.close >= box.low &&
-    c.close <= box.high
-  ) {
-    return {
-      direction: "SELL",
-      boxType: "BLUE",
-      touchType: "BLUE LOW RETEST",
-      signalId: `${box.boxId}|LOW_RETEST|${c.epoch}`,
-      boxId: box.boxId,
-      boxHigh: box.high,
-      boxLow: box.low,
-      pip,
-      candleTime: c.epoch,
-      volume: getVolumeLabel(c),
-      reason: "Green candle poked below blue low and closed inside"
-    };
-  }
-
-  return null;
+function makeSignal({
+  direction,
+  strategy,
+  candle,
+  orangeBox,
+  pip,
+  zone = null,
+  rsi = null,
+  reason
+}) {
+  return {
+    direction,
+    strategy,
+    boxType: zone ? zone.type : "ORANGE",
+    touchType: strategy,
+    signalId: `${orangeBox.boxId}|${strategy}|${candle.epoch}`,
+    boxId: orangeBox.boxId,
+    boxHigh: orangeBox.high,
+    boxLow: orangeBox.low,
+    boxSize: orangeBox.size,
+    dojiHigh: zone?.high ?? null,
+    dojiLow: zone?.low ?? null,
+    dojiId: zone?.id ?? null,
+    dojiSide: zone?.side ?? null,
+    pip,
+    candleTime: candle.epoch,
+    candleColor: candleColor(candle),
+    rsi,
+    volume: candle.volume ?? null,
+    reason
+  };
 }
 
-// ======================================================
-// 4. FADE AFTER BREAKOUT
-// ======================================================
-
-function buildFadeSignal(candles, box, breakout, lastIndex, pip) {
-  if (!breakout) return null;
-
-  const age = lastIndex - breakout.index;
-
-  // Only the next 1st, 2nd or 3rd candles.
-  if (age < 1 || age > 3) return null;
-
-  const c = candles[lastIndex];
-  const color = candleColor(c);
-  const rsi = calculateRSI(candles, lastIndex, 3);
-
-  if (rsi === null || color === "NEUTRAL") return null;
-
-  // BUY BREAKOUT -> GREEN ABOVE BOX + RSI >= 95 -> SELL
-  if (
-    breakout.direction === "BUY" &&
-    color === "GREEN" &&
-    c.close > box.high &&
-    rsi >= 95
-  ) {
-    return {
-      direction: "SELL",
-      boxType: "BLUE",
-      touchType: `FADE SELL · CANDLE ${age}`,
-      isFade: true,
-      fadeAge: age,
-      rsi,
-      fadeCandleHigh: c.high,
-      fadeCandleLow: c.low,
-      boxId: box.boxId,
-      signalId: `${box.boxId}|FADE_SELL|${c.epoch}`,
-      boxHigh: box.high,
-      boxLow: box.low,
-      pip,
-      candleTime: c.epoch,
-      volume: getVolumeLabel(c),
-      reason: `BUY breakout fade: GREEN candle ${age}, RSI(3) ${fmt(rsi, 1)}`
-    };
-  }
-
-  // SELL BREAKOUT -> RED BELOW BOX + RSI <= 5 -> BUY
-  if (
-    breakout.direction === "SELL" &&
-    color === "RED" &&
-    c.close < box.low &&
-    rsi <= 5
-  ) {
-    return {
-      direction: "BUY",
-      boxType: "BLUE",
-      touchType: `FADE BUY · CANDLE ${age}`,
-      isFade: true,
-      fadeAge: age,
-      rsi,
-      fadeCandleHigh: c.high,
-      fadeCandleLow: c.low,
-      boxId: box.boxId,
-      signalId: `${box.boxId}|FADE_BUY|${c.epoch}`,
-      boxHigh: box.high,
-      boxLow: box.low,
-      pip,
-      candleTime: c.epoch,
-      volume: getVolumeLabel(c),
-      reason: `SELL breakout fade: RED candle ${age}, RSI(3) ${fmt(rsi, 1)}`
-    };
-  }
-
-  return null;
-}
-
-// ======================================================
-// 5. COMPLETE STRATEGY ENGINE
-// ======================================================
-
-function findStrategySignal(candles, symbol, category, marketPip) {
+function findClosedEntrySignal(candles, symbol, category, marketPip) {
   const empty = {
     direction: "NONE",
-    reason: "Waiting for a valid Blue Box setup",
+    reason: "Waiting for a valid Orange Box setup",
     boxCount: 0
   };
 
-  if (!candles || candles.length < 10) {
+  if (!candles || candles.length < 30) {
     return {
       ...empty,
-      reason: "Not enough closed M15 candles"
+      reason: "Not enough M15 candles"
     };
   }
 
-  const pip = pipSize(symbol, category, candles, marketPip);
   const lastIndex = candles.length - 1;
-  const last = candles[lastIndex];
-  const today = saDate(last.epoch);
+  const candle = candles[lastIndex];
+  const today = serverDay(candle.epoch);
 
-  const boxes = buildBlueBoxes(candles);
-  const box = boxes.find(b => b.day === today);
+  const orangeBox = buildOrangeBox(candles, today);
 
-  if (!box) {
+  if (!orangeBox) {
     return {
       ...empty,
-      reason: "Waiting for all four 00:00–01:00 SAST candles"
+      reason: "Waiting for four completed 00:00–01:00 server-time candles"
     };
   }
+
+  const pip = pipSize(
+    symbol,
+    category,
+    candles,
+    marketPip
+  );
 
   const boxInfo = {
     boxCount: 1,
-    boxHigh: box.high,
-    boxLow: box.low,
-    boxId: box.boxId,
-    boxDay: box.day
+    boxHigh: orangeBox.high,
+    boxLow: orangeBox.low,
+    boxSize: orangeBox.size,
+    boxId: orangeBox.boxId,
+    boxDay: orangeBox.day
   };
 
-  if (lastIndex <= box.createdIndex) {
+  if (candle.epoch < orangeBox.createdEpoch + TIMEFRAME * 4) {
     return {
       ...empty,
       ...boxInfo,
-      reason: "Blue Box formed. Waiting for a setup."
+      reason: "Orange Box constructed. Waiting for a closed M15 setup."
     };
   }
 
-  // Find latest breakout BEFORE current candle.
-  const previousBreakout = findBreakout(
-    candles,
-    box,
-    lastIndex - 1
-  );
+  const zones = buildDojiZones(candles, orangeBox);
+  const rsi = calculateRSI(candles, lastIndex, 3);
 
-  // Current candle must be a genuine open-inside breakout.
-  const currentBreakout =
-    insideBox(last, box) && last.close > box.high
-      ? "BUY"
-      : insideBox(last, box) && last.close < box.low
-        ? "SELL"
-        : null;
+  const openInside =
+    candle.open >= orangeBox.low &&
+    candle.open <= orangeBox.high;
 
-  // Breakout takes priority.
-  if (currentBreakout) {
+  const closeInside =
+    candle.close >= orangeBox.low &&
+    candle.close <= orangeBox.high;
+
+  const openAbove = candle.open > orangeBox.high;
+  const openBelow = candle.open < orangeBox.low;
+
+  const closeAbove = candle.close > orangeBox.high;
+  const closeBelow = candle.close < orangeBox.low;
+
+  const color = candleColor(candle);
+
+  // --------------------------------------------------
+  // 6.1 BREAKOUT
+  // --------------------------------------------------
+
+  if (openInside && closeAbove && color === "RED") {
     return {
-      direction: currentBreakout,
-      boxType: "BLUE",
-      touchType: "BLUE BREAKOUT",
-      boxId: box.boxId,
-      signalId: `${box.boxId}|BREAKOUT|${currentBreakout}|${last.epoch}`,
-      boxHigh: box.high,
-      boxLow: box.low,
-      pip,
-      candleTime: last.epoch,
-      volume: getVolumeLabel(last),
-      reason: currentBreakout === "BUY"
-        ? "M15 candle opened inside and closed above Blue Box"
-        : "M15 candle opened inside and closed below Blue Box",
+      ...makeSignal({
+        direction: "BUY",
+        strategy: "BREAKOUT BUY",
+        candle,
+        orangeBox,
+        pip,
+        reason: "Red M15 candle opened inside and closed above Orange Box"
+      }),
       ...boxInfo
     };
   }
 
-  // Fade only on candles after an earlier breakout.
-  const fade = buildFadeSignal(
-    candles,
-    box,
-    previousBreakout,
-    lastIndex,
-    pip
-  );
-
-  if (fade) {
+  if (openInside && closeBelow && color === "GREEN") {
     return {
-      ...fade,
+      ...makeSignal({
+        direction: "SELL",
+        strategy: "BREAKOUT SELL",
+        candle,
+        orangeBox,
+        pip,
+        reason: "Green M15 candle opened inside and closed below Orange Box"
+      }),
       ...boxInfo
     };
   }
 
-  // Retest only after a confirmed breakout.
-  if (previousBreakout) {
-    const retest = buildRetestSignal(last, box, pip);
+  // --------------------------------------------------
+  // 6.2 RETEST
+  // --------------------------------------------------
 
-    if (retest) {
-      return {
-        ...retest,
-        ...boxInfo
-      };
-    }
+  if (
+    openAbove &&
+    color === "RED" &&
+    candle.low >= orangeBox.low &&
+    candle.low <= orangeBox.high &&
+    closeAbove
+  ) {
+    return {
+      ...makeSignal({
+        direction: "BUY",
+        strategy: "RETEST BUY",
+        candle,
+        orangeBox,
+        pip,
+        reason: "Red candle opened above, retested the Orange Box and closed above"
+      }),
+      ...boxInfo
+    };
+  }
+
+  if (
+    openBelow &&
+    color === "GREEN" &&
+    candle.high >= orangeBox.low &&
+    candle.high <= orangeBox.high &&
+    closeBelow
+  ) {
+    return {
+      ...makeSignal({
+        direction: "SELL",
+        strategy: "RETEST SELL",
+        candle,
+        orangeBox,
+        pip,
+        reason: "Green candle opened below, retested the Orange Box and closed below"
+      }),
+      ...boxInfo
+    };
+  }
+
+  // --------------------------------------------------
+  // 6.3 BREAK-IN
+  // --------------------------------------------------
+
+  if (
+    openAbove &&
+    color === "RED" &&
+    closeInside
+  ) {
+    return {
+      ...makeSignal({
+        direction: "SELL",
+        strategy: "BREAK-IN SELL",
+        candle,
+        orangeBox,
+        pip,
+        reason: "Red candle opened above and closed back inside Orange Box"
+      }),
+      ...boxInfo
+    };
+  }
+
+  if (
+    openBelow &&
+    color === "GREEN" &&
+    closeInside
+  ) {
+    return {
+      ...makeSignal({
+        direction: "BUY",
+        strategy: "BREAK-IN BUY",
+        candle,
+        orangeBox,
+        pip,
+        reason: "Green candle opened below and closed back inside Orange Box"
+      }),
+      ...boxInfo
+    };
+  }
+
+  // --------------------------------------------------
+  // 6.4 RIDE WAVE
+  // --------------------------------------------------
+
+  if (
+    openInside &&
+    closeAbove &&
+    color === "GREEN" &&
+    rsi !== null &&
+    rsi >= 90
+  ) {
+    return {
+      ...makeSignal({
+        direction: "BUY",
+        strategy: "RIDE WAVE BUY",
+        candle,
+        orangeBox,
+        pip,
+        rsi,
+        reason: `Green breakout candle with RSI(3) ${fmt(rsi, 1)}`
+      }),
+      ...boxInfo
+    };
+  }
+
+  if (
+    openInside &&
+    closeBelow &&
+    color === "RED" &&
+    rsi !== null &&
+    rsi <= 10
+  ) {
+    return {
+      ...makeSignal({
+        direction: "SELL",
+        strategy: "RIDE WAVE SELL",
+        candle,
+        orangeBox,
+        pip,
+        rsi,
+        reason: `Red breakdown candle with RSI(3) ${fmt(rsi, 1)}`
+      }),
+      ...boxInfo
+    };
+  }
+
+  // --------------------------------------------------
+  // 6.5 DOJI FADE
+  // --------------------------------------------------
+
+  if (
+    zones.above &&
+    zones.above.touchCount === 1 &&
+    zones.above.firstTouchIndex === lastIndex &&
+    color === "GREEN"
+  ) {
+    return {
+      ...makeSignal({
+        direction: "SELL",
+        strategy: "DOJI FADE SELL",
+        candle,
+        orangeBox,
+        pip,
+        zone: zones.above,
+        reason: "First touch of the most recent Doji/Engulfing zone above Orange Box"
+      }),
+      ...boxInfo
+    };
+  }
+
+  if (
+    zones.below &&
+    zones.below.touchCount === 1 &&
+    zones.below.firstTouchIndex === lastIndex &&
+    color === "RED"
+  ) {
+    return {
+      ...makeSignal({
+        direction: "BUY",
+        strategy: "DOJI FADE BUY",
+        candle,
+        orangeBox,
+        pip,
+        zone: zones.below,
+        reason: "First touch of the most recent Doji/Engulfing zone below Orange Box"
+      }),
+      ...boxInfo
+    };
   }
 
   return {
     ...empty,
     ...boxInfo,
-    reason: previousBreakout
-      ? "Waiting for breakout fade or retest"
-      : "Waiting for M15 breakout"
+    zones,
+    rsi,
+    reason: "No valid closed-candle entry. Waiting for the next M15 close."
   };
 }
 
 // ======================================================
-// 6. DUPLICATE TRADE PROTECTION
+// 5. LIVE SCANNER STATES
 // ======================================================
 
-function alreadyExecuted(trades, signal, symbol) {
-  return trades.some(trade => {
-    if (trade.symbol !== symbol) return false;
+function getLiveScannerState({
+  candles,
+  liveCandle,
+  price,
+  orangeBox,
+  zones,
+  pip
+}) {
+  if (!orangeBox || !Number.isFinite(price)) {
+    return {
+      state: "WAITING FOR ORANGE BOX",
+      proximity: Infinity,
+      distance: null
+    };
+  }
 
-    if (signal.isFade) {
-      return (
-        trade.isFade &&
-        trade.candleTime === signal.candleTime
-      );
-    }
+  const current = liveCandle || candles[candles.length - 1];
 
-    return trade.signalId === signal.signalId;
-  });
+  if (!current) {
+    return {
+      state: "WAITING FOR LIVE CANDLE",
+      proximity: Infinity,
+      distance: null
+    };
+  }
+
+  const nearHigh = Math.abs(price - orangeBox.high);
+  const nearLow = Math.abs(price - orangeBox.low);
+  const nearestOrange = Math.min(nearHigh, nearLow);
+
+  const intersects = (zone, candle) =>
+    Boolean(zone) &&
+    candle.high >= zone.low &&
+    candle.low <= zone.high;
+
+  if (
+    intersects(zones?.above, current) ||
+    intersects(zones?.below, current)
+  ) {
+    return {
+      state: "DOJI TOUCH",
+      proximity: 0,
+      distance: 0
+    };
+  }
+
+  const rsiCandles = liveCandle
+    ? [...candles, liveCandle]
+    : candles;
+
+  const rsi = calculateRSI(
+    rsiCandles,
+    rsiCandles.length - 1,
+    3
+  );
+
+  const outside =
+    price > orangeBox.high ||
+    price < orangeBox.low;
+
+  if (
+    outside &&
+    rsi !== null &&
+    (rsi >= 90 || rsi <= 10)
+  ) {
+    const zoneDistances = [
+      zones?.above
+        ? Math.min(
+            Math.abs(price - zones.above.high),
+            Math.abs(price - zones.above.low)
+          )
+        : Infinity,
+      zones?.below
+        ? Math.min(
+            Math.abs(price - zones.below.high),
+            Math.abs(price - zones.below.low)
+          )
+        : Infinity
+    ];
+
+    const nearestZone = Math.min(...zoneDistances);
+
+    return {
+      state: "OUTSIDE RSI EXTREME",
+      rsi,
+      proximity: Number.isFinite(nearestZone)
+        ? nearestZone
+        : nearestOrange,
+      distance: nearestZone
+    };
+  }
+
+  const openInside =
+    current.open >= orangeBox.low &&
+    current.open <= orangeBox.high;
+
+  const priceInside =
+    price >= orangeBox.low &&
+    price <= orangeBox.high;
+
+  if (openInside && !priceInside) {
+    return {
+      state: "BREAKING OUT",
+      proximity: 0,
+      distance: 0
+    };
+  }
+
+  if (!openInside && priceInside) {
+    return {
+      state: "BREAKING IN",
+      proximity: 0,
+      distance: 0
+    };
+  }
+
+  if (nearestOrange <= pip * TOUCH_BUFFER_PIPS) {
+    return {
+      state: "TOUCHING",
+      proximity: nearestOrange,
+      distance: nearestOrange
+    };
+  }
+
+  return {
+    state: "MONITORING",
+    proximity: nearestOrange,
+    distance: nearestOrange
+  };
 }
 
 // ======================================================
-// 7. SIMULATED TRADE EXECUTION
+// 6. SPREAD AND PRICE INFORMATION
+// ======================================================
+
+function getSpreadInfo(tick, price) {
+  if (!tick) {
+    return {
+      known: false,
+      spread: null,
+      points: null
+    };
+  }
+
+  const bid = Number(tick.bid);
+  const ask = Number(tick.ask);
+
+  if (
+    !Number.isFinite(bid) ||
+    !Number.isFinite(ask) ||
+    bid <= 0 ||
+    ask <= 0 ||
+    ask < bid
+  ) {
+    return {
+      known: false,
+      spread: null,
+      points: null
+    };
+  }
+
+  const spread = ask - bid;
+  const point = pointSize(price || bid);
+
+  return {
+    known: true,
+    bid,
+    ask,
+    spread,
+    points: spread / point
+  };
+}
+
+// ======================================================
+// 7. DUPLICATE TRADE PROTECTION
+// ======================================================
+
+function alreadyExecuted(trades, signal, symbol) {
+  return trades.some(trade =>
+    trade.symbol === symbol &&
+    trade.candleTime === signal.candleTime &&
+    trade.strategy === signal.strategy
+  );
+}
+
+function alreadyExecutedRideWave(trades, signal, symbol) {
+  if (!signal.strategy?.startsWith("RIDE WAVE")) return false;
+
+  return trades.some(trade =>
+    trade.symbol === symbol &&
+    trade.strategy?.startsWith("RIDE WAVE") &&
+    trade.candleTime === signal.candleTime
+  );
+}
+
+function alreadyExecutedDoji(trades, signal, symbol) {
+  if (!signal.strategy?.startsWith("DOJI FADE")) return false;
+
+  return trades.some(trade =>
+    trade.symbol === symbol &&
+    trade.strategy?.startsWith("DOJI FADE") &&
+    trade.candleTime === signal.candleTime
+  );
+}
+
+// ======================================================
+// 8. SIMULATED TRADE
 // ======================================================
 
 function makeDemoOrder(
@@ -523,37 +964,47 @@ function makeDemoOrder(
   riskPct,
   sizingMode,
   fixedLots,
-  timeframe = TIMEFRAME
+  spreadInfo
 ) {
-  const buy = signal.direction === "BUY";
-
-  const offset = signal.pip * (
-    signal.isFade
-      ? FADE_SL_OFFSET_PIPS
-      : SL_OFFSET_PIPS
-  );
-
-  let sl;
-
-  if (signal.isFade) {
-    sl = buy
-      ? signal.fadeCandleLow - offset
-      : signal.fadeCandleHigh + offset;
-  } else {
-    sl = buy
-      ? signal.boxLow - offset
-      : signal.boxHigh + offset;
+  if (!spreadInfo?.known) {
+    throw new Error(
+      "Actual bid/ask spread unavailable. Trade rejected."
+    );
   }
 
-  const entry = signal.entry;
+  if (spreadInfo.points > MAX_SPREAD_POINTS) {
+    throw new Error(
+      `Spread filter rejected trade: ${fmt(spreadInfo.points, 1)} points. Maximum is ${MAX_SPREAD_POINTS}.`
+    );
+  }
+
+  const buy = signal.direction === "BUY";
+  const spread = spreadInfo.spread;
+
+  const entry = buy
+    ? spreadInfo.ask
+    : spreadInfo.bid;
+
+  const stopReferenceHigh = signal.dojiHigh ?? signal.boxHigh;
+  const stopReferenceLow = signal.dojiLow ?? signal.boxLow;
+
+  const offset = signal.pip * SL_OFFSET_PIPS + spread;
+
+  const sl = buy
+    ? stopReferenceLow - offset
+    : stopReferenceHigh + offset;
+
   const slDistance = Math.abs(entry - sl);
 
   if (!Number.isFinite(slDistance) || slDistance <= 0) {
     throw new Error("Invalid stop-loss distance.");
   }
 
-  const rr = signal.isFade ? FADE_RR : NORMAL_RR;
-  const tpDistance = slDistance * rr;
+  const tpDistance = signal.boxSize * TAKE_PROFIT_MULTIPLE;
+
+  if (!Number.isFinite(tpDistance) || tpDistance <= 0) {
+    throw new Error("Invalid Orange Box take-profit distance.");
+  }
 
   const tp = buy
     ? entry + tpDistance
@@ -575,16 +1026,13 @@ function makeDemoOrder(
     comment: "Ifx Billionaire",
     boxId: signal.boxId,
     boxType: signal.boxType,
+    strategy: signal.strategy,
     touchType: signal.touchType,
-    isFade: Boolean(signal.isFade),
-    fadeAge: signal.fadeAge ?? null,
-    rsi: signal.rsi ?? null,
     candleTime: signal.candleTime,
     symbol,
     category,
     direction: signal.direction,
-    source: `${signal.boxType} · ${signal.touchType}`,
-    timeframe,
+    source: `${signal.boxType} · ${signal.strategy}`,
     sizingMode,
     fixedLots: sizingMode === "FIXED_LOTS" ? safeLots : null,
     entry,
@@ -592,8 +1040,11 @@ function makeDemoOrder(
     tp,
     slDistance,
     tpDistance,
+    boxSize: signal.boxSize,
+    spread,
+    spreadPoints: spreadInfo.points,
     riskMoney,
-    rewardRatio: rr,
+    rewardRatio: tpDistance / slDistance,
     status: "OPEN DEMO TRADE",
     currentPrice: entry,
     floatingPnl: 0,
@@ -602,12 +1053,13 @@ function makeDemoOrder(
     created: new Date(createdAtMs).toLocaleTimeString(),
     createdAtMs,
     openedEpoch,
-    openedDay: saDate(openedEpoch)
+    openedDay: serverDay(openedEpoch)
   };
 }
 
 function calculateDemoPnl(trade, price) {
   const stopDistance = Math.abs(trade.entry - trade.sl);
+
   if (!stopDistance) return 0;
 
   const move = trade.direction === "BUY"
@@ -654,7 +1106,7 @@ function sendBrowserNotification(title, body) {
 }
 
 // ======================================================
-// 8. APPLICATION
+// 9. APPLICATION
 // ======================================================
 
 export default function App() {
@@ -679,6 +1131,7 @@ export default function App() {
   const subscribingRef = useRef(new Set());
 
   const latestPricesRef = useRef({});
+  const latestTicksRef = useRef({});
   const ordersRef = useRef([]);
   const closedTradesRef = useRef([]);
 
@@ -688,6 +1141,7 @@ export default function App() {
 
   const [symbols, setSymbols] = useState([]);
   const [signals, setSignals] = useState({});
+  const [scannerStates, setScannerStates] = useState({});
   const [orders, setOrders] = useState([]);
   const [closedTrades, setClosedTrades] = useState([]);
 
@@ -752,7 +1206,7 @@ export default function App() {
       const timeout = setTimeout(() => {
         pendingRequestsRef.current.delete(id);
         reject(new Error("Deriv request timed out."));
-      }, 30000);
+      }, 12000);
 
       pendingRequestsRef.current.set(id, {
         resolve,
@@ -777,10 +1231,27 @@ export default function App() {
   // LIVE SIMULATED TRADE MONITORING
   // ----------------------------------------------------
 
-  const processTick = useCallback((symbol, price) => {
-    if (!symbol || !Number.isFinite(price)) return;
+  const processTick = useCallback((symbol, tick) => {
+    if (!symbol || !tick) return;
 
-    latestPricesRef.current[symbol] = price;
+    const quote = Number(tick.quote);
+    const bid = Number(tick.bid);
+    const ask = Number(tick.ask);
+
+    const usablePrice = Number.isFinite(bid) && bid > 0
+      ? bid
+      : quote;
+
+    if (!Number.isFinite(usablePrice)) return;
+
+    latestPricesRef.current[symbol] = usablePrice;
+
+    latestTicksRef.current[symbol] = {
+      quote,
+      bid: Number.isFinite(bid) && bid > 0 ? bid : null,
+      ask: Number.isFinite(ask) && ask > 0 ? ask : null,
+      epoch: Number(tick.epoch) || Math.floor(Date.now() / 1000)
+    };
 
     const remaining = [];
     const newlyClosed = [];
@@ -796,16 +1267,16 @@ export default function App() {
 
       const trade = {
         ...original,
-        currentPrice: price
+        currentPrice: usablePrice
       };
 
-      const exitReason = getExitReason(trade, price);
+      const exitReason = getExitReason(trade, usablePrice);
 
       if (exitReason) {
         const exitPrice = getExitPrice(
           trade,
           exitReason,
-          price
+          usablePrice
         );
 
         const finalPnl = calculateDemoPnl(
@@ -817,7 +1288,7 @@ export default function App() {
           ...trade,
           status: "CLOSED",
           exitPrice,
-          observedExitPrice: price,
+          observedExitPrice: usablePrice,
           exitReason,
           realisedPnl: finalPnl,
           floatingPnl: 0,
@@ -827,7 +1298,11 @@ export default function App() {
         continue;
       }
 
-      trade.floatingPnl = calculateDemoPnl(trade, price);
+      trade.floatingPnl = calculateDemoPnl(
+        trade,
+        usablePrice
+      );
+
       remaining.push(trade);
     }
 
@@ -953,7 +1428,7 @@ export default function App() {
         if (data.msg_type === "tick" && data.tick) {
           processTick(
             data.tick.symbol,
-            Number(data.tick.quote)
+            data.tick
           );
         }
 
@@ -1014,6 +1489,7 @@ export default function App() {
           setMessage(
             "Deriv connection lost. Robot will attempt to reconnect."
           );
+
           scheduleReconnect();
         }
 
@@ -1025,6 +1501,7 @@ export default function App() {
     });
 
     connectionPromiseRef.current = connectionPromise;
+
     return connectionPromise;
   }, [processTick, scheduleReconnect]);
 
@@ -1040,7 +1517,6 @@ export default function App() {
       !socketRef.current ||
       socketRef.current.readyState !== WebSocket.OPEN
     ) {
-      setMessage(`${symbol}: Deriv is disconnected.`);
       return false;
     }
 
@@ -1064,7 +1540,7 @@ export default function App() {
       if (response.tick) {
         processTick(
           response.tick.symbol || symbol,
-          Number(response.tick.quote)
+          response.tick
         );
       }
 
@@ -1121,24 +1597,40 @@ export default function App() {
       )
       .map(s => ({
         ...s,
-        category: categoryOf(s)
+        category: categoryOf(s),
+        prioritySymbol: priorityMatch(s.symbol),
+        priority: priorityIndex(s.symbol)
       }))
-      .sort((a, b) =>
-        String(a.display_name).localeCompare(
+      .sort((a, b) => {
+        if (a.priority !== b.priority) {
+          return a.priority - b.priority;
+        }
+
+        return String(a.display_name).localeCompare(
           String(b.display_name)
-        )
-      );
+        );
+      });
 
     marketsRef.current = list;
     setSymbols(list);
 
-    setMessage(`${list.length} active Deriv markets discovered.`);
+    const foundPriorities = new Set(
+      list.map(item => item.prioritySymbol).filter(Boolean)
+    );
+
+    const missing = PRIORITY_SYMBOLS.filter(
+      symbol => !foundPriorities.has(symbol)
+    );
+
+    setMessage(
+      `${list.length} Deriv markets discovered. ${foundPriorities.size}/21 priority instruments matched.${missing.length ? ` Not found: ${missing.join(", ")}` : ""}`
+    );
 
     return list;
   }, [request]);
 
   // ----------------------------------------------------
-  // M15 CANDLE SCAN
+  // M15 SCAN
   // ----------------------------------------------------
 
   const scanSymbol = useCallback(async item => {
@@ -1171,7 +1663,9 @@ export default function App() {
         high: Number(c.high),
         low: Number(c.low),
         close: Number(c.close),
-        volume: c.volume === undefined ? null : Number(c.volume)
+        volume: c.volume === undefined
+          ? null
+          : Number(c.volume)
       })).filter(c =>
         Number.isFinite(c.epoch) &&
         Number.isFinite(c.open) &&
@@ -1185,10 +1679,15 @@ export default function App() {
 
       const now = Math.floor(Date.now() / 1000);
 
-      // Exclude currently forming candle.
       const closed = candles.filter(c =>
         c.epoch + TIMEFRAME <= now
       );
+
+      const liveCandles = candles.filter(c =>
+        c.epoch + TIMEFRAME > now
+      );
+
+      const liveCandle = liveCandles[liveCandles.length - 1] || null;
 
       diagnostic.closed = closed.length;
 
@@ -1196,17 +1695,77 @@ export default function App() {
         diagnostic.latestEpoch = closed[closed.length - 1].epoch;
       }
 
-      const signal = findStrategySignal(
+      const signal = findClosedEntrySignal(
         closed,
         item.symbol,
         item.category,
         item.pip
       );
 
+      const currentClosed = closed[closed.length - 1];
+      const today = serverDay(now);
+
+      const orangeBox = buildOrangeBox(
+        candles,
+        today
+      );
+
+      const zones = orangeBox
+        ? buildDojiZones(closed, orangeBox)
+        : { above: null, below: null };
+
+      const tick = latestTicksRef.current[item.symbol];
+
+      const livePrice = Number.isFinite(tick?.bid)
+        ? tick.bid
+        : Number.isFinite(tick?.quote)
+          ? tick.quote
+          : liveCandle?.close ?? currentClosed?.close ?? null;
+
+      const pip = pipSize(
+        item.symbol,
+        item.category,
+        candles,
+        item.pip
+      );
+
+      const scanner = getLiveScannerState({
+        candles: closed,
+        liveCandle,
+        price: livePrice,
+        orangeBox,
+        zones,
+        pip
+      });
+
+      const dailyCandles = buildDailyCandles(
+        candles,
+        today
+      );
+
+      const spreadInfo = getSpreadInfo(
+        tick,
+        livePrice
+      );
+
       return {
         ...signal,
+        scannerState: scanner.state,
+        scannerProximity: scanner.proximity,
+        scannerDistance: scanner.distance,
+        scannerRsi: scanner.rsi ?? null,
+        livePrice,
+        spreadKnown: spreadInfo.known,
+        spreadPoints: spreadInfo.points,
+        spread: spreadInfo.spread,
+        orangeBox,
+        zones,
+        dailyCandles,
+        liveCandle,
+        latestClosedEpoch: currentClosed?.epoch ?? null,
         _candleData: diagnostic
       };
+
     } catch (error) {
       diagnostic.error = error.message || "Unknown Deriv API error";
 
@@ -1214,6 +1773,8 @@ export default function App() {
         direction: "NONE",
         reason: "Market data unavailable",
         boxCount: 0,
+        scannerState: "DATA ERROR",
+        scannerProximity: Infinity,
         _candleData: diagnostic
       };
     }
@@ -1234,7 +1795,9 @@ export default function App() {
 
     scanLockRef.current = true;
 
-    setMessage("Scanning Deriv markets using completed M15 candles...");
+    setMessage(
+      "Scanning priority instruments first, then remaining Deriv markets..."
+    );
 
     const results = {};
     let completed = 0;
@@ -1257,10 +1820,26 @@ export default function App() {
         setScanned(completed);
         setProgress(Math.round(completed / list.length * 100));
 
-        if (completed % 10 === 0) {
+        if (completed % 5 === 0) {
           setSignals(previous => ({
             ...previous,
             ...results
+          }));
+
+          setScannerStates(previous => ({
+            ...previous,
+            ...Object.fromEntries(
+              Object.entries(results).map(([symbol, value]) => [
+                symbol,
+                {
+                  state: value.scannerState,
+                  proximity: value.scannerProximity,
+                  livePrice: value.livePrice,
+                  spreadKnown: value.spreadKnown,
+                  spreadPoints: value.spreadPoints
+                }
+              ])
+            )
           }));
         }
       }
@@ -1268,6 +1847,8 @@ export default function App() {
 
     try {
       await Promise.all([
+        worker(),
+        worker(),
         worker(),
         worker()
       ]);
@@ -1277,13 +1858,30 @@ export default function App() {
         ...results
       }));
 
+      setScannerStates(previous => ({
+        ...previous,
+        ...Object.fromEntries(
+          Object.entries(results).map(([symbol, value]) => [
+            symbol,
+            {
+              state: value.scannerState,
+              proximity: value.scannerProximity,
+              livePrice: value.livePrice,
+              spreadKnown: value.spreadKnown,
+              spreadPoints: value.spreadPoints
+            }
+          ])
+        )
+      }));
+
       setMessage(
         runningRef.current
-          ? `M15 scan complete: ${completed} of ${list.length} markets checked.`
+          ? `Scan complete: ${completed} of ${list.length} markets checked.`
           : "Scanning stopped."
       );
 
       setLastScan(new Date().toLocaleTimeString());
+
     } finally {
       scanLockRef.current = false;
 
@@ -1323,7 +1921,7 @@ export default function App() {
           const permission = await Notification.requestPermission();
           setNotificationPermission(permission);
         } catch {
-          // Notifications optional.
+          // Notifications are optional.
         }
       }
 
@@ -1335,6 +1933,7 @@ export default function App() {
       setRunning(true);
 
       setSignals({});
+      setScannerStates({});
       setScanned(0);
       setProgress(0);
 
@@ -1345,6 +1944,16 @@ export default function App() {
         runningRef.current = false;
         setRunning(false);
         return;
+      }
+
+      // Subscribe to priority instruments first.
+      const priorityMarkets = list.filter(item =>
+        item.prioritySymbol
+      );
+
+      for (const item of priorityMarkets) {
+        if (!runningRef.current) break;
+        await subscribeMarket(item.symbol);
       }
 
       await scanAll(list);
@@ -1359,7 +1968,11 @@ export default function App() {
         if (runningRef.current) {
           scanAll(marketsRef.current);
         }
-      }, TIMEFRAME * 1000);
+      }, SCAN_INTERVAL);
+
+      setMessage(
+        "Robot running. Live scanner checks every 10 seconds; entries require a completed M15 candle."
+      );
 
     } catch (error) {
       runningRef.current = false;
@@ -1456,7 +2069,7 @@ export default function App() {
     if (!signal || signal.direction === "NONE") return;
 
     if (!signal.signalId || !signal.boxId) {
-      setMessage("Signal is missing its box or signal identifier.");
+      setMessage("Signal is missing its Orange Box or signal identifier.");
       return;
     }
 
@@ -1475,7 +2088,7 @@ export default function App() {
         ...closedTradesRef.current
       ];
 
-      const today = saDate(Math.floor(Date.now() / 1000));
+      const today = serverDay(Math.floor(Date.now() / 1000));
 
       const dailyTrades = previousTrades.filter(trade =>
         trade.openedDay === today
@@ -1486,20 +2099,36 @@ export default function App() {
       ).length;
 
       if (dailyTrades.length >= MAX_DAILY_TRADES) {
-        setMessage(`Daily limit reached: maximum ${MAX_DAILY_TRADES} trades.`);
+        setMessage(
+          `Daily limit reached: maximum ${MAX_DAILY_TRADES} trades.`
+        );
         return;
       }
 
       if (openCount >= MAX_OPEN_TRADES) {
-        setMessage(`Open-trade limit reached: maximum ${MAX_OPEN_TRADES}.`);
+        setMessage(
+          `Open-trade limit reached: maximum ${MAX_OPEN_TRADES}.`
+        );
         return;
       }
 
       if (alreadyExecuted(previousTrades, signal, item.symbol)) {
         setMessage(
-          signal.isFade
-            ? `${item.symbol}: a fade trade was already taken on this candle.`
-            : `${item.symbol}: this exact signal has already been traded.`
+          `${item.symbol}: this strategy signal has already been traded on this candle.`
+        );
+        return;
+      }
+
+      if (alreadyExecutedRideWave(previousTrades, signal, item.symbol)) {
+        setMessage(
+          `${item.symbol}: only one Ride Wave trade is allowed per candle.`
+        );
+        return;
+      }
+
+      if (alreadyExecutedDoji(previousTrades, signal, item.symbol)) {
+        setMessage(
+          `${item.symbol}: only one Doji trade is allowed per candle.`
         );
         return;
       }
@@ -1507,14 +2136,37 @@ export default function App() {
       const subscribed = await subscribeMarket(item.symbol);
 
       if (!subscribed) {
-        setMessage(`${item.symbol}: could not obtain live price.`);
+        setMessage(`${item.symbol}: could not obtain live market data.`);
         return;
       }
 
-      const currentPrice = latestPricesRef.current[item.symbol];
+      const tick = latestTicksRef.current[item.symbol];
+
+      const currentPrice = Number.isFinite(tick?.bid)
+        ? tick.bid
+        : tick?.quote;
 
       if (!Number.isFinite(currentPrice)) {
-        setMessage(`${item.symbol}: waiting for live price.`);
+        setMessage(`${item.symbol}: waiting for a live price.`);
+        return;
+      }
+
+      const spreadInfo = getSpreadInfo(
+        tick,
+        currentPrice
+      );
+
+      if (!spreadInfo.known) {
+        setMessage(
+          `${item.symbol}: actual bid/ask spread is unavailable. Trade rejected to protect the spread rule.`
+        );
+        return;
+      }
+
+      if (spreadInfo.points > MAX_SPREAD_POINTS) {
+        setMessage(
+          `${item.symbol}: spread ${fmt(spreadInfo.points, 1)} points exceeds the 300-point limit.`
+        );
         return;
       }
 
@@ -1546,20 +2198,15 @@ export default function App() {
         return;
       }
 
-      const executionSignal = {
-        ...signal,
-        entry: currentPrice
-      };
-
       const order = makeDemoOrder(
-        executionSignal,
+        signal,
         item.symbol,
         item.category,
         balance,
         riskPct,
         sizingMode,
         fixedLots,
-        TIMEFRAME
+        spreadInfo
       );
 
       updateOrders(previous => [
@@ -1570,16 +2217,16 @@ export default function App() {
       setSelected(item);
 
       setLastActivated(
-        `${signal.direction} · ${signal.touchType} · M15`
+        `${signal.direction} · ${signal.strategy} · M15`
       );
 
       setMessage(
-        `${item.symbol}: ${signal.direction} simulated trade opened at ${fmt(currentPrice, 8)}.`
+        `${item.symbol}: ${signal.direction} simulated trade opened at ${fmt(order.entry, 8)}.`
       );
 
       sendBrowserNotification(
         "iFX BILLIONAIRE — Demo Trade Opened",
-        `${item.symbol} ${signal.direction} ${signal.touchType} at ${fmt(currentPrice, 8)}`
+        `${item.symbol} ${signal.direction} ${signal.strategy} at ${fmt(order.entry, 8)}`
       );
 
     } catch (error) {
@@ -1624,7 +2271,17 @@ export default function App() {
           )
         ];
 
-        for (const symbol of openSymbols) {
+        const prioritySymbols = [
+          ...new Set(
+            marketsRef.current
+              .filter(item => item.prioritySymbol)
+              .map(item => item.symbol)
+          )
+        ];
+
+        for (const symbol of [
+          ...new Set([...prioritySymbols, ...openSymbols])
+        ]) {
           if (!runningRef.current) break;
           await subscribeMarket(symbol);
         }
@@ -1638,7 +2295,7 @@ export default function App() {
         }
 
         if (runningRef.current && list.length) {
-          setMessage("Connection restored. Resuming M15 scans...");
+          setMessage("Connection restored. Resuming 10-second scans...");
           await scanAll(list);
         }
 
@@ -1653,6 +2310,7 @@ export default function App() {
     };
 
     const handleReconnect = () => recoverRobot();
+
     const handleOnline = () => {
       if (runningRef.current) recoverRobot();
     };
@@ -1675,16 +2333,29 @@ export default function App() {
       window.removeEventListener("online", handleOnline);
       document.removeEventListener("visibilitychange", handleVisibility);
     };
-  }, [connect, scanAll, subscribeMarket, discoverMarkets, scheduleReconnect]);
+  }, [
+    connect,
+    scanAll,
+    subscribeMarket,
+    discoverMarkets,
+    scheduleReconnect
+  ]);
 
   useEffect(() => {
     return () => {
       runningRef.current = false;
 
-      if (scanTimerRef.current) clearInterval(scanTimerRef.current);
-      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      if (scanTimerRef.current) {
+        clearInterval(scanTimerRef.current);
+      }
 
-      if (socketRef.current) socketRef.current.close();
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+      }
+
+      if (socketRef.current) {
+        socketRef.current.close();
+      }
 
       pendingRequestsRef.current.forEach(p => {
         clearTimeout(p.timeout);
@@ -1698,25 +2369,56 @@ export default function App() {
   // DASHBOARD CALCULATIONS
   // ====================================================
 
-  const visibleSymbols = symbols.filter(item => {
-    const signal = signals[item.symbol];
+  const visibleSymbols = symbols
+    .filter(item => {
+      const signal = signals[item.symbol];
 
-    const hasSignal =
-      signal?.direction === "BUY" ||
-      signal?.direction === "SELL";
+      const hasSignal =
+        signal?.direction === "BUY" ||
+        signal?.direction === "SELL";
 
-    const matchesCategory =
-      category === "All" || item.category === category;
+      const matchesCategory =
+        category === "All" || item.category === category;
 
-    const term = search.toLowerCase();
+      const term = search.toLowerCase();
 
-    const matchesSearch =
-      !term ||
-      String(item.display_name || "").toLowerCase().includes(term) ||
-      String(item.symbol || "").toLowerCase().includes(term);
+      const matchesSearch =
+        !term ||
+        String(item.display_name || "").toLowerCase().includes(term) ||
+        String(item.symbol || "").toLowerCase().includes(term);
 
-    return hasSignal && matchesCategory && matchesSearch;
-  });
+      return hasSignal && matchesCategory && matchesSearch;
+    })
+    .sort((a, b) => {
+      const aSignal = signals[a.symbol];
+      const bSignal = signals[b.symbol];
+
+      if (a.priority !== b.priority) {
+        return a.priority - b.priority;
+      }
+
+      return (
+        (aSignal?.scannerProximity ?? Infinity) -
+        (bSignal?.scannerProximity ?? Infinity)
+      );
+    });
+
+  const visibleScannerStates = symbols
+    .filter(item => {
+      const state = scannerStates[item.symbol]?.state;
+
+      return state && state !== "MONITORING";
+    })
+    .sort((a, b) => {
+      if (a.priority !== b.priority) {
+        return a.priority - b.priority;
+      }
+
+      return (
+        (scannerStates[a.symbol]?.proximity ?? Infinity) -
+        (scannerStates[b.symbol]?.proximity ?? Infinity)
+      );
+    });
 
   const buyCount = symbols.filter(s =>
     signals[s.symbol]?.direction === "BUY"
@@ -1730,7 +2432,7 @@ export default function App() {
     o.status === "OPEN DEMO TRADE"
   );
 
-  const today = saDate(Math.floor(Date.now() / 1000));
+  const today = serverDay(Math.floor(Date.now() / 1000));
 
   const allTrades = [...orders, ...closedTrades];
 
@@ -1757,6 +2459,19 @@ export default function App() {
   const signalColor = direction =>
     direction === "BUY" ? "#16c784" :
     direction === "SELL" ? "#ea5455" : "#8993a4";
+
+  const stateColor = state => {
+    if (
+      state === "BREAKING OUT" ||
+      state === "DOJI TOUCH"
+    ) return "#f4c46a";
+
+    if (state === "BREAKING IN") return "#31a8ff";
+    if (state === "TOUCHING") return "#16c784";
+    if (state === "OUTSIDE RSI EXTREME") return "#d69cff";
+
+    return "#8993a4";
+  };
 
   const card = {
     background: "#101a2b",
@@ -1839,6 +2554,10 @@ export default function App() {
     minHeight: 22
   };
 
+  const priorityFound = new Set(
+    symbols.map(item => item.prioritySymbol).filter(Boolean)
+  );
+
   // ====================================================
   // UI
   // ====================================================
@@ -1899,9 +2618,9 @@ export default function App() {
             fontSize: 10,
             color: "#8293ad",
             marginTop: 5,
-            letterSpacing: 1.5
+            letterSpacing: 1.2
           }}>
-            M15 · BLUE BOX · BREAKOUT · RETEST · FADE
+            M15 · ORANGE BOX · DOJI · ENGULFING
           </div>
         </div>
 
@@ -1999,76 +2718,167 @@ export default function App() {
           </div>
 
           <div style={small}>
-            M15 scan progress: {scanned}/{symbols.length} · {progress}%
+            Scan progress: {scanned}/{symbols.length} · {progress}%
+            {" · "}
+            Every 10 seconds
+          </div>
+
+          <div style={small}>
+            Priority instruments matched: {priorityFound.size}/21
+            {" · "}
+            M15 only
+            {" · "}
+            Server day: UTC
           </div>
         </section>
 
         {/* STATISTICS */}
 
-        <section style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(2,minmax(0,1fr))",
-          gap: 8,
-          marginBottom: 12
-        }}>
-          <div style={stat}>
-            <div style={statLabel}>MARKETS FOUND</div>
-            <div style={statValue}>{symbols.length}</div>
-          </div>
+        <details style={card}>
+          <summary style={collapsibleSummary}>
+            ROBOT STATISTICS
+          </summary>
 
-          <div style={stat}>
-            <div style={statLabel}>BUY SIGNALS</div>
-            <div style={{ ...statValue, color: "#16c784" }}>
-              {buyCount}
+          <section style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(2,minmax(0,1fr))",
+            gap: 8,
+            marginTop: 13
+          }}>
+            <div style={stat}>
+              <div style={statLabel}>MARKETS FOUND</div>
+              <div style={statValue}>{symbols.length}</div>
             </div>
-          </div>
 
-          <div style={stat}>
-            <div style={statLabel}>SELL SIGNALS</div>
-            <div style={{ ...statValue, color: "#ea5455" }}>
-              {sellCount}
+            <div style={stat}>
+              <div style={statLabel}>BUY SIGNALS</div>
+              <div style={{ ...statValue, color: "#16c784" }}>
+                {buyCount}
+              </div>
             </div>
-          </div>
 
-          <div style={stat}>
-            <div style={statLabel}>OPEN DEMO TRADES</div>
-            <div style={statValue}>{openTrades.length}/4</div>
-          </div>
-
-          <div style={stat}>
-            <div style={statLabel}>TODAY'S TRADES · SAST</div>
-            <div style={statValue}>{dailyTradeCount}/4</div>
-          </div>
-
-          <div style={stat}>
-            <div style={statLabel}>FLOATING P&L</div>
-            <div style={{ ...statValue, color: moneyColor(floatingPnl) }}>
-              {floatingPnl >= 0 ? "+" : ""}${fmt(floatingPnl, 2)}
+            <div style={stat}>
+              <div style={statLabel}>SELL SIGNALS</div>
+              <div style={{ ...statValue, color: "#ea5455" }}>
+                {sellCount}
+              </div>
             </div>
-          </div>
 
-          <div style={stat}>
-            <div style={statLabel}>REALISED P&L</div>
-            <div style={{ ...statValue, color: moneyColor(realisedPnl) }}>
-              {realisedPnl >= 0 ? "+" : ""}${fmt(realisedPnl, 2)}
+            <div style={stat}>
+              <div style={statLabel}>OPEN DEMO TRADES</div>
+              <div style={statValue}>{openTrades.length}/4</div>
             </div>
-          </div>
 
-          <div style={stat}>
-            <div style={statLabel}>TOTAL P&L</div>
-            <div style={{ ...statValue, color: moneyColor(totalPnl) }}>
-              {totalPnl >= 0 ? "+" : ""}${fmt(totalPnl, 2)}
+            <div style={stat}>
+              <div style={statLabel}>TODAY'S TRADES · UTC</div>
+              <div style={statValue}>{dailyTradeCount}/4</div>
             </div>
-          </div>
-        </section>
 
-        {/* ACTIVE SIGNALS */}
+            <div style={stat}>
+              <div style={statLabel}>FLOATING P&L</div>
+              <div style={{ ...statValue, color: moneyColor(floatingPnl) }}>
+                {floatingPnl >= 0 ? "+" : ""}${fmt(floatingPnl, 2)}
+              </div>
+            </div>
 
-        <section style={card}>
-          <div style={title}>ACTIVE M15 SIGNALS</div>
+            <div style={stat}>
+              <div style={statLabel}>REALISED P&L</div>
+              <div style={{ ...statValue, color: moneyColor(realisedPnl) }}>
+                {realisedPnl >= 0 ? "+" : ""}${fmt(realisedPnl, 2)}
+              </div>
+            </div>
+
+            <div style={stat}>
+              <div style={statLabel}>TOTAL P&L</div>
+              <div style={{ ...statValue, color: moneyColor(totalPnl) }}>
+                {totalPnl >= 0 ? "+" : ""}${fmt(totalPnl, 2)}
+              </div>
+            </div>
+          </section>
+        </details>
+
+        {/* LIVE SCANNER */}
+
+        <details style={card}>
+          <summary style={collapsibleSummary}>
+            LIVE MARKET SCANNER
+          </summary>
 
           <div style={small}>
-            Completed M15 candles only · Tap a signal to open a simulated trade.
+            Live scanner states · Priority instruments first · 10-second scan cycle
+          </div>
+
+          {!visibleScannerStates.length && (
+            <div style={{
+              textAlign: "center",
+              padding: 18,
+              color: "#8395af"
+            }}>
+              No active scanner conditions at the moment.
+            </div>
+          )}
+
+          {visibleScannerStates.map(item => {
+            const state = scannerStates[item.symbol];
+
+            return (
+              <div
+                key={item.symbol}
+                style={{
+                  background: "#0b1525",
+                  border: "1px solid #24334b",
+                  borderRadius: 8,
+                  padding: 11,
+                  marginTop: 8
+                }}
+              >
+                <div style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: 8
+                }}>
+                  <strong style={{ fontSize: 11 }}>
+                    {item.display_name || item.symbol}
+                  </strong>
+
+                  <strong style={{
+                    fontSize: 9,
+                    color: stateColor(state.state),
+                    textAlign: "right"
+                  }}>
+                    {state.state}
+                  </strong>
+                </div>
+
+                <div style={small}>
+                  {item.symbol}
+                  {" · "}
+                  {item.prioritySymbol
+                    ? `PRIORITY ${item.prioritySymbol}`
+                    : "NON-PRIORITY"}
+                  {" · "}
+                  Price {fmt(state.livePrice, 8)}
+                </div>
+
+                <div style={small}>
+                  Spread: {state.spreadKnown
+                    ? `${fmt(state.spreadPoints, 1)} points`
+                    : "Unavailable"}
+                </div>
+              </div>
+            );
+          })}
+        </details>
+
+        {/* ACTIVE ENTRY SIGNALS */}
+
+        <details style={card}>
+          <summary style={collapsibleSummary}>
+            CLOSED M15 ENTRY SIGNALS
+          </summary>
+
+          <div style={small}>
+            Only completed M15 candles create entry signals. Tap a valid signal to open a simulated trade manually.
           </div>
 
           <input
@@ -2130,9 +2940,9 @@ export default function App() {
                 fontSize: 11,
                 lineHeight: 1.6
               }}>
-                No active M15 BUY or SELL signals for this selection.
+                No valid closed M15 BUY or SELL entry signals.
                 <br/>
-                Inactive markets are hidden.
+                Scanner-only alerts do not create trades.
               </div>
             )}
 
@@ -2189,27 +2999,22 @@ export default function App() {
                     </div>
 
                     <div style={small}>
-                      {item.symbol} · {item.category} · M15
-                    </div>
-
-                    <div style={{
-                      fontSize: 9,
-                      color: signal.isFade ? "#f4c46a" : "#65aaff",
-                      marginTop: 7,
-                      fontWeight: 900
-                    }}>
-                      BLUE BOX · {signal.touchType}
-                      {signal.isFade
-                        ? ` · RSI ${fmt(signal.rsi, 1)}`
+                      {item.symbol}
+                      {" · "}
+                      {item.category}
+                      {" · M15"}
+                      {item.prioritySymbol
+                        ? ` · PRIORITY ${item.prioritySymbol}`
                         : ""}
                     </div>
 
                     <div style={{
                       fontSize: 9,
-                      color: "#a9c9e9",
-                      marginTop: 5
+                      color: "#f4c46a",
+                      marginTop: 7,
+                      fontWeight: 900
                     }}>
-                      VOL {signal.volume ?? "N/A"} · {signal.direction}
+                      {signal.strategy}
                     </div>
 
                     <div style={{
@@ -2217,9 +3022,37 @@ export default function App() {
                       color: "#a9c9e9",
                       marginTop: 5
                     }}>
-                      BOX HIGH {fmt(signal.boxHigh, 8)}
+                      {signal.reason}
+                    </div>
+
+                    <div style={{
+                      fontSize: 9,
+                      color: "#a9c9e9",
+                      marginTop: 5
+                    }}>
+                      ORANGE HIGH {fmt(signal.boxHigh, 8)}
                       {" · "}
                       LOW {fmt(signal.boxLow, 8)}
+                    </div>
+
+                    {signal.dojiHigh !== null && (
+                      <div style={{
+                        fontSize: 9,
+                        color: "#f4c46a",
+                        marginTop: 5
+                      }}>
+                        DOJI HIGH {fmt(signal.dojiHigh, 8)}
+                        {" · "}
+                        LOW {fmt(signal.dojiLow, 8)}
+                      </div>
+                    )}
+
+                    <div style={small}>
+                      RSI(3): {fmt(signal.rsi, 1)}
+                      {" · "}
+                      Spread: {signal.spreadKnown
+                        ? `${fmt(signal.spreadPoints, 1)} points`
+                        : "Unavailable"}
                     </div>
 
                     {hasOrder && (
@@ -2247,7 +3080,7 @@ export default function App() {
                       color: "#55c9ff",
                       marginTop: 6
                     }}>
-                      TAP TO OPEN DEMO TRADE
+                      TAP TO OPEN SIMULATED DEMO TRADE
                     </div>
                   </div>
 
@@ -2267,7 +3100,7 @@ export default function App() {
               );
             })}
           </div>
-        </section>
+        </details>
 
         {/* STRATEGY RULES */}
 
@@ -2285,87 +3118,96 @@ export default function App() {
             padding: 11,
             borderRadius: 7
           }}>
-            <b style={{ color: "#65aaff" }}>BLUE BOX — ONLY ZONE</b>
+            <b style={{ color: "#f4a64a" }}>ORANGE BOX</b>
             <br/>
             • M15 only.
             <br/>
-            • South African time (UTC+2).
+            • Server time: UTC.
             <br/>
-            • 00:00–01:00 SAST.
+            • 00:00–01:00 server time.
             <br/>
-            • First four M15 candles determine high and low.
+            • High and low from the first four M15 candles.
             <br/>
-            • One Blue Box per SA trading day.
+            • Box remains valid until the next server day.
             <br/>
-            • No Orange, Doji, Engulfing or other boxes.
+            • No entry logic before box construction.
+            <br/><br/>
+
+            <b style={{ color: "#65aaff" }}>DOJI / ENGULFING</b>
+            <br/>
+            • Scan last 25 closed M15 candles.
+            <br/>
+            • Doji body is 20% or less of candle range.
+            <br/>
+            • Engulfing body fully covers prior opposite candle body.
+            <br/>
+            • Retain most recent zone above and below Orange Box.
+            <br/>
+            • Second distinct candle touch invalidates the zone.
             <br/><br/>
 
             <b style={{ color: "#65aaff" }}>BREAKOUT</b>
             <br/>
-            • Wait for M15 candle to close.
+            • Open inside, close above, RED = BUY.
             <br/>
-            • Candle must open inside the Blue Box.
-            <br/>
-            • Close above = BUY.
-            <br/>
-            • Close below = SELL.
-            <br/>
-            • SL: opposite box boundary + 15 pips.
-            <br/>
-            • TP: 4R.
-            <br/>
-            • Shift 1 only.
+            • Open inside, close below, GREEN = SELL.
             <br/><br/>
 
             <b style={{ color: "#65aaff" }}>RETEST</b>
             <br/>
-            • After a breakout.
+            • Open above, RED, low enters box, close above = BUY.
             <br/>
-            • High pokes above, red candle closes inside = BUY.
-            <br/>
-            • Low pokes below, green candle closes inside = SELL.
-            <br/>
-            • SL: opposite box boundary + 15 pips.
-            <br/>
-            • TP: 4R.
-            <br/>
-            • Shift 1 only.
+            • Open below, GREEN, high enters box, close below = SELL.
             <br/><br/>
 
-            <b style={{ color: "#f4c46a" }}>FADE AFTER BREAKOUT</b>
+            <b style={{ color: "#65aaff" }}>BREAK-IN</b>
             <br/>
-            • Never trade the breakout candle itself.
+            • Open above, RED, close inside = SELL.
             <br/>
-            • Monitor the next three closed M15 candles.
-            <br/>
-            • BUY breakout: GREEN, close above box, RSI(3) ≥ 95 = SELL.
-            <br/>
-            • SELL breakout: RED, close below box, RSI(3) ≤ 5 = BUY.
-            <br/>
-            • Fade SL: candle high/low + 7,000 pips.
-            <br/>
-            • Fade TP: 4R.
-            <br/>
-            • One fade per candle.
-            <br/>
-            • Candles 2 and 3 remain eligible if candle 1 fails.
+            • Open below, GREEN, close inside = BUY.
             <br/><br/>
 
-            <b style={{ color: "#f4c46a" }}>TRADE PROTECTION</b>
+            <b style={{ color: "#65aaff" }}>RIDE WAVE</b>
             <br/>
-            • Maximum four trades per SAST day.
+            • Open inside, close above, GREEN, RSI(3) ≥ 90 = BUY.
             <br/>
-            • Maximum four simultaneously open trades.
+            • Open inside, close below, RED, RSI(3) ≤ 10 = SELL.
+            <br/><br/>
+
+            <b style={{ color: "#f4c46a" }}>DOJI FADE</b>
+            <br/>
+            • First touch of zone above + GREEN = SELL.
+            <br/>
+            • First touch of zone below + RED = BUY.
+            <br/>
+            • No RSI filter.
+            <br/><br/>
+
+            <b style={{ color: "#f4c46a" }}>RISK MANAGEMENT</b>
+            <br/>
+            • Orange BUY SL: Orange Low − 15 pips − spread.
+            <br/>
+            • Orange SELL SL: Orange High + 15 pips + spread.
+            <br/>
+            • Doji BUY SL: Doji Low − 15 pips − spread.
+            <br/>
+            • Doji SELL SL: Doji High + 15 pips + spread.
+            <br/>
+            • All TP distances: Orange Box size × 4.
+            <br/>
+            • Maximum spread: 300 points.
+            <br/>
+            • Maximum four open trades.
+            <br/>
+            • Maximum four trades per UTC day.
+            <br/>
+            • One Ride Wave trade per candle.
+            <br/>
+            • One Doji trade per candle.
             <br/>
             • Manual tap required for every entry.
             <br/>
-            • No pending orders.
-            <br/>
-            • No breakeven or trailing stop.
-            <br/>
-            • Simulated market execution.
-            <br/>
-            • M15 only.
+            • No automatic trade execution.
           </div>
         </details>
 
@@ -2489,21 +3331,17 @@ export default function App() {
           }}>
             TIMEFRAME: M15 ONLY.
             <br/>
-            BOX TIME: 00:00–01:00 SAST.
+            SCAN FREQUENCY: 10 SECONDS.
             <br/>
-            NORMAL SL OFFSET: 15 PIPS.
+            SERVER DAY RESET: 00:00 UTC.
             <br/>
-            NORMAL TAKE PROFIT: 4R.
+            ORANGE BOX: 00:00–01:00 UTC.
             <br/>
-            FADE RSI: 3.
+            STOP LOSS OFFSET: 15 PIPS + SPREAD.
             <br/>
-            FADE SELL: RSI 95 OR HIGHER.
+            TAKE PROFIT: ORANGE BOX SIZE × 4.
             <br/>
-            FADE BUY: RSI 5 OR LOWER.
-            <br/>
-            FADE SL OFFSET: 7,000 PIPS.
-            <br/>
-            FADE TAKE PROFIT: 4R.
+            MAXIMUM SPREAD: 300 POINTS.
             <br/>
             DAILY TRADE CAP: 4.
             <br/>
@@ -2531,10 +3369,132 @@ export default function App() {
           )}
         </details>
 
+        {/* PRIORITY INSTRUMENTS */}
+
+        <details style={card}>
+          <summary style={collapsibleSummary}>
+            PRIORITY INSTRUMENTS · {priorityFound.size}/21 MATCHED
+          </summary>
+
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(2,minmax(0,1fr))",
+            gap: 7,
+            marginTop: 13
+          }}>
+            {PRIORITY_SYMBOLS.map(symbol => {
+              const found = priorityFound.has(symbol);
+
+              return (
+                <div
+                  key={symbol}
+                  style={{
+                    background: "#0b1525",
+                    border: "1px solid #24334b",
+                    borderRadius: 7,
+                    padding: 9,
+                    fontSize: 10,
+                    display: "flex",
+                    justifyContent: "space-between",
+                    gap: 5
+                  }}
+                >
+                  <strong>{symbol}</strong>
+
+                  <span style={{
+                    color: found ? "#16c784" : "#f4c46a"
+                  }}>
+                    {found ? "MATCHED" : "NOT FOUND"}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+
+          <div style={small}>
+            Matching ignores broker prefixes and suffixes where the
+            canonical instrument code appears in the Deriv symbol.
+            Instruments not listed by Deriv cannot be scanned.
+          </div>
+        </details>
+
+        {/* DAILY REFERENCE CANDLES */}
+
+        <details style={card}>
+          <summary style={collapsibleSummary}>
+            DAILY REFERENCE CANDLES
+          </summary>
+
+          <div style={small}>
+            Yesterday and today OHLC are aggregated from M15 candles.
+          </div>
+
+          {selected && signals[selected.symbol]?.dailyCandles && (
+            <>
+              {[
+                {
+                  label: "YESTERDAY",
+                  candle: signals[selected.symbol].dailyCandles.yesterday
+                },
+                {
+                  label: "TODAY",
+                  candle: signals[selected.symbol].dailyCandles.today
+                }
+              ].map(item => (
+                <div key={item.label} style={orderCard}>
+                  <strong>{item.label}</strong>
+
+                  {item.candle ? (
+                    <div style={orderGrid}>
+                      <div>
+                        OPEN
+                        <b style={{ display: "block", color: "white" }}>
+                          {fmt(item.candle.open, 8)}
+                        </b>
+                      </div>
+
+                      <div>
+                        CLOSE
+                        <b style={{ display: "block", color: "white" }}>
+                          {fmt(item.candle.close, 8)}
+                        </b>
+                      </div>
+
+                      <div>
+                        HIGH
+                        <b style={{ display: "block", color: "white" }}>
+                          {fmt(item.candle.high, 8)}
+                        </b>
+                      </div>
+
+                      <div>
+                        LOW
+                        <b style={{ display: "block", color: "white" }}>
+                          {fmt(item.candle.low, 8)}
+                        </b>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={small}>Daily candle unavailable.</div>
+                  )}
+                </div>
+              ))}
+            </>
+          )}
+
+          {!selected && (
+            <div style={small}>
+              Select a market with an entry signal to view its daily reference candles.
+            </div>
+          )}
+        </details>
+
         {/* BROKER CONNECTION */}
 
-        <section style={card}>
-          <div style={title}>BROKER CONNECTION</div>
+        <details style={card}>
+          <summary style={collapsibleSummary}>
+            BROKER CONNECTION
+          </summary>
 
           <div style={small}>
             Current data provider: DERIV PUBLIC MARKET DATA
@@ -2552,13 +3512,19 @@ export default function App() {
             This version uses Deriv public market data and simulated
             demo trades only. It does not connect to a Deriv account,
             another broker, or a live trading account.
+            <br/><br/>
+            Spread validation requires bid and ask values from the
+            feed. If those values are unavailable, manual trade
+            activation is rejected rather than assuming a zero spread.
           </div>
-        </section>
+        </details>
 
         {/* OPEN TRADES */}
 
-        <section style={card}>
-          <div style={title}>OPEN DEMO TRADES</div>
+        <details style={card}>
+          <summary style={collapsibleSummary}>
+            OPEN DEMO TRADES · {openTrades.length}
+          </summary>
 
           <div style={small}>
             Live price monitoring · Floating P&L
@@ -2591,7 +3557,7 @@ export default function App() {
               </div>
 
               <div style={small}>
-                {trade.source} · {trade.status}
+                {trade.strategy} · {trade.status}
               </div>
 
               <div style={small}>
@@ -2628,6 +3594,13 @@ export default function App() {
                 </div>
 
                 <div>
+                  SPREAD
+                  <b style={{ display: "block", color: "white" }}>
+                    {fmt(trade.spreadPoints, 1)} points
+                  </b>
+                </div>
+
+                <div>
                   SIMULATED RISK
                   <b style={{ display: "block", color: "white" }}>
                     ${fmt(trade.riskMoney, 2)}
@@ -2635,9 +3608,16 @@ export default function App() {
                 </div>
 
                 <div>
+                  TP DISTANCE
+                  <b style={{ display: "block", color: "white" }}>
+                    {fmt(trade.tpDistance, 8)}
+                  </b>
+                </div>
+
+                <div>
                   REWARD RATIO
                   <b style={{ display: "block", color: "white" }}>
-                    {trade.rewardRatio}R
+                    {fmt(trade.rewardRatio, 2)}R
                   </b>
                 </div>
               </div>
@@ -2653,12 +3633,14 @@ export default function App() {
               </div>
             </div>
           ))}
-        </section>
+        </details>
 
         {/* CLOSED TRADES */}
 
-        <section style={card}>
-          <div style={title}>CLOSED DEMO TRADES</div>
+        <details style={card}>
+          <summary style={collapsibleSummary}>
+            CLOSED DEMO TRADES · {closedTrades.length}
+          </summary>
 
           <div style={small}>
             Results after SL, TP or robot stop
@@ -2696,7 +3678,7 @@ export default function App() {
               </div>
 
               <div style={small}>
-                {trade.boxType} · {trade.touchType} · M15
+                {trade.strategy} · M15
               </div>
 
               <div style={small}>
@@ -2706,12 +3688,14 @@ export default function App() {
               </div>
             </div>
           ))}
-        </section>
+        </details>
 
         {/* LAST ACTIVATED */}
 
-        <section style={card}>
-          <div style={title}>LAST ACTIVATED</div>
+        <details style={card}>
+          <summary style={collapsibleSummary}>
+            LAST ACTIVATED
+          </summary>
 
           <div style={{
             marginTop: 12,
@@ -2729,7 +3713,7 @@ export default function App() {
           <div style={small}>
             Last scan: {lastScan}
           </div>
-        </section>
+        </details>
 
         <footer style={{
           textAlign: "center",
@@ -2741,9 +3725,11 @@ export default function App() {
         }}>
           iFX BILLIONAIRE ROBOT
           <br/>
-          M15 BLUE BOX · BREAKOUT · RETEST · RSI FADE
+          M15 ORANGE BOX · DOJI · ENGULFING
           <br/>
-          SAST UTC+2 · MANUAL DEMO EXECUTION
+          BREAKOUT · RETEST · BREAK-IN · RIDE WAVE · DOJI FADE
+          <br/>
+          UTC SERVER DAY · MANUAL SIMULATED EXECUTION
           <br/>
           MAX 4 DAILY · MAX 4 OPEN
         </footer>
