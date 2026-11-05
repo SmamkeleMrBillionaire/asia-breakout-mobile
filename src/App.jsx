@@ -4,9 +4,9 @@ const WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public";
 
 const TIMEFRAME = 900;
 const CANDLE_COUNT = 220;
-const SCAN_INTERVAL = 10000;
+const SCAN_INTERVAL = 120000;
 
-const TRADING_START_HOUR = 7;
+const TRADING_START_HOUR = 1;
 const TRADING_END_HOUR = 22;
 
 const ARM_DISTANCE_PIPS = 3;
