@@ -4,7 +4,7 @@ const WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public";
 
 const TIMEFRAME = 900;
 const CANDLE_COUNT = 220;
-const SCAN_INTERVAL = 10000;
+const SCAN_INTERVAL = 60000;
 
 const SL_OFFSET_PIPS = 15;
 const TAKE_PROFIT_MULTIPLE = 4;
@@ -335,6 +335,7 @@ function buildDojiZones(candles, orangeBox) {
 
     let touches = 0;
     let lastTouchIndex = -1;
+    let firstTouchIndex = null;
 
     for (
       let i = zone.sourceIndex + 1;
@@ -349,6 +350,11 @@ function buildDojiZones(candles, orangeBox) {
 
       if (intersects && i !== lastTouchIndex) {
         touches++;
+
+        if (firstTouchIndex === null) {
+          firstTouchIndex = i;
+        }
+
         lastTouchIndex = i;
       }
     }
@@ -528,9 +534,7 @@ function findClosedEntrySignal(candles, symbol, category, marketPip) {
 
   const color = candleColor(candle);
 
-  // --------------------------------------------------
-  // 6.1 BREAKOUT
-  // --------------------------------------------------
+  // BREAKOUT
 
   if (openInside && closeAbove && color === "RED") {
     return {
@@ -560,9 +564,7 @@ function findClosedEntrySignal(candles, symbol, category, marketPip) {
     };
   }
 
-  // --------------------------------------------------
-  // 6.2 RETEST
-  // --------------------------------------------------
+  // RETEST
 
   if (
     openAbove &&
@@ -604,9 +606,7 @@ function findClosedEntrySignal(candles, symbol, category, marketPip) {
     };
   }
 
-  // --------------------------------------------------
-  // 6.3 BREAK-IN
-  // --------------------------------------------------
+  // BREAK-IN
 
   if (
     openAbove &&
@@ -644,9 +644,7 @@ function findClosedEntrySignal(candles, symbol, category, marketPip) {
     };
   }
 
-  // --------------------------------------------------
-  // 6.4 RIDE WAVE
-  // --------------------------------------------------
+  // RIDE WAVE
 
   if (
     openInside &&
@@ -690,9 +688,7 @@ function findClosedEntrySignal(candles, symbol, category, marketPip) {
     };
   }
 
-  // --------------------------------------------------
-  // 6.5 DOJI FADE
-  // --------------------------------------------------
+  // DOJI FADE
 
   if (
     zones.above &&
@@ -1188,9 +1184,7 @@ export default function App() {
     setClosedTrades(next);
   }, []);
 
-  // ----------------------------------------------------
   // DERIV REQUESTS
-  // ----------------------------------------------------
 
   const request = useCallback(payload => {
     return new Promise((resolve, reject) => {
@@ -1227,9 +1221,7 @@ export default function App() {
     });
   }, []);
 
-  // ----------------------------------------------------
   // LIVE SIMULATED TRADE MONITORING
-  // ----------------------------------------------------
 
   const processTick = useCallback((symbol, tick) => {
     if (!symbol || !tick) return;
@@ -1333,9 +1325,7 @@ export default function App() {
     }
   }, [updateOrders, updateClosedTrades]);
 
-  // ----------------------------------------------------
   // RECONNECTION
-  // ----------------------------------------------------
 
   const scheduleReconnect = useCallback(() => {
     if (!runningRef.current || reconnectTimerRef.current) return;
@@ -1505,9 +1495,7 @@ export default function App() {
     return connectionPromise;
   }, [processTick, scheduleReconnect]);
 
-  // ----------------------------------------------------
   // MARKET SUBSCRIPTION
-  // ----------------------------------------------------
 
   const subscribeMarket = useCallback(async symbol => {
     if (subscriptionsRef.current.has(symbol)) return true;
@@ -1553,9 +1541,7 @@ export default function App() {
     }
   }, [request, processTick]);
 
-  // ----------------------------------------------------
   // MARKET DISCOVERY
-  // ----------------------------------------------------
 
   const discoverMarkets = useCallback(async () => {
     setMessage("Requesting active markets from Deriv...");
@@ -1629,9 +1615,7 @@ export default function App() {
     return list;
   }, [request]);
 
-  // ----------------------------------------------------
   // M15 SCAN
-  // ----------------------------------------------------
 
   const scanSymbol = useCallback(async item => {
     const diagnostic = {
@@ -1780,9 +1764,7 @@ export default function App() {
     }
   }, [request]);
 
-  // ----------------------------------------------------
   // SCAN ALL MARKETS
-  // ----------------------------------------------------
 
   const scanAll = useCallback(async list => {
     if (!runningRef.current || !list?.length) return;
@@ -1904,9 +1886,7 @@ export default function App() {
     }
   }, [scanSymbol]);
 
-  // ----------------------------------------------------
   // START ROBOT
-  // ----------------------------------------------------
 
   const startRobot = async () => {
     if (runningRef.current) return;
@@ -1946,7 +1926,6 @@ export default function App() {
         return;
       }
 
-      // Subscribe to priority instruments first.
       const priorityMarkets = list.filter(item =>
         item.prioritySymbol
       );
@@ -1971,7 +1950,7 @@ export default function App() {
       }, SCAN_INTERVAL);
 
       setMessage(
-        "Robot running. Live scanner checks every 10 seconds; entries require a completed M15 candle."
+        "Robot running. Live scanner checks every 1 minute; entries require a completed M15 candle."
       );
 
     } catch (error) {
@@ -1981,9 +1960,7 @@ export default function App() {
     }
   };
 
-  // ----------------------------------------------------
   // STOP ROBOT
-  // ----------------------------------------------------
 
   const stopRobot = () => {
     runningRef.current = false;
@@ -2059,9 +2036,7 @@ export default function App() {
     );
   };
 
-  // ----------------------------------------------------
   // MANUAL TAP TO ENTER
-  // ----------------------------------------------------
 
   const activateSignal = async item => {
     const signal = signals[item.symbol];
@@ -2236,9 +2211,7 @@ export default function App() {
     }
   };
 
-  // ----------------------------------------------------
   // AUTOMATIC RECONNECTION
-  // ----------------------------------------------------
 
   useEffect(() => {
     const recoverRobot = async () => {
@@ -2295,7 +2268,7 @@ export default function App() {
         }
 
         if (runningRef.current && list.length) {
-          setMessage("Connection restored. Resuming 10-second scans...");
+          setMessage("Connection restored. Resuming 1-minute scans...");
           await scanAll(list);
         }
 
@@ -2365,9 +2338,7 @@ export default function App() {
     };
   }, []);
 
-  // ====================================================
   // DASHBOARD CALCULATIONS
-  // ====================================================
 
   const visibleSymbols = symbols
     .filter(item => {
@@ -2558,9 +2529,7 @@ export default function App() {
     symbols.map(item => item.prioritySymbol).filter(Boolean)
   );
 
-  // ====================================================
   // UI
-  // ====================================================
 
   return (
     <div style={{
@@ -2582,9 +2551,12 @@ export default function App() {
           scrollbar-width:none;
         }
         .market-scroll::-webkit-scrollbar { display:none; }
-        .market-card:active { transform:scale(.99); }
         .market-card { transition:transform .12s ease; }
-        .market-card:disabled { opacity:.55; cursor:not-allowed; }
+        .market-card:active { transform:scale(.99); }
+        .trade-entry-button:disabled {
+          opacity:.45;
+          cursor:not-allowed;
+        }
         input:focus, select:focus { outline:1px solid #31a8ff; }
         details > summary::-webkit-details-marker { display:none; }
         details > summary::after {
@@ -2720,7 +2692,7 @@ export default function App() {
           <div style={small}>
             Scan progress: {scanned}/{symbols.length} · {progress}%
             {" · "}
-            Every 10 seconds
+            Every 1 minute
           </div>
 
           <div style={small}>
@@ -2805,7 +2777,7 @@ export default function App() {
           </summary>
 
           <div style={small}>
-            Live scanner states · Priority instruments first · 10-second scan cycle
+            Live scanner states · Priority instruments first · 1-minute scan cycle
           </div>
 
           {!visibleScannerStates.length && (
@@ -2878,7 +2850,7 @@ export default function App() {
           </summary>
 
           <div style={small}>
-            Only completed M15 candles create entry signals. Tap a valid signal to open a simulated trade manually.
+            Only completed M15 candles create entry signals. Use the dedicated BUY or SELL button to open a simulated trade manually.
           </div>
 
           <input
@@ -2968,12 +2940,12 @@ export default function App() {
                 dailyTradeCount >= MAX_DAILY_TRADES ||
                 openTrades.length >= MAX_OPEN_TRADES;
 
+              const isBuy = signal.direction === "BUY";
+
               return (
-                <button
+                <div
                   key={item.symbol}
                   className="market-card"
-                  disabled={limitReached || hasOrder}
-                  onClick={() => activateSignal(item)}
                   style={{
                     width: "100%",
                     background: "#0b1525",
@@ -2985,7 +2957,6 @@ export default function App() {
                     display: "flex",
                     justifyContent: "space-between",
                     alignItems: "center",
-                    textAlign: "left",
                     gap: 8,
                     color: "#edf4ff"
                   }}
@@ -3059,7 +3030,7 @@ export default function App() {
                       <div style={{
                         fontSize: 9,
                         color: "#f4c46a",
-                        marginTop: 5
+                        marginTop: 7
                       }}>
                         THIS SIGNAL ALREADY TRADED
                       </div>
@@ -3069,19 +3040,35 @@ export default function App() {
                       <div style={{
                         fontSize: 9,
                         color: "#ff7a82",
-                        marginTop: 5
+                        marginTop: 7
                       }}>
                         TRADE LIMIT REACHED
                       </div>
                     )}
 
-                    <div style={{
-                      fontSize: 9,
-                      color: "#55c9ff",
-                      marginTop: 6
-                    }}>
-                      TAP TO OPEN SIMULATED DEMO TRADE
-                    </div>
+                    <button
+                      type="button"
+                      className="trade-entry-button"
+                      disabled={limitReached || hasOrder}
+                      onClick={() => activateSignal(item)}
+                      style={{
+                        width: "100%",
+                        marginTop: 12,
+                        padding: "13px 10px",
+                        border: 0,
+                        borderRadius: 7,
+                        background: isBuy ? "#16a36f" : "#c83e4d",
+                        color: "#ffffff",
+                        fontSize: 12,
+                        fontWeight: 900,
+                        letterSpacing: 0.6,
+                        opacity: limitReached || hasOrder ? 0.45 : 1
+                      }}
+                    >
+                      {isBuy
+                        ? "▲ TAP BUY — OPEN DEMO TRADE"
+                        : "▼ TAP SELL — OPEN DEMO TRADE"}
+                    </button>
                   </div>
 
                   <div style={{
@@ -3096,7 +3083,7 @@ export default function App() {
                   }}>
                     {signal.direction}
                   </div>
-                </button>
+                </div>
               );
             })}
           </div>
@@ -3331,7 +3318,7 @@ export default function App() {
           }}>
             TIMEFRAME: M15 ONLY.
             <br/>
-            SCAN FREQUENCY: 10 SECONDS.
+            SCAN FREQUENCY: 1 MINUTE.
             <br/>
             SERVER DAY RESET: 00:00 UTC.
             <br/>
