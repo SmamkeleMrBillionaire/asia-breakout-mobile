@@ -2136,6 +2136,7 @@ const [clock, setClock] = useState(
       setMessage(
         `${item.display_name}: ${order.pendingType} ${signal.direction} at ${fmt(order.entry, 5)} · ${spreadInfo.estimated ? "EST. SPREAD" : "LIVE SPREAD"} · SL ${fmt(order.sl, 5)} · TP ${fmt(order.tp, 5)}`
       );
+     sendIFXAlert('iFX BILLIONAIRE - PENDING ACTIVATED!', `${orig.displayName} ${orig.pendingType} ACTIVATED at ${fmt(orig.entry, 5)}`);
     } catch (e) {
       setMessage(`${item.symbol}: ${e.message}`);
     } finally {
