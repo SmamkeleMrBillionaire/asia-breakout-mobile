@@ -989,7 +989,13 @@ export default function App() {
 
   const [lastScan, setLastScan] = useState("Not scanned");
 
-  const [clock, setClock] = useState(
+    // NOTIFICATION PERMISSION + ACTIVATION WATCH
+  useEffect(() => {
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+  }, []);
+const [clock, setClock] = useState(
     Math.floor(Date.now() / 1000)
   );
 
