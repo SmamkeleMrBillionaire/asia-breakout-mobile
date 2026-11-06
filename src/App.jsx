@@ -14,10 +14,7 @@ import React, {
 // UI UPDATE: COLLAPSIBLE VALID M15 SIGNALS
 // =============================================
 
-// --- iFX NOTIFICATION - PENDING ACTIVATED ---
-if ('Notification' in window && Notification.permission === 'default') {
-  Notification.requestPermission();
-}
+// --- iFX NOTIFICATION HELPER - CLEAN ---
 function sendIFXAlert(title, body) {
   if (navigator.vibrate) navigator.vibrate([300,100,300]);
   try {
@@ -25,29 +22,13 @@ function sendIFXAlert(title, body) {
     audio.play().catch(()=>{});
   } catch(e){}
   if ('Notification' in window && Notification.permission === 'granted') {
-    if (navigator.serviceWorker && navigator.serviceWorker.controller) {
-      navigator.serviceWorker.ready.then(reg => reg.showNotification(title, { body, icon: '/icon-192.png', badge: '/icon-192.png', vibrate: [300,100,300], requireInteraction: true }));
+    if (navigator.serviceWorker) {
+      navigator.serviceWorker.ready.then(reg => reg.showNotification(title, { body, icon: '/icon-192.png', requireInteraction: true, vibrate: [300,100,300] })).catch(()=>{ new Notification(title, { body }); });
     } else {
       new Notification(title, { body });
     }
-  } else {
-    alert(title + ' - ' + body);
   }
 }
-// Watch for PENDING -> ACTIVATED on screen
-setInterval(() => {
-  const text = document.body.innerText || '';
-  if (text.includes('ACTIVATED') && !window._ifxNotified) {
-    window._ifxNotified = true;
-    sendIFXAlert('iFX BILLIONAIRE - PENDING ACTIVATED!', 'R10.24 M15 ORANGE BOX - TRADE ACTIVE!');
-    setTimeout(()=> window._ifxNotified = false, 60000);
-  }
-  if (text.includes('PENDING') && !text.includes('ACTIVATED')) {
-    window._ifxNotified = false;
-  }
-}, 2000);
-
-=========
 
 const WS_URL =
   "wss://api.derivws.com/trading/v1/options/ws/public";
