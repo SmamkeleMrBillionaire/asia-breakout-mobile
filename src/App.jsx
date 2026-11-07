@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-// iFX BILLIONAIRE R10.24 - FIXED NOTIFICATIONS
+// iFX BILLIONAIRE EA - FIXED NOTIFICATIONS
 function sendIFXAlert(title, body) {
   if (navigator.vibrate) navigator.vibrate([300,100,300,100,300]);
   try {
@@ -181,7 +181,7 @@ function makeDemoOrder(signal,symbol,category,displayName,balance,riskPct,sizing
   const safeBalance=Math.max(0,Number(balance)||0);
   const riskMoney=sizingMode==="FIXED_LOTS"?safeBalance*0.01*((Number(fixedLots)||0)/0.10):safeBalance*(Math.max(0,Number(riskPct)||0)/100);
   const nowMs=Date.now(); const ep=Math.floor(nowMs/1000);
-  return {id:`${symbol}-${signal.signalId}-${nowMs}`,signalId:signal.signalId,comment:"Ifx Billionaire R10.24",boxId:signal.boxId,boxType:"ORANGE",strategy:signal.strategy,pendingType,orderType:pendingType,symbol,displayName:displayName||symbol,category,direction:signal.direction,entry,signalEntryLevel:signal.entryLevel,sl,tp,slDistance:slD,tpDistance:tpD,boxSize,spread,spreadPoints:spreadInfo.points,spreadEstimated:Boolean(spreadInfo.estimated),spreadSource:spreadInfo.source,riskMoney,rewardRatio:tpD/slD,status:"PENDING DEMO TRADE",pendingExpiry:nowMs+PENDING_EXPIRY_SECONDS*1000,currentPrice:Number.isFinite(bid)?bid:Number.isFinite(tick?.quote)?tick.quote:entry,floatingPnl:0,created:new Date(nowMs).toLocaleTimeString(),createdAtMs:nowMs,openedEpoch:ep,openedDay:serverDay(ep)};
+  return {id:`${symbol}-${signal.signalId}-${nowMs}`,signalId:signal.signalId,comment:"Ifx Billionaire",boxId:signal.boxId,boxType:"ORANGE",strategy:signal.strategy,pendingType,orderType:pendingType,symbol,displayName:displayName||symbol,category,direction:signal.direction,entry,signalEntryLevel:signal.entryLevel,sl,tp,slDistance:slD,tpDistance:tpD,boxSize,spread,spreadPoints:spreadInfo.points,spreadEstimated:Boolean(spreadInfo.estimated),spreadSource:spreadInfo.source,riskMoney,rewardRatio:tpD/slD,status:"PENDING DEMO TRADE",pendingExpiry:nowMs+PENDING_EXPIRY_SECONDS*1000,currentPrice:Number.isFinite(bid)?bid:Number.isFinite(tick?.quote)?tick.quote:entry,floatingPnl:0,created:new Date(nowMs).toLocaleTimeString(),createdAtMs:nowMs,openedEpoch:ep,openedDay:serverDay(ep)};
 }
 function calculateDemoPnl(t,p){ if(t.status==="PENDING DEMO TRADE") return 0; const sd=Math.abs(t.entry-t.sl); if(!sd) return 0; const mv=t.direction==="BUY"?p-t.entry:t.entry-p; return (mv/sd)*t.riskMoney; }
 function getExitReason(t,p){ if(t.status==="PENDING DEMO TRADE") return null; if(t.direction==="BUY"){ if(p<=t.sl) return "STOP LOSS"; if(p>=t.tp) return "TAKE PROFIT"; } else { if(p>=t.sl) return "STOP LOSS"; if(p<=t.tp) return "TAKE PROFIT"; } return null; }
@@ -200,7 +200,7 @@ export default function App(){
   const [signalsCollapsed,setSignalsCollapsed]=useState(true);
   const [progress,setProgress]=useState(0); const [scanned,setScanned]=useState(0);
   const [balance,setBalance]=useState(10000); const [riskPct,setRiskPct]=useState(1); const [fixedLots,setFixedLots]=useState(0.10); const [sizingMode,setSizingMode]=useState("RISK_PERCENT");
-  const [message,setMessage]=useState("Connect to Deriv Public Market - R10.24");
+  const [message,setMessage]=useState("Connect to Deriv Public Market");
   const [lastScan,setLastScan]=useState("Not scanned");
   const [clock,setClock]=useState(Math.floor(Date.now()/1000));
   useEffect(()=>{ if('Notification' in window && Notification.permission==='default'){ Notification.requestPermission(); } },[]);
@@ -217,7 +217,6 @@ export default function App(){
     try{ ws.send(JSON.stringify({...payload,req_id:id})); }catch(e){ clearTimeout(timeout); pendingRequestsRef.current.delete(id); reject(e); }
   }),[]);
 
-  // *** FIXED: PENDING ACTIVATION NOTIFICATION ***
   const processTick=useCallback((symbol,tick)=>{
     if(!symbol||!tick) return;
     const quote=Number(tick.quote); const bid=Number(tick.bid); const ask=Number(tick.ask);
@@ -238,7 +237,6 @@ export default function App(){
         else if(orig.pendingType==="SELL LIMIT") shouldActivate=usable>=orig.entry;
         else shouldActivate=orig.direction==="BUY"?usable>=orig.entry:usable<=orig.entry;
         if(shouldActivate){
-          // >>> NOTIFICATION WHEN PENDING ACTIVATES <<<
           sendIFXAlert('iFX BILLIONAIRE - ORDER ACTIVATED 🔥', `${orig.displayName} ${orig.pendingType} ACTIVATED at ${fmt(orig.entry,5)} - NOW OPEN`);
           remaining.push({...orig,status:"OPEN DEMO TRADE",currentPrice:usable,activatedAt:new Date().toLocaleTimeString(),floatingPnl:0});
           setMessage(`${orig.displayName} ${orig.pendingType} ACTIVATED at ${fmt(orig.entry,5)}`);
@@ -342,7 +340,7 @@ export default function App(){
     scanLockRef.current=true; setMessage("Scanning Deriv markets - M15 - Orange Box only..."); setScanned(0); setProgress(0);
     const results={}; let completed=0; let failed=0; let nextIndex=0;
     const worker=async()=>{ while(nextIndex<list.length&&runningRef.current){ const idx=nextIndex++; const item=list[idx]; const r=await scanSymbol(item); results[item.symbol]=r; if(r.scannerState==="DATA ERROR") failed++; completed++; setScanned(completed); setProgress(Math.round(completed/list.length*100)); if(completed%5===0){ setSignals(p=>({...p,...results})); setScannerStates(p=>({...p,...Object.fromEntries(Object.entries(results).map(([s,v])=>[s,{state:v.scannerState,proximity:v.scannerProximity,livePrice:v.livePrice,spreadKnown:v.spreadKnown,spreadEstimated:v.spreadEstimated,spreadSource:v.spreadSource,spreadPoints:v.spreadPoints,touching:v.isTouching,breaking:v.isBreaking}]))})); } } };
-    try{ await Promise.all([worker(),worker(),worker(),worker()]); if(!runningRef.current) return; setSignals(p=>({...p,...results})); setScannerStates(p=>({...p,...Object.fromEntries(Object.entries(results).map(([s,v])=>[s,{state:v.scannerState,proximity:v.scannerProximity,livePrice:v.livePrice,spreadKnown:v.spreadKnown,spreadEstimated:v.spreadEstimated,spreadSource:v.spreadSource,spreadPoints:v.spreadPoints,touching:v.isTouching,breaking:v.isBreaking}]))})); setMessage(`Scan complete: ${completed}/${list.length} markets · ${failed} data errors · R10.24`); setLastScan(new Date().toLocaleTimeString()); }finally{ scanLockRef.current=false; if(rescanRequestedRef.current&&runningRef.current){ rescanRequestedRef.current=false; setTimeout(()=>{ if(runningRef.current) scanAll(marketsRef.current); },0); } }
+    try{ await Promise.all([worker(),worker(),worker(),worker()]); if(!runningRef.current) return; setSignals(p=>({...p,...results})); setScannerStates(p=>({...p,...Object.fromEntries(Object.entries(results).map(([s,v])=>[s,{state:v.scannerState,proximity:v.scannerProximity,livePrice:v.livePrice,spreadKnown:v.spreadKnown,spreadEstimated:v.spreadEstimated,spreadSource:v.spreadSource,spreadPoints:v.spreadPoints,touching:v.isTouching,breaking:v.isBreaking}]))})); setMessage(`Scan complete: ${completed}/${list.length} markets · ${failed} data errors`); setLastScan(new Date().toLocaleTimeString()); }finally{ scanLockRef.current=false; if(rescanRequestedRef.current&&runningRef.current){ rescanRequestedRef.current=false; setTimeout(()=>{ if(runningRef.current) scanAll(marketsRef.current); },0); } }
   },[scanSymbol]);
 
   const startRobot=async()=>{
@@ -355,7 +353,7 @@ export default function App(){
       await scanAll(list); if(!runningRef.current) return;
       if(scanTimerRef.current) clearInterval(scanTimerRef.current);
       scanTimerRef.current=setInterval(()=>{ if(runningRef.current) scanAll(marketsRef.current); },SCAN_INTERVAL);
-      setMessage("Robot running R10.24 - Public markets - 5 MIN scan - NO DOJI");
+      setMessage("Robot running - 5 MIN scan");
       sendIFXAlert('iFX BILLIONAIRE STARTED', 'Robot running - You will be notified on pending activation');
     }catch(e){ runningRef.current=false; setRunning(false); setConnectionText(socketRef.current?.readyState===WebSocket.OPEN?"CONNECTED - MARKET DISCOVERY FAILED":"DISCONNECTED"); setMessage(e.message||"Unable to start robot"); }
   };
@@ -373,7 +371,6 @@ export default function App(){
     setMessage(`STOPPED. ${closedNow.length} simulated trades closed.`);
   };
 
-  // *** FIXED: PENDING PLACED NOTIFICATION - was using undefined orig ***
   const activateSignal=async item=>{
     const signal=signals[item.symbol];
     if(!signal||signal.direction==="NONE") return;
@@ -401,7 +398,6 @@ export default function App(){
       updateOrders(p=>[order,...p]);
       setLastActivated(`${signal.direction} · ${signal.strategy} · ${order.pendingType}`);
       setMessage(`${item.display_name}: ${order.pendingType} ${signal.direction} at ${fmt(order.entry,5)} · SL ${fmt(order.sl,5)} · TP ${fmt(order.tp,5)}`);
-      // FIXED LINE - NOW CORRECT
       sendIFXAlert('iFX BILLIONAIRE - PENDING PLACED', `${item.display_name} ${order.pendingType} ${signal.direction} at ${fmt(order.entry,5)} - Waiting for activation`);
     }catch(e){ setMessage(`${item.symbol}: ${e.message}`); }finally{ activationLocksRef.current.delete(lockKey); }
   };
@@ -451,15 +447,14 @@ export default function App(){
   return (
     <div style={{background:"#0a0f1a",minHeight:"100vh",color:"#e6edf7",fontFamily:"system-ui",paddingBottom:30}}>
       <div style={{padding:"14px 16px",display:"flex",justifyContent:"space-between",alignItems:"center",borderBottom:"1px solid #1e2d45"}}>
-        <div><div style={{fontSize:22,fontWeight:900}}>iFX BILLIONAIRE R10.24</div><div style={{fontSize:9,color:"#8a9bb5"}}>M15 • NO DOJI • ORANGE BOX ONLY • SIMULATED DEMO • NOTIFICATIONS ON</div></div>
+        <div><div style={{fontSize:22,fontWeight:900}}>iFX BILLIONAIRE EA</div></div>
         <div style={{background:running?"#0f3d1e":"#3a1a1a",color:running?"#4ade80":"#ff6b6b",padding:"6px 12px",borderRadius:20,fontSize:11,fontWeight:800}}>● {running?"RUNNING":"STOPPED"}</div>
       </div>
 
       <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:12,margin:12,padding:14}}>
-        <div style={{fontSize:12,fontWeight:900}}>ROBOT CONTROL - R10.24 - 5 MIN SCAN - NOTIFY ON ACTIVATION ✅</div>
+        <div style={{fontSize:12,fontWeight:900}}>ROBOT CONTROL</div>
         <div style={{display:"flex",gap:10,alignItems:"center",margin:"10px 0",fontSize:11,flexWrap:"wrap"}}>
           <span style={{color:connected?"#4ade80":"#ff6b6b"}}>● {connectionText}</span>
-          <span style={{background:"#4a3a12",color:"#fbbf24",padding:"3px 8px",borderRadius:4,fontSize:10,fontWeight:800}}>SIMULATED DEMO - R10.24</span>
           <button onClick={()=>{ Notification.requestPermission(); sendIFXAlert('TEST NOTIFICATION','If you see this, pending activation will buzz you!'); }} style={{background:"#0ea5e9",color:"white",border:"none",padding:"6px 10px",borderRadius:6,fontWeight:800,fontSize:11}}>🔔 TEST NOTIFICATION</button>
         </div>
         <div style={{display:"flex",gap:10}}>
@@ -469,7 +464,7 @@ export default function App(){
         <div style={{fontSize:11,color:"#8a9bb5",marginTop:10,overflowWrap:"anywhere"}}>{message}</div>
         <div style={{height:5,background:"#1e2d45",borderRadius:3,margin:"12px 0 8px"}}><div style={{height:"100%",background:"#3b82f6",width:`${progress}%`,transition:"width .2s"}} /></div>
         <div style={{fontSize:11,color:"#8a9bb5"}}>Scan: {scanned}/{symbols.length} · {progress}% · Every 5 MIN · UTC: {new Date(clock*1000).toISOString().slice(11,19)} · Last: {lastScan}</div>
-        <div style={{background:isTradingHours?"#14532d":"#3f1d1d",color:isTradingHours?"#4ade80":"#f87171",padding:10,borderRadius:8,fontSize:12,fontWeight:800,textAlign:"center",marginTop:10}}>TRADING: {isTradingHours?"ACTIVE":"PAUSED"} · 07:00-21:59 UTC · R10.24 NO DOJI</div>
+        <div style={{background:isTradingHours?"#14532d":"#3f1d1d",color:isTradingHours?"#4ade80":"#f87171",padding:10,borderRadius:8,fontSize:12,fontWeight:800,textAlign:"center",marginTop:10}}>TRADING: {isTradingHours?"ACTIVE":"PAUSED"} - 07:00 - 21:59</div>
         <div style={{display:"flex",gap:8,marginTop:12,fontSize:11,flexWrap:"wrap"}}>
           <label>Balance $<input type="number" value={balance} onChange={e=>setBalance(Number(e.target.value))} style={{width:80,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:4,padding:4}} /></label>
           <label>Risk %<input type="number" value={riskPct} onChange={e=>setRiskPct(Number(e.target.value))} style={{width:50,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:4,padding:4}} /></label>
@@ -484,7 +479,7 @@ export default function App(){
       </div>
 
       <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:12,margin:12,padding:14}}>
-        <button onClick={()=>setSignalsCollapsed(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,background:"#0f172a",color:"#e6edf7",border:"1px solid #334155",borderRadius:8,padding:13,fontSize:12,fontWeight:900,textAlign:"left",cursor:"pointer"}}><span>VALID M15 SIGNALS - ORANGE BOX - R10.24 ({visibleSymbols.length})</span><span style={{color:"#fbbf24",fontSize:16}}>{signalsCollapsed?"▼":"▲"}</span></button>
+        <button onClick={()=>setSignalsCollapsed(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,background:"#0f172a",color:"#e6edf7",border:"1px solid #334155",borderRadius:8,padding:13,fontSize:12,fontWeight:900,textAlign:"left",cursor:"pointer"}}><span>VALID M15 SIGNALS ({visibleSymbols.length})</span><span style={{color:"#fbbf24",fontSize:16}}>{signalsCollapsed?"▼":"▲"}</span></button>
         {!signalsCollapsed && (
           <>
             <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search..." style={{width:"100%",padding:12,background:"#0f172a",border:"1px solid #334155",borderRadius:8,color:"white",margin:"12px 0",boxSizing:"border-box"}} />
