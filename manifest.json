@@ -1,12 +1,39 @@
+
 {
-  "name": "iFX BILLIONAIRE R10.24",
+  "id": "/",
+  "name": "iFX BILLIONAIRE",
   "short_name": "iFX BILLIONAIRE",
+  "description": "iFX BILLIONAIRE - Asia Breakout Trading Robot",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
+  "orientation": "portrait",
   "background_color": "#080808",
   "theme_color": "#080808",
   "icons": [
-    { "src": "https://cdn-icons-png.flaticon.com/512/7448/7448009.png", "sizes": "192x192", "type": "image/png" },
-    { "src": "https://cdn-icons-png.flaticon.com/512/7448/7448009.png", "sizes": "512x512", "type": "image/png" }
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
   ]
 }
