@@ -26,23 +26,45 @@ function sendAlert(t,b){
     } else { try{new Notification(t,{body:b});}catch(e){} }
   } else if('Notification' in window){ Notification.requestPermission().then(()=>{ try{new Notification(t,{body:b});}catch(e){} }); }
 }
+// ===== FIXED: INDICES NO LONGER GO TO GOLD =====
 async function sendToMT4(result, setMsg){
   try{
-    let raw = result.pair.replace(".ecn","").replace("m","").toUpperCase();
+    let raw = result.pair.replace(".ecn","").toUpperCase().replace(/\s+/g,"");
+    // Remove trailing M only if it's suffix like XAUUSDM -> XAUUSD, but keep BOOM
+    if(raw.endsWith("M") && !raw.includes("BOOM") && !raw.includes("CRASH")) raw = raw.slice(0,-1);
     let sym = raw;
     if(raw.includes("XAU")) sym="XAUUSDm";
-    else if(raw.includes("V75")) sym="Volatility 75 Index";
+    else if(raw.includes("V75") || raw.includes("VOLATILITY75")) sym="Volatility 75 Index";
     else if(raw.includes("BTC")) sym="BTCUSDm";
     else if(raw.includes("US30")) sym="US30m";
-    else if(raw.includes("NAS")) sym="USTECm";
+    else if(raw.includes("NAS") || raw.includes("USTEC")) sym="USTECm";
     else if(raw.includes("1HZ15V")) sym="1HZ15V";
     else if(raw.includes("1HZ25V")) sym="1HZ25V";
     else if(raw.includes("1HZ90V")) sym="1HZ90V";
+    else if(raw.includes("BOOM150N")) sym="BOOM150N";
+    else if(raw.includes("BOOM500")) sym="BOOM500";
+    else if(raw.includes("BOOM900")) sym="BOOM900";
     else if(raw.includes("BOOM1000")) sym="BOOM1000";
     else if(raw.includes("BOOM300N")) sym="BOOM300N";
+    else if(raw.includes("BOOM50")) sym="BOOM50";
+    else if(raw.includes("CRASH150N")) sym="CRASH150N";
+    else if(raw.includes("CRASH500")) sym="CRASH500";
+    else if(raw.includes("CRASH600")) sym="CRASH600";
+    else if(raw.includes("CRASH900")) sym="CRASH900";
+    else if(raw.includes("CRASH1000")) sym="CRASH1000";
+    else if(raw.includes("CRASH300N")) sym="CRASH300N";
+    else if(raw.includes("CRASH600INDEX")) sym="CRASH600";
+    else if(raw.includes("CRASH900INDEX")) sym="CRASH900";
+    else if(raw.includes("BOOM500INDEX")) sym="BOOM500";
+    else if(raw.includes("BOOM1000INDEX")) sym="BOOM1000";
+    else if(raw.includes("CRASH") && raw.includes("600")) sym="CRASH600";
+    else if(raw.includes("CRASH") && raw.includes("900")) sym="CRASH900";
+    else if(raw.includes("BOOM") && raw.includes("500")) sym="BOOM500";
+    else if(raw.includes("BOOM") && raw.includes("1000")) sym="BOOM1000";
+    else if(raw.includes("CRASH")) sym="CRASH600";
+    else if(raw.includes("BOOM")) sym="BOOM500";
     else sym = raw + "m";
-    // FIX: Keep BUY_STOP / SELL_STOP as is, don't convert to BUY
-    let action = result.dir; // BUY, SELL, BUY_STOP, SELL_STOP
+    let action = result.dir;
     const payload={action:action, symbol:sym, entry:result.entry, sl:result.sl, tp:result.tp, time: Math.floor(Date.now()/1000)};
     const r = await fetch("/api/signal", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload)});
     const j = await r.json();
@@ -59,7 +81,7 @@ async function sendToMT4(result, setMsg){
 const fmt=(n,d=5)=>Number.isFinite(Number(n))?Number(n).toFixed(d):"—";
 function fmtPrice(n,pair){
   if(!Number.isFinite(Number(n))) return "—";
-  if(pair.includes("V75")||pair.includes("XAU")||pair.includes("US30")||pair.includes("NAS")||pair.includes("BTC")) return Number(n).toFixed(2);
+  if(pair.includes("V75")||pair.includes("XAU")||pair.includes("US30")||pair.includes("NAS")||pair.includes("BTC")||pair.includes("BOOM")||pair.includes("CRASH")) return Number(n).toFixed(2);
   if(pair.includes("JPY")) return Number(n).toFixed(3);
   return Number(n).toFixed(5);
 }
@@ -184,7 +206,6 @@ function App(){
    const pendingType=s.dir==="BUY"?"BUY STOP":"SELL STOP";
    const o={id:Date.now(),symbol:s.symbol,display:s.sym,dir:s.dir,strategy:s.strat,pendingType,entry,sl,tp,boxSize,risk:riskMoney,status:"PENDING",cur:entry,float:0,openedDay:sDay(now)};
    setOrders(p=>[o,...p]); sendAlert("iFX PENDING PLACED", s.sym+" "+pendingType+" "+s.dir+" at "+fmtPrice(entry,s.sym));
-   // *** TWIN FIX - ONLY SEND TO MT4 WHEN YOU PRESS PLACE BUTTON ***
    await sendToMT4({pair:s.sym, dir:pendingType, entry:entry, sl:sl, tp:tp}, setMsg);
    setMsg(`${s.sym} PENDING ${s.dir} at ${fmtPrice(entry,s.sym)} - SENT TO MT4`);
    try{ wsRef.current.send(JSON.stringify({ticks:s.symbol,subscribe:1})); }catch(e){}
