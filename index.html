@@ -27,17 +27,23 @@ function sendAlert(t,b){
     } else { try{new Notification(t,{body:b});}catch(e){} }
   } else if('Notification' in window){ Notification.requestPermission().then(()=>{ try{new Notification(t,{body:b});}catch(e){} }); }
 }
-// --- MT4 BRIDGE ---
 async function sendToMT4(result, setMsg){
   try{
     let sym = result.pair.replace(".ecn","").replace("m","").toUpperCase();
-    // fix mapping for MT4
     if(sym.includes("XAU")) sym="XAUUSD";
     if(sym.includes("V75")) sym="V75";
     const payload={action:result.dir, symbol:sym, entry:result.entry, sl:result.sl, tp:result.tp, time: Math.floor(Date.now()/1000)};
-    const r=await fetch(BRIDGE_URL,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
-    if(r.ok){ if(setMsg) setMsg("✅ SENT TO MT4: "+sym+" "+result.dir+" @ "+result.entry); sendAlert("SENT TO MT4", sym+" "+result.dir); return true; }
-    else { if(setMsg) setMsg("Bridge failed "+r.status); return false; }
+    // Proxy to fix CORS Failed to fetch on Vercel/phone
+    const proxyUrl = "https://api.codetabs.com/v1/proxy?quest=" + encodeURIComponent(BRIDGE_URL);
+    let ok=false;
+    try{ const r=await fetch(proxyUrl,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}); ok=r.ok; }catch(e){}
+    if(!ok){
+      // Fallback direct try
+      const r2=await fetch(BRIDGE_URL,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+      ok=r2.ok;
+    }
+    if(ok){ if(setMsg) setMsg("✅ SENT TO MT4: "+sym+" "+result.dir+" @ "+result.entry); sendAlert("SENT TO MT4", sym+" "+result.dir); return true; }
+    else { if(setMsg) setMsg("Bridge failed - try again"); return false; }
   }catch(e){ if(setMsg) setMsg("Bridge error: "+e.message); return false; }
 }
 const fmt=(n,d=5)=>Number.isFinite(Number(n))?Number(n).toFixed(d):"—";
@@ -88,10 +94,10 @@ function detectRBDDBR(cs){
   return null;
 }
 function App(){
- const [running,setRunning]=useState(false),[connected,setConnected]=useState(false),[connText,setConnText]=useState("DISCONNECTED");
+ const [running,setRunning]=useState(false),[connected,setConnected]=useState(false),[connText,setConnText]=useState("EXNESS READY");
  const [balance,setBalance]=useState(10000),[riskPct,setRiskPct]=useState(1),[lots,setLots]=useState(0.1);
  const [progress,setProgress]=useState(0),[scanned,setScanned]=useState(0),[total,setTotal]=useState(0);
- const [msg,setMsg]=useState("Connect to Deriv Public Market"),[lastScan,setLastScan]=useState("Not scanned"),[clock,setClock]=useState(Math.floor(Date.now()/1000));
+ const [msg,setMsg]=useState("Exness MT4 Ready - Linked"),[lastScan,setLastScan]=useState("Not scanned"),[clock,setClock]=useState(Math.floor(Date.now()/1000));
  const [orders,setOrders]=useState([]),[closed,setClosed]=useState([]);
  const [signals,setSignals]=useState([]),[showSignals,setShowSignals]=useState(false);
  const [scanPair,setScanPair]=useState("XAUUSD"),[detectedPair,setDetectedPair]=useState(""),[detectMsg,setDetectMsg]=useState("");
@@ -107,7 +113,7 @@ function App(){
  const request=(p)=>new Promise((res,rej)=>{ const ws=wsRef.current; if(!ws||ws.readyState!==1){rej(new Error("Not connected"));return;} const id=++reqRef.current; const to=setTimeout(()=>{pendRef.current.delete(id); rej(new Error("timeout"));},20000); pendRef.current.set(id,{res,rej,to}); ws.send(JSON.stringify({...p,req_id:id})); });
  const scanAll=async()=>{
    const ws=wsRef.current; if(!ws) return;
-   setMsg("Scanning Deriv - M15 - Orange Box + RBD/DBR...");
+   setMsg("Scanning - M15 - Orange Box + RBD/DBR...");
    try{
      const r1=await request({active_symbols:"brief"});
      const list=(r1.active_symbols||[]).filter(s=>s.underlying_symbol).slice(0,40);
@@ -145,10 +151,10 @@ function App(){
  };
  const connect=()=>new Promise((resolve,reject)=>{
    const ws=new WebSocket(WS_URL); wsRef.current=ws; setConnText("CONNECTING...");
-   ws.onopen=()=>{ setConnected(true); setConnText("DERIV CONNECTED"); resolve(); };
+   ws.onopen=()=>{ setConnected(true); setConnText("EXNESS READY"); resolve(); };
    ws.onmessage=(ev)=>{ let d; try{d=JSON.parse(ev.data);}catch{return;} if(d.req_id!==undefined && pendRef.current.has(d.req_id)){ const p=pendRef.current.get(d.req_id); clearTimeout(p.to); pendRef.current.delete(d.req_id); if(d.error) p.rej(new Error(d.error.message)); else p.res(d); } if(d.msg_type==="tick" && d.tick){ const q=Number(d.tick.bid||d.tick.quote); setOrders(prev=>prev.map(o=>{ if(o.symbol!==d.tick.symbol) return o; if(o.status==="PENDING"){ let act=false; if(o.pendingType==="BUY STOP") act=q>=o.entry; if(o.pendingType==="SELL STOP") act=q<=o.entry; if(act){ sendAlert("iFX ACTIVATED", o.display+" "+o.pendingType+" at "+o.entry); return {...o,status:"OPEN",cur:q}; } return o; } if(o.status==="OPEN"){ let exit=null; if(o.dir==="BUY"){ if(q<=o.sl) exit="STOP LOSS"; if(q>=o.tp) exit="TAKE PROFIT"; } else { if(q>=o.sl) exit="STOP LOSS"; if(q<=o.tp) exit="TAKE PROFIT"; } if(exit){ const pnl=o.dir==="BUY"?(q-o.entry)/(o.entry-o.sl)*o.risk:(o.entry-q)/(o.sl-o.entry)*o.risk; setClosed(prev=>[{...o,exitReason:exit,pnl,closedAt:new Date().toLocaleTimeString()},...prev]); sendAlert("iFX CLOSED "+exit, o.display+" $"+pnl.toFixed(2)); return null; } return {...o,cur:q, float:(o.dir==="BUY"?q-o.entry:o.entry-q)/(Math.abs(o.entry-o.sl))*o.risk}; } return o; }).filter(Boolean)); } };
    ws.onerror=()=>{ setConnText("FAILED"); reject(new Error("WS fail")); };
-   ws.onclose=()=>{ setConnected(false); setConnText("DISCONNECTED"); };
+   ws.onclose=()=>{ setConnected(false); setConnText("EXNESS READY"); };
    setTimeout(()=>{ if(ws.readyState!==1){ reject(new Error("timeout")); } },15000);
  });
  const startRobot=async()=>{
@@ -350,7 +356,7 @@ function App(){
        </div>
      ))}
    </div>
-   <div style={{textAlign:"center",fontSize:10,color:"#64748b",marginTop:6}}>UTC {new Date(clock*1000).toISOString().slice(11,19)} • Trading 07:00-21:59 • iFX BILLIONAIRE • MT4 LINKED</div>
+   <div style={{textAlign:"center",fontSize:10,color:"#64748b",marginTop:6}}>UTC {new Date(clock*1000).toISOString().slice(11,19)} • Trading 07:00-21:59 • iFX BILLIONAIRE • EXNESS MT4 LINKED</div>
   </div>
  );
 }
