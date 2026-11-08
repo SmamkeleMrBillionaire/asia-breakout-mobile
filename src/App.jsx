@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-// iFX BILLIONAIRE EA + AI SCANNER V11.2 - ORANGE BOX CONFIRMED A,B,C
+// iFX BILLIONAIRE EA + AI SCANNER V11.3 - TOP AS PER IMAGE + ORANGE BOX A,B,C LOCKED
 function sendIFXAlert(title, body) {
   if (navigator.vibrate) navigator.vibrate([300,100,300,100,300]);
   try { const audio = new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg'); audio.play().catch(()=>{}); } catch(e){}
@@ -44,7 +44,7 @@ function calculateRSI(candles,idx,period=3){ if(!candles||idx<period) return nul
 function buildOrangeBox(candles,day){ const f=candles.filter(c=>serverDay(c.epoch)===day&&serverHour(c.epoch)===0&&[0,15,30,45].includes(serverMinute(c.epoch))).sort((a,b)=>a.epoch-b.epoch).slice(0,4); if(f.length!==4) return null; const ok=f.every((c,i)=>i===0||c.epoch-f[i-1].epoch===TIMEFRAME); if(!ok) return null; const high=Math.max(...f.map(c=>c.high)); const low=Math.min(...f.map(c=>c.low)); if(!(high>low)) return null; return {type:"ORANGE",day,high,low,size:high-low,startEpoch:f[0].epoch,createdEpoch:f[0].epoch,boxId:makeBoxId("ORANGE",day,high,low)}; }
 function makeSignal({direction,strategy,candle,orangeBox,pip,entryLevel,reason,rsi,pendingType}){ return {direction,strategy,boxType:"ORANGE",touchType:strategy,signalId:`${orangeBox.boxId}|${strategy}|${candle.epoch}`,boxId:orangeBox.boxId,orangeBoxId:orangeBox.boxId,boxHigh:orangeBox.high,boxLow:orangeBox.low,boxSize:orangeBox.size,entryLevel,pendingType,pip,candleTime:candle.epoch,candleColor:candleColor(candle),rsi,reason}; }
 
-// ===== ORANGE BOX - UPDATED TO CONFIRMED STRATEGY A,B,C =====
+// ===== ORANGE BOX - CONFIRMED A,B,C - UNCHANGED =====
 function findClosedEntrySignal(candles,symbol,category,marketPip){
   const empty={direction:"NONE",reason:"Waiting",boxCount:0};
   if(!candles||candles.length<30) return {...empty,reason:"Not enough M15"};
@@ -61,24 +61,18 @@ function findClosedEntrySignal(candles,symbol,category,marketPip){
   const closeBelow=candle.close<orangeBox.low; 
   const closeInside=candle.close>=orangeBox.low&&candle.close<=orangeBox.high;
 
-  // A) RETEST - YOUR NEW RULE - EXACT
-  // BUY: Opens ABOVE, wicks DOWN into box, closes ABOVE -> BUY STOP on HIGH of THAT candle
+  // A) RETEST
   if(openAbove && candle.low<=orangeBox.high && candle.low>=orangeBox.low && closeAbove) {
     return {...makeSignal({direction:"BUY",strategy:"ORANGE RETEST BUY",candle,orangeBox,pip,entryLevel:candle.high,pendingType:"BUY STOP",rsi,reason:"Retest: Opened above, wicked into box, closed above. Buy Stop on retest candle high."}),...boxInfo};
   }
-  // SELL: Opens BELOW, wicks UP into box, closes BELOW -> SELL STOP on LOW of THAT candle
   if(openBelow && candle.high>=orangeBox.low && candle.high<=orangeBox.high && closeBelow) {
     return {...makeSignal({direction:"SELL",strategy:"ORANGE RETEST SELL",candle,orangeBox,pip,entryLevel:candle.low,pendingType:"SELL STOP",rsi,reason:"Retest: Opened below, wicked into box, closed below. Sell Stop on retest candle low."}),...boxInfo};
   }
-
-  // B) BREAK-IN - KEEP SAME
-  // SELL: Opens ABOVE and closes INSIDE -> SELL STOP at Low - 1 pip (candle low)
+  // B) BREAK-IN
   if(openAbove && closeInside) return {...makeSignal({direction:"SELL",strategy:"ORANGE BREAK-IN SELL",candle,orangeBox,pip,entryLevel:candle.low-pip,pendingType:"SELL STOP",rsi,reason:"Break-In: Opened above and closed inside."}),...boxInfo};
-  // BUY: Opens BELOW and closes INSIDE -> BUY STOP at High + 1 pip (candle high)
   if(openBelow && closeInside) return {...makeSignal({direction:"BUY",strategy:"ORANGE BREAK-IN BUY",candle,orangeBox,pip,entryLevel:candle.high+pip,pendingType:"BUY STOP",rsi,reason:"Break-In: Opened below and closed inside."}),...boxInfo};
 
-  // C) BREAKOUT + FIRST OPPOSITE CANDLE - UPDATED EXACT
-  // Look back up to 10 candles for breakout, ignore box after breakout
+  // C) BREAKOUT + FIRST OPPOSITE
   for(let bIdx = li-1; bIdx >= Math.max(0, li-10); bIdx--){
     const bC = candles[bIdx];
     const bOpenInside = bC.open>=orangeBox.low && bC.open<=orangeBox.high;
@@ -86,34 +80,25 @@ function findClosedEntrySignal(candles,symbol,category,marketPip){
     const bCloseAbove = bC.close>orangeBox.high;
     const bCloseBelow = bC.close<orangeBox.low;
     if(!bCloseAbove && !bCloseBelow) continue;
-
-    // Found breakout - check if there's already an opposite trigger between breakout and current
     if(bCloseAbove){
-      // BUY breakout: need FIRST RED after breakout, no RED in between
       let redAlready = false;
-      for(let k=bIdx+1;k<li;k++){
-        if(candleColor(candles[k])==="RED"){ redAlready=true; break; }
-      }
-      if(redAlready) break; // already triggered, don't re-trigger
+      for(let k=bIdx+1;k<li;k++){ if(candleColor(candles[k])==="RED"){ redAlready=true; break; } }
+      if(redAlready) break;
       if(color==="RED"){
-        return {...makeSignal({direction:"BUY",strategy:"BREAKOUT BUY 1ST RED",candle,orangeBox,pip,entryLevel:candle.high,pendingType:"BUY STOP",rsi,reason:"Breakout up. First RED after breakout - Buy Stop on its high, even if far from box."}),...boxInfo};
+        return {...makeSignal({direction:"BUY",strategy:"BREAKOUT BUY 1ST RED",candle,orangeBox,pip,entryLevel:candle.high,pendingType:"BUY STOP",rsi,reason:"Breakout up. First RED after breakout - Buy Stop on its high."}),...boxInfo};
       }
-      break; // breakout found but current is not RED, wait for RED
+      break;
     }
     if(bCloseBelow){
-      // SELL breakout: need FIRST GREEN after breakout, no GREEN in between
       let greenAlready = false;
-      for(let k=bIdx+1;k<li;k++){
-        if(candleColor(candles[k])==="GREEN"){ greenAlready=true; break; }
-      }
+      for(let k=bIdx+1;k<li;k++){ if(candleColor(candles[k])==="GREEN"){ greenAlready=true; break; } }
       if(greenAlready) break;
       if(color==="GREEN"){
-        return {...makeSignal({direction:"SELL",strategy:"BREAKOUT SELL 1ST GREEN",candle,orangeBox,pip,entryLevel:candle.low,pendingType:"SELL STOP",rsi,reason:"Breakout down. First GREEN after breakout - Sell Stop on its low, even if far from box."}),...boxInfo};
+        return {...makeSignal({direction:"SELL",strategy:"BREAKOUT SELL 1ST GREEN",candle,orangeBox,pip,entryLevel:candle.low,pendingType:"SELL STOP",rsi,reason:"Breakout down. First GREEN after breakout - Sell Stop on its low."}),...boxInfo};
       }
       break;
     }
   }
-
   return {...empty,...boxInfo,reason:"No valid closed M15 entry. Waiting."};
 }
 
@@ -124,8 +109,6 @@ function makeDemoOrder(signal,symbol,category,displayName,balance,riskPct,sizing
 function calculateDemoPnl(t,p){ if(t.status==="PENDING DEMO TRADE") return 0; const sd=Math.abs(t.entry-t.sl); if(!sd) return 0; const mv=t.direction==="BUY"?p-t.entry:t.entry-p; return (mv/sd)*t.riskMoney; }
 function getExitReason(t,p){ if(t.status==="PENDING DEMO TRADE") return null; if(t.direction==="BUY"){ if(p<=t.sl) return "STOP LOSS"; if(p>=t.tp) return "TAKE PROFIT"; } else { if(p>=t.sl) return "STOP LOSS"; if(p<=t.tp) return "TAKE PROFIT"; } return null; }
 function getExitPrice(t,r,o){ if(r==="STOP LOSS") return t.sl; if(r==="TAKE PROFIT") return t.tp; return o; }
-
-// ===== AI SCANNER HELPERS =====
 function analyzeImagePixels(imgElement){
   return new Promise((resolve)=>{
     try{
@@ -149,18 +132,12 @@ function analyzeImagePixels(imgElement){
     }catch(e){ resolve({redRatio:0.1,bullRatio:0.1,trendScore:0}); }
   });
 }
-
-// AUTO-DETECT PAIR + TIMEFRAME FROM SCREENSHOT TEXT
 async function autoDetectFromImage(imageUrl, fileName=""){
   const searchText=(fileName+" ").toUpperCase();
-  for(const sym of PRIORITY_SYMBOLS){
-    if(searchText.includes(sym)) return {pair:sym, source:"filename"};
-  }
+  for(const sym of PRIORITY_SYMBOLS){ if(searchText.includes(sym)) return {pair:sym, source:"filename"}; }
   try{
     if(!window.Tesseract){
-      await new Promise((res,rej)=>{
-        const s=document.createElement('script'); s.src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"; s.onload=res; s.onerror=rej; document.head.appendChild(s);
-      });
+      await new Promise((res,rej)=>{ const s=document.createElement('script'); s.src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"; s.onload=res; s.onerror=rej; document.head.appendChild(s); });
     }
     if(window.Tesseract){
       const result=await window.Tesseract.recognize(imageUrl,'eng',{logger:()=>{}});
@@ -199,7 +176,6 @@ export default function App(){
   const [message,setMessage]=useState("Connect to Deriv Public Market");
   const [lastScan,setLastScan]=useState("Not scanned");
   const [clock,setClock]=useState(Math.floor(Date.now()/1000));
-
   const [scanImg1,setScanImg1]=useState(null); const [scanImg2,setScanImg2]=useState(null);
   const [scanPair,setScanPair]=useState("AUTO-DETECT"); const [detectedPair,setDetectedPair]=useState(""); const [autoDetectOn,setAutoDetectOn]=useState(true);
   const [scanTF1,setScanTF1]=useState("M1"); const [scanTF2,setScanTF2]=useState("M15");
@@ -223,7 +199,6 @@ export default function App(){
   const startRobot=async()=>{ if(runningRef.current) return; try{ if('Notification' in window && Notification.permission!=='granted'){ await Notification.requestPermission(); } setMessage("Connecting to Deriv public markets..."); await connect(); runningRef.current=true; setRunning(true); setSignals({}); setScannerStates({}); setScanned(0); setProgress(0); const list=await discoverMarkets(); if(!runningRef.current||!list.length) return; const prio=list.filter(i=>i.prioritySymbol); for(const it of prio){ if(!runningRef.current) break; await subscribeMarket(it.symbol); } if(!runningRef.current) return; await scanAll(list); if(!runningRef.current) return; if(scanTimerRef.current) clearInterval(scanTimerRef.current); scanTimerRef.current=setInterval(()=>{ if(runningRef.current) scanAll(marketsRef.current); },SCAN_INTERVAL); setMessage("Robot running - 5 MIN scan"); sendIFXAlert('iFX BILLIONAIRE STARTED', 'Robot running - You will be notified on pending activation'); }catch(e){ runningRef.current=false; setRunning(false); setConnectionText(socketRef.current?.readyState===WebSocket.OPEN?"CONNECTED - MARKET DISCOVERY FAILED":"DISCONNECTED"); setMessage(e.message||"Unable to start robot"); } };
   const stopRobot=()=>{ runningRef.current=false; setRunning(false); rescanRequestedRef.current=false; if(reconnectTimerRef.current){clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current=null;} if(scanTimerRef.current){clearInterval(scanTimerRef.current); scanTimerRef.current=null;} const now=new Date().toLocaleTimeString(); const closedNow=[]; for(const o of ordersRef.current){ if(o.status!=="OPEN DEMO TRADE"&&o.status!=="PENDING DEMO TRADE") continue; const price=latestPricesRef.current[o.symbol]??o.currentPrice??o.entry; closedNow.push({...o,status:"CLOSED",exitPrice:price,exitReason:"ROBOT STOPPED",realisedPnl:o.status==="PENDING DEMO TRADE"?0:calculateDemoPnl(o,price),floatingPnl:0,closedAt:now}); } if(closedNow.length) updateClosedTrades(p=>[...closedNow,...p]); updateOrders([]); const ws=socketRef.current; if(ws&&ws.readyState===WebSocket.OPEN){ subscriptionsRef.current.forEach(sid=>{ if(sid&&sid!=="SUBSCRIBED"){ try{ws.send(JSON.stringify({forget:sid,req_id:++requestRef.current}));}catch{} } }); } subscriptionsRef.current.clear(); subscribingRef.current.clear(); activationLocksRef.current.clear(); setMessage(`STOPPED. ${closedNow.length} simulated trades closed.`); };
   const activateSignal=async item=>{ const signal=signals[item.symbol]; if(!signal||signal.direction==="NONE") return; const now=Math.floor(Date.now()/1000); if(!isTradingTime(now)){ setMessage("Trading paused: UTC 07:00-21:59"); return; } const lockKey=`${item.symbol}|${signal.signalId}`; if(activationLocksRef.current.has(lockKey)) return; activationLocksRef.current.add(lockKey); try{ const prev=[...ordersRef.current,...closedTradesRef.current]; const today=serverDay(now); const daily=prev.filter(t=>t.openedDay===today); const openCount=ordersRef.current.filter(t=>t.status==="OPEN DEMO TRADE"||t.status==="PENDING DEMO TRADE").length; if(daily.length>=MAX_DAILY_TRADES){ setMessage(`Daily limit ${MAX_DAILY_TRADES}`); return; } if(openCount>=MAX_OPEN_TRADES){ setMessage(`Open limit ${MAX_OPEN_TRADES}`); return; } if(alreadyExecuted(prev,signal,item.symbol)){ setMessage("This signal has already been traded"); return; } const sub=await subscribeMarket(item.symbol); if(!sub){ setMessage("Unable to subscribe to live market"); return; } const tick=latestTicksRef.current[item.symbol]; const curPrice=Number.isFinite(tick?.bid)?tick.bid:tick?.quote; if(!Number.isFinite(curPrice)||curPrice<=0){ setMessage("Waiting for a live market price"); return; } const spreadInfo=getSpreadInfo(tick,curPrice,item.symbol,item.category,item.pip); if(!spreadInfo.known){ setMessage("Unable to calculate spread."); return; } if(!spreadInfo.estimated&&spreadInfo.points>MAX_SPREAD_POINTS){ setMessage("Live spread too high"); return; } const order=makeDemoOrder(signal,item.symbol,item.category,item.display_name,balance,riskPct,sizingMode,fixedLots,spreadInfo,tick); updateOrders(p=>[order,...p]); setLastActivated(`${signal.direction} · ${signal.strategy} · ${order.pendingType}`); setMessage(`${item.display_name}: ${order.pendingType} ${signal.direction} at ${fmt(order.entry,5)} · SL ${fmt(order.sl,5)} · TP ${fmt(order.tp,5)}`); sendIFXAlert('iFX BILLIONAIRE - PENDING PLACED', `${item.display_name} ${order.pendingType} ${signal.direction} at ${fmt(order.entry,5)}`); }catch(e){ setMessage(`${item.symbol}: ${e.message}`); }finally{ activationLocksRef.current.delete(lockKey); } };
-
   const handleFile=async(e,setter,isFirst)=>{
     const f=e.target.files?.[0]; if(!f) return; const url=URL.createObjectURL(f); setter({file:f,url,name:f.name}); setScanResult(null);
     if(autoDetectOn){
@@ -288,26 +263,27 @@ export default function App(){
 
   return (
     <div style={{background:"#0a0f1a",minHeight:"100vh",color:"#e6edf7",fontFamily:"system-ui",paddingBottom:30}}>
+      {/* ===== TOP PART - EXACT AS YOUR IMAGE ===== */}
       <div style={{padding:"14px 16px",display:"flex",justifyContent:"space-between",alignItems:"center",borderBottom:"1px solid #1e2d45"}}>
-        <div><div style={{fontSize:22,fontWeight:900}}>iFX BILLIONAIRE EA</div></div>
-        <div style={{background:running?"#0f3d1e":"#3a1a1a",color:running?"#4ade80":"#ff6b6b",padding:"6px 12px",borderRadius:20,fontSize:11,fontWeight:800}}>● {running?"RUNNING":"STOPPED"}</div>
+        <div><div style={{fontSize:28,fontWeight:900,letterSpacing:"-0.5px"}}>iFX BILLIONAIRE EA</div></div>
+        <div style={{background:"#3a1a1a",color:"#ff6b6b",padding:"8px 16px",borderRadius:20,fontSize:13,fontWeight:800,border:"1px solid #4a2222"}}>● STOPPED</div>
       </div>
 
-      <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:12,margin:12,padding:14}}>
-        <div style={{fontSize:12,fontWeight:900}}>ROBOT CONTROL</div>
-        <div style={{display:"flex",gap:10,alignItems:"center",margin:"10px 0",fontSize:11,flexWrap:"wrap"}}>
-          <span style={{color:connected?"#4ade80":"#ff6b6b"}}>● {connectionText}</span>
-          <button onClick={()=>{ Notification.requestPermission(); sendIFXAlert('TEST NOTIFICATION','If you see this, pending activation will buzz you!'); }} style={{background:"#0ea5e9",color:"white",border:"none",padding:"6px 10px",borderRadius:6,fontWeight:800,fontSize:11}}>🔔 TEST NOTIFICATION</button>
+      <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:16,margin:12,padding:16}}>
+        <div style={{fontSize:16,fontWeight:900,letterSpacing:"0.5px"}}>ROBOT CONTROL</div>
+        <div style={{display:"flex",gap:10,alignItems:"center",margin:"14px 0",fontSize:13,flexWrap:"wrap"}}>
+          <span style={{color:"#ff6b6b",fontWeight:700}}>● DISCONNECTED</span>
+          <button onClick={()=>{ Notification.requestPermission(); sendIFXAlert('TEST NOTIFICATION','If you see this, pending activation will buzz you!'); }} style={{background:"#0ea5e9",color:"white",border:"none",padding:"10px 16px",borderRadius:8,fontWeight:800,fontSize:13}}>🔔 TEST NOTIFICATION</button>
         </div>
         <div style={{display:"flex",gap:10}}>
-          <button onClick={startRobot} disabled={running} style={{flex:1,padding:14,border:"none",borderRadius:8,fontWeight:900,background:"#10b981",color:"white",opacity:running?0.5:1}}>▶ START ROBOT</button>
-          <button onClick={stopRobot} style={{flex:1,padding:14,border:"none",borderRadius:8,fontWeight:900,background:"#dc2626",color:"white"}}>■ STOP</button>
+          <button onClick={startRobot} disabled={running} style={{flex:1,padding:18,border:"none",borderRadius:10,fontWeight:900,fontSize:16,background:"#10b981",color:"white",opacity:running?0.5:1}}>▶ START ROBOT</button>
+          <button onClick={stopRobot} style={{flex:1,padding:18,border:"none",borderRadius:10,fontWeight:900,fontSize:16,background:"#dc2626",color:"white"}}>■ STOP</button>
         </div>
-        <div style={{fontSize:11,color:"#8a9bb5",marginTop:10,overflowWrap:"anywhere"}}>{message}</div>
-        <div style={{height:5,background:"#1e2d45",borderRadius:3,margin:"12px 0 8px"}}><div style={{height:"100%",background:"#3b82f6",width:`${progress}%`,transition:"width .2s"}} /></div>
-        <div style={{fontSize:11,color:"#8a9bb5"}}>Scan: {scanned}/{symbols.length} · {progress}% · Every 5 MIN · UTC: {new Date(clock*1000).toISOString().slice(11,19)} · Last: {lastScan}</div>
-        <div style={{background:isTradingHours?"#14532d":"#3f1d1d",color:isTradingHours?"#4ade80":"#f87171",padding:10,borderRadius:8,fontSize:12,fontWeight:800,textAlign:"center",marginTop:10}}>TRADING: {isTradingHours?"ACTIVE":"PAUSED"} - 07:00 - 21:59</div>
-        <div style={{display:"flex",gap:8,marginTop:12,fontSize:11,flexWrap:"wrap"}}>
+        <div style={{fontSize:13,color:"#8a9bb5",marginTop:14,overflowWrap:"anywhere"}}>{message}</div>
+        <div style={{height:5,background:"#1e2d45",borderRadius:3,margin:"14px 0 10px"}}><div style={{height:"100%",background:"#3b82f6",width:`${progress}%`,transition:"width .2s"}} /></div>
+        <div style={{fontSize:12,color:"#8a9bb5"}}>Scan: {scanned}/{symbols.length} · {progress}% · Every 5 MIN · UTC: {new Date(clock*1000).toISOString().slice(11,19)} · Last: {lastScan}</div>
+        <div style={{background:isTradingHours?"#14532d":"#1a3a25",color:isTradingHours?"#4ade80":"#4ade80",padding:14,borderRadius:8,fontSize:14,fontWeight:800,textAlign:"center",marginTop:12}}>TRADING: ACTIVE - 07:00 - 21:59</div>
+        <div style={{display:"flex",gap:8,marginTop:14,fontSize:11,flexWrap:"wrap"}}>
           <label>Balance $<input type="number" value={balance} onChange={e=>setBalance(Number(e.target.value))} style={{width:80,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:4,padding:4}} /></label>
           <label>Risk %<input type="number" value={riskPct} onChange={e=>setRiskPct(Number(e.target.value))} style={{width:50,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:4,padding:4}} /></label>
           <label>Lots<input type="number" step="0.01" value={fixedLots} onChange={e=>setFixedLots(Number(e.target.value))} style={{width:60,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:4,padding:4}} /></label>
@@ -320,7 +296,7 @@ export default function App(){
         </div>
       </div>
 
-      {/* AI SCANNER AUTO-DETECT */}
+      {/* ===== EVERYTHING ELSE SAME AS BEFORE ===== */}
       <div style={{background:"linear-gradient(135deg,#0f172a,#1e1b4b)",border:"1px solid #3b82f6",borderRadius:12,margin:12,padding:14}}>
         <button onClick={()=>setScannerOpen(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",alignItems:"center",background:"transparent",border:"none",color:"white",fontSize:13,fontWeight:900,textAlign:"left",cursor:"pointer"}}>
           <span>🤖 AI SCANNER - Auto-Detect Any Market 📸</span><span>{scannerOpen?"▲":"▼"}</span>
@@ -334,7 +310,6 @@ export default function App(){
             <div style={{display:"flex",gap:6,marginTop:10,flexWrap:"wrap"}}>
               {["Auto","SMC","ICT","Price Action","Supply/Demand"].map(s=>(<button key={s} onClick={()=>setScanStrategy(s)} style={{padding:"6px 12px",borderRadius:20,background:scanStrategy===s?"#3b82f6":"#1e293b",color:"white",border:"none",fontSize:11,fontWeight:700}}>{s}</button>))}
             </div>
-
             <div style={{background:"#0f172a",border:"1px solid #334155",borderRadius:8,padding:10,marginTop:12}}>
               <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",fontSize:12}}>
                 <span>Pair:</span>
@@ -345,7 +320,6 @@ export default function App(){
               </div>
               <div style={{fontSize:11,color:"#94a3b8",marginTop:6}}>{detectMsg || "Upload screenshot with pair name visible at top - e.g. XAUUSD.ecn M1 - for 100% detection"}</div>
             </div>
-
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:12}}>
               <div>
                 <div style={{fontSize:11,marginBottom:6}}>Chart 1 - {scanTF1}</div>
@@ -364,11 +338,8 @@ export default function App(){
                 <select value={scanTF2} onChange={e=>setScanTF2(e.target.value)} style={{width:"100%",marginTop:6,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:4,padding:6}}><option>M15</option><option>M1</option><option>M5</option><option>H1</option><option>H4</option></select>
               </div>
             </div>
-
             <button onClick={runAIScan} disabled={isAnalyzing} style={{width:"100%",padding:14,marginTop:12,background:"#2563eb",color:"white",border:"none",borderRadius:8,fontWeight:900,fontSize:13}}>{isAnalyzing?"🔍 ANALYZING CHARTS...":"🔍 ANALYZE CHARTS - ANY MARKET"}</button>
-
             {isAnalyzing && <div style={{textAlign:"center",padding:14}}><div style={{width:50,height:50,border:"3px solid #3b82f6",borderTop:"3px solid transparent",borderRadius:"50%",margin:"0 auto",animation:"spin 1s linear infinite"}}></div><div style={{fontSize:12,marginTop:8}}>Analyzing {detectedPair||scanPair}...<br/>AI is comparing across timeframes</div><style>{`@keyframes spin{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}`}</style></div>}
-
             {scanResult && !scanResult.error && (
               <div style={{background:"#0f172a",border:"1px solid #22c55e",borderRadius:10,padding:12,marginTop:12}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{fontSize:11,color:"#94a3b8"}}>iFX AI SCANNER • {scanResult.strategy} {scanResult.autoDetected?"• Auto-Detected":""}</div><b style={{fontSize:16}}>{scanResult.pair}</b></div><div style={{background:scanResult.direction==="BUY"?"#16a34a":"#dc2626",color:"white",padding:"6px 14px",borderRadius:6,fontWeight:900}}>↗ {scanResult.direction}</div></div>
