@@ -16,7 +16,6 @@
 <script type="text/babel">
 const {useState,useEffect,useRef}=React;
 const WS_URL="wss://api.derivws.com/trading/v1/options/ws/public";
-const BRIDGE_URL="https://jsonblob.com/api/jsonBlob/01a1bb61-16fe-79a7-b235-3bd3f2833a8a";
 if('serviceWorker' in navigator){ navigator.serviceWorker.register('/sw.js').catch(()=>{}); }
 function sendAlert(t,b){
   if(navigator.vibrate) navigator.vibrate([400,100,400,100,400]);
@@ -33,28 +32,16 @@ async function sendToMT4(result, setMsg){
     if(sym.includes("XAU")) sym="XAUUSD";
     if(sym.includes("V75")) sym="V75";
     const payload={action:result.dir, symbol:sym, entry:result.entry, sl:result.sl, tp:result.tp, time: Math.floor(Date.now()/1000)};
-    const jsonStr = JSON.stringify(payload);
-    // Try 4 ways - one will bypass CORS block
-    const urls = [
-      "https://api.codetabs.com/v1/proxy?quest=" + encodeURIComponent(BRIDGE_URL),
-      "https://api.allorigins.win/raw?url=" + encodeURIComponent(BRIDGE_URL),
-      "https://corsproxy.io/?url=" + encodeURIComponent(BRIDGE_URL),
-      BRIDGE_URL
-    ];
-    for(let u of urls){
-      try{
-        const r = await fetch(u, {method:"PUT", headers:{"Content-Type":"application/json"}, body: jsonStr});
-        if(r.ok){
-          if(setMsg) setMsg("✅ SENT TO MT4: "+sym+" "+result.dir+" @ "+result.entry);
-          sendAlert("SENT TO MT4", sym+" "+result.dir);
-          return true;
-        }
-      }catch(e){ console.log("proxy fail", u, e.message); continue; }
+    const r = await fetch("/api/signal", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload)});
+    const j = await r.json();
+    if(r.ok && j.ok){
+      if(setMsg) setMsg("✅ SENT TO MT4: "+sym+" "+result.dir+" @ "+result.entry);
+      sendAlert("SENT TO MT4", sym+" "+result.dir);
+      return true;
+    } else {
+      if(setMsg) setMsg("Bridge error - retry");
+      return false;
     }
-    // Last resort - no-cors fire and forget (MT4 will still read it)
-    try{ await fetch(BRIDGE_URL, {method:"PUT", mode:"no-cors", headers:{"Content-Type":"text/plain"}, body: jsonStr}); if(setMsg) setMsg("✅ SENT TO MT4 (no-cors): "+sym+" "+result.dir); return true; }catch(e){}
-    if(setMsg) setMsg("Bridge error - check internet, try again");
-    return false;
   }catch(e){ if(setMsg) setMsg("Bridge error: "+e.message); return false; }
 }
 const fmt=(n,d=5)=>Number.isFinite(Number(n))?Number(n).toFixed(d):"—";
