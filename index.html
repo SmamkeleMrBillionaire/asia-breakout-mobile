@@ -63,7 +63,7 @@ function App(){
 
  const scanAll=async()=>{
    const ws=wsRef.current; if(!ws) return;
-   setMsg("Scanning Deriv - M15 - Orange Box 00:00-01:00...");
+   setMsg("Scanning Deriv - M15 - Orange Box 00:00-01:00 + Breakout...");
    try{
      const r1=await request({active_symbols:"brief"});
      const list=(r1.active_symbols||[]).filter(s=>s.underlying_symbol).slice(0,40);
@@ -82,18 +82,27 @@ function App(){
          const box=buildBox(closedCs,today);
          if(!box) continue;
          const last=closedCs[closedCs.length-1];
+         const prev=closedCs[closedCs.length-2];
          const rsi=calcRSI(closedCs,closedCs.length-1,3);
          const col=cColor(last);
+         const prevCol=cColor(prev);
          let sig=null;
+         // RETEST - original
          if(last.open>box.high && col==="RED" && last.low>=box.low && last.low<=box.high && last.close>box.high) sig={dir:"BUY",strat:"ORANGE RETEST BUY",entry:last.high};
          else if(last.open<box.low && col==="GREEN" && last.high>=box.low && last.high<=box.high && last.close<box.low) sig={dir:"SELL",strat:"ORANGE RETEST SELL",entry:last.low};
          else if(last.open>box.high && col==="RED" && last.close>=box.low && last.close<=box.high) sig={dir:"SELL",strat:"ORANGE BREAK-IN SELL",entry:box.low};
          else if(last.open<box.low && col==="GREEN" && last.close>=box.low && last.close<=box.high) sig={dir:"BUY",strat:"ORANGE BREAK-IN BUY",entry:box.high};
+         // BREAKOUT 1st RED / 1st GREEN - NEW - YOUR REQUEST
+         else if(prev.close>box.high && prevCol==="GREEN" && col==="RED" && last.open>box.high && last.low>=box.high && last.close>box.high) sig={dir:"BUY",strat:"ORANGE BREAKOUT BUY 1st RED",entry:last.high};
+         else if(prev.close<box.low && prevCol==="RED" && col==="GREEN" && last.open<box.low && last.high<=box.low && last.close<box.low) sig={dir:"SELL",strat:"ORANGE BREAKOUT SELL 1st GREEN",entry:last.low};
+         // DIRECT BREAKOUT - strong close outside
+         else if(last.close>box.high && prev.close<=box.high && col==="GREEN" && last.open>box.low) sig={dir:"BUY",strat:"ORANGE BREAKOUT BUY",entry:last.close};
+         else if(last.close<box.low && prev.close>=box.low && col==="RED" && last.open<box.high) sig={dir:"SELL",strat:"ORANGE BREAKOUT SELL",entry:last.close};
          if(sig) found.push({sym: item.display_name||sym, symbol:sym, ...sig, boxHigh:box.high, boxLow:box.low, rsi});
        }catch(e){}
        done++; setScanned(done); setProgress(Math.round(done/list.length*100));
      }
-     setSignals(found); setLastScan(new Date().toLocaleTimeString()); setMsg(`Scan complete: ${done}/${list.length} · ${found.length} signals touching box`);
+     setSignals(found); setLastScan(new Date().toLocaleTimeString()); setMsg(`Scan complete: ${done}/${list.length} · ${found.length} signals - Retest + Break-in + Breakout`);
    }catch(e){ setMsg("Scan failed: "+e.message); }
  };
 
@@ -113,7 +122,7 @@ function App(){
      if('Notification' in window && Notification.permission!=='granted') await Notification.requestPermission();
      await connect(); runRef.current=true; setRunning(true); setSignals([]); await scanAll();
      const iv=setInterval(()=>{ if(runRef.current) scanAll(); },300000); wsRef.current._iv=iv;
-     sendAlert("iFX BILLIONAIRE STARTED","Robot running - will notify on activation");
+     sendAlert("iFX BILLIONAIRE STARTED","Robot running - Retest + Breakout - will notify");
    }catch(e){ setMsg(e.message); }
  };
  const stopRobot=()=>{ runRef.current=false; setRunning(false); if(wsRef.current){ if(wsRef.current._iv) clearInterval(wsRef.current._iv); try{wsRef.current.close();}catch{} } setMsg("STOPPED"); };
@@ -134,29 +143,35 @@ function App(){
    for(const s of syms) if(up.includes(s)) return {pair:s, price:null};
    try{ if(window.Tesseract){
      const r=await window.Tesseract.recognize(url,'eng');
-     const txt=(r.data.text||"").toUpperCase();
-     // PRICE EXTRACTION - right side numbers like 38820.86, 39194.12
-     const nums=(r.data.text||"").match(/\d{3,6}\.\d{1,2}/g);
+     const raw=(r.data.text||"");
+     const txt=raw.toUpperCase();
+     const nums=(raw.match(/\d{3,6}\.\d{1,2}/g)||[]).map(Number).filter(n=>n>10);
      let price=null;
-     if(nums && nums.length>0){
-       const parsed=nums.map(Number).filter(n=>n>10);
-       if(parsed.length>0) price=parsed[parsed.length-1];
+     if(nums.length>0){
+       const candidates=nums.filter(n=>n>1000);
+       if(candidates.length>0) price=candidates[candidates.length-1];
      }
+     if(price && price>15000 && price<50000){
+       if(price>30000 && price<42000) return {pair:"V75", price};
+       if(price>42000 && price<46000) return {pair:"US30", price};
+       if(price>18000 && price<25000) return {pair:"NAS100", price};
+     }
+     if(price && price>4000 && price<5000) return {pair:"XAUUSD", price};
+     if(price && price>60000) return {pair:"BTCUSD", price};
+     if(txt.includes("VOLATILITY")||txt.includes("V75")||txt.includes("V 75")||txt.includes("75 INDEX")||txt.includes("VOLATIL")) return {pair:"V75", price};
      for(const s of syms) if(txt.includes(s)) return {pair:s, price};
-     if(txt.includes("VOLATILITY 75")||txt.includes("VOLATILITY")||txt.includes("V75")||txt.includes("V 75")) return {pair:"V75", price};
      if(txt.includes("GOLD")||txt.includes("XAU")) return {pair:"XAUUSD", price};
      if(txt.includes("BTC")) return {pair:"BTCUSD", price};
-     if(txt.includes("US30")||txt.includes("US 30")) return {pair:"US30", price};
      if(price) return {pair:null, price};
    } }catch(e){}
    return null;
  }
  async function handleFile(f,setter){
-   if(!f) return; const url=URL.createObjectURL(f); setter(url); setIsDetecting(true); setDetectMsg("🔍 Auto-detecting...");
+   if(!f) return; const url=URL.createObjectURL(f); setter(url); setIsDetecting(true); setDetectMsg("🔍 Auto-detecting by price...");
    const det=await detectFromImg(url,f.name); setIsDetecting(false);
-   if(det && det.pair){ setDetectedPair(det.pair); setScanPair(det.pair); setDetectMsg(`✅ Detected: ${det.pair}`); if(det.price){ setOcrPrice(det.price); setDetectMsg(`✅ Detected: ${det.pair} @ ${det.price}`); } }
-   else if(det && det.price){ setOcrPrice(det.price); setDetectMsg(`✅ Price read: ${det.price} - tap pair below`); }
-   else setDetectMsg("⚠️ Could not detect - tap pair below");
+   if(det && det.pair){ setDetectedPair(det.pair); setScanPair(det.pair); setDetectMsg(`✅ Detected: ${det.pair} @ ${det.price||""} by price`); if(det.price){ setOcrPrice(det.price); } }
+   else if(det && det.price){ setOcrPrice(det.price); if(det.price>15000 && det.price<42000){ setDetectedPair("V75"); setScanPair("V75"); setDetectMsg(`✅ Price ${det.price} looks like V75 - set to V75`); } else { setDetectMsg(`✅ Price read: ${det.price} - tap pair below`); } }
+   else { setDetectMsg("⚠️ Could not read text - but using price. Tap V75 below if needed"); }
  }
  function pixelTrend(url){ return new Promise(res=>{ const img=new Image(); img.src=url; img.onload=()=>{ const c=document.createElement('canvas'); c.width=100; c.height=60; const x=c.getContext('2d'); x.drawImage(img,0,0,100,60); const d=x.getImageData(0,0,100,60).data; let g=0,r=0; for(let i=0;i<d.length;i+=4){ if(d[i+1]>d[i]+10) g++; if(d[i]>d[i+1]+10) r++; } res(g>=r?15:-15); }; img.onerror=()=>res(0); }); }
 
@@ -181,7 +196,6 @@ function App(){
    const t1=await pixelTrend(c1); const t2=c2?await pixelTrend(c2):t1;
    const score=t1*0.4+t2*0.6; const dir=score>=0?"BUY":"SELL";
    const conf=Math.min(92,Math.max(62,68+Math.abs(score)));
-   // FIXED PRICE LOGIC - Priority: 1) Manual 2) Live Deriv 3) OCR from screenshot 4) Fallback map
    const fallbackMap={ "XAUUSD":4413.83, "BTCUSD":67200, "V75":38820.86, "US30":44000, "NAS100":21000, "EURUSD":1.0850, "GBPUSD":1.2700, "USDJPY":155.50, "GBPJPY":192.50 };
    let base=null;
    if(manualPrice && Number(manualPrice)>0) base=Number(manualPrice);
@@ -191,7 +205,6 @@ function App(){
    }
    if(!base && ocrPrice && ocrPrice>10) base=ocrPrice;
    if(!base) base=fallbackMap[pair]||38820.86;
-   // Box size per market - FIXED
    let bs=0.0015;
    if(pair.includes("XAU")) bs=3.5;
    else if(pair.includes("BTC")) bs=350;
@@ -216,7 +229,7 @@ function App(){
    </div>
 
    <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:16,margin:12,padding:16}}>
-     <div style={{fontSize:16,fontWeight:900}}>ROBOT CONTROL</div>
+     <div style={{fontSize:16,fontWeight:900}}>ROBOT CONTROL - ORANGE BOX + BREAKOUT</div>
      <div style={{display:"flex",gap:10,alignItems:"center",margin:"12px 0",justifyContent:"space-between",flexWrap:"wrap"}}>
        <span style={{color:connected?"#4ade80":"#ff6b6b",fontWeight:700,fontSize:13}}>● {connText}</span>
        <button onClick={()=>{ Notification.requestPermission(); sendAlert('TEST NOTIFICATION','Pending activation will buzz you!'); }} style={{background:"#0ea5e9",color:"white",border:"none",padding:"8px 14px",borderRadius:8,fontWeight:800,fontSize:13}}>🔔 TEST NOTIFICATION</button>
@@ -243,7 +256,7 @@ function App(){
        <div style={{background:"#0f172a",padding:12,borderRadius:8}}><div style={{color:"#94a3b8",fontSize:10}}>FLOATING P/L</div><b style={{color:"#4ade80"}}>${fmt(floating,2)}</b></div>
        <div style={{background:"#0f172a",padding:12,borderRadius:8}}><div style={{color:"#94a3b8",fontSize:10}}>REALISED P/L</div><b style={{color:"#4ade80"}}>${fmt(realised,2)}</b></div>
      </div>
-     <button onClick={startRobot} disabled={running} style={{width:"100%",padding:15,marginTop:14,background:"#10b981",color:"white",border:"none",borderRadius:10,fontWeight:900,fontSize:15}}>▶ START ROBOT - ORANGE BOX</button>
+     <button onClick={startRobot} disabled={running} style={{width:"100%",padding:15,marginTop:14,background:"#10b981",color:"white",border:"none",borderRadius:10,fontWeight:900,fontSize:15}}>▶ START ROBOT - ORANGE BOX + BREAKOUT</button>
    </div>
 
    <div style={{background:"linear-gradient(135deg,#0f172a,#1e1b4b)",border:"1px solid #3b82f6",borderRadius:16,margin:12,padding:16}}>
@@ -274,7 +287,7 @@ function App(){
    </div>
 
    <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:12,margin:12,padding:14}}>
-     <button onClick={()=>setShowSignals(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:8,padding:13,fontSize:12,fontWeight:900}}><span>VALID M15 SIGNALS ({signals.length})</span><span>{showSignals?"▲":"▼"}</span></button>
+     <button onClick={()=>setShowSignals(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:8,padding:13,fontSize:12,fontWeight:900}}><span>VALID M15 SIGNALS ({signals.length}) - RETEST + BREAKOUT</span><span>{showSignals?"▲":"▼"}</span></button>
      {showSignals && signals.map((s,i)=>(
        <div key={i} style={{background:"#0f172a",border:"1px solid #334155",borderRadius:10,padding:12,marginTop:8}}>
          <div style={{display:"flex",justifyContent:"space-between"}}><b>{s.sym}</b><span style={{color:s.dir==="BUY"?"#4ade80":"#f87171",fontWeight:900}}>{s.dir} {s.strat}</span></div>
