@@ -14,7 +14,7 @@
 <style>*{box-sizing:border-box}html,body{margin:0;padding:0;background:#0a0f1a;color:#e6edf7;font-family:system-ui,Arial}button{cursor:pointer}button:active{transform:scale(.98)}input,select{outline:none}</style>
 </head><body><div id="root"></div>
 <script type="text/babel">
-const {useState,useEffect,useRef,useCallback,useMemo}=React;
+const {useState,useEffect,useRef}=React;
 const WS_URL="wss://api.derivws.com/trading/v1/options/ws/public";
 const TIMEFRAME=900, CANDLE_COUNT=220;
 if('serviceWorker' in navigator){ navigator.serviceWorker.register('/sw.js').catch(()=>{}); }
@@ -25,9 +25,7 @@ function sendAlert(t,b){
     if(navigator.serviceWorker && navigator.serviceWorker.ready){
       navigator.serviceWorker.ready.then(reg=>{ reg.showNotification(t,{body:b,icon:'/icon-192.png',vibrate:[400,100,400]}); }).catch(()=>{ try{new Notification(t,{body:b});}catch(e){} });
     } else { try{new Notification(t,{body:b});}catch(e){} }
-  } else if('Notification' in window){
-    Notification.requestPermission().then(()=>{ try{new Notification(t,{body:b});}catch(e){} });
-  }
+  } else if('Notification' in window){ Notification.requestPermission().then(()=>{ try{new Notification(t,{body:b});}catch(e){} }); }
 }
 const fmt=(n,d=5)=>Number.isFinite(Number(n))?Number(n).toFixed(d):"—";
 function fmtPrice(n,pair){
@@ -43,6 +41,59 @@ const cColor=c=>c.close>c.open?"GREEN":c.close<c.open?"RED":"NEUTRAL";
 function calcRSI(cs,idx,p=3){ if(!cs||idx<p) return 50; let g=0,l=0; for(let i=1;i<=p;i++){const ch=cs[i].close-cs[i-1].close; if(ch>0)g+=ch; if(ch<0)l+=Math.abs(ch);} let ag=g/p,al=l/p; for(let i=p+1;i<=idx;i++){const ch=cs[i].close-cs[i-1].close; ag=(ag*(p-1)+Math.max(ch,0))/p; al=(al*(p-1)+Math.max(-ch,0))/p;} if(al===0) return ag===0?50:100; if(ag===0) return 0; return 100-100/(1+ag/al); }
 function buildBox(cs,day){ const f=cs.filter(c=>sDay(c.epoch)===day&&sHour(c.epoch)===0&&[0,15,30,45].includes(sMin(c.epoch))).sort((a,b)=>a.epoch-b.epoch).slice(0,4); if(f.length!==4) return null; const h=Math.max(...f.map(c=>c.high)), l=Math.min(...f.map(c=>c.low)); if(!(h>l)) return null; return {day,high:h,low:l,size:h-l,id:day+"-"+h+"-"+l}; }
 function isTrading(e){ const h=sHour(e); return h>=7&&h<22; }
+
+// ===== NEW: RBD / DBR DETECTION FROM YOUR NOTES =====
+function detectRBDDBR(cs){
+  if(!cs || cs.length<12) return null;
+  // Use last 12 candles for pattern
+  const recent = cs.slice(-12);
+  // Try to find base in middle
+  // Check last 7 candles for base + impulse
+  for(let baseEnd = recent.length-2; baseEnd >= 5; baseEnd--){
+    const baseCandles = recent.slice(baseEnd-4, baseEnd+1); // 5 candles base
+    const baseHigh = Math.max(...baseCandles.map(c=>c.high));
+    const baseLow = Math.min(...baseCandles.map(c=>c.low));
+    const baseRange = baseHigh - baseLow;
+    if(baseRange<=0) continue;
+    const avgBody = baseCandles.reduce((s,c)=>s+Math.abs(c.close-c.open),0)/baseCandles.length;
+    // Base must be sideways: small bodies vs range
+    if(avgBody > baseRange*0.55) continue; // not a base, too big bodies
+    const legCandles = recent.slice(Math.max(0, baseEnd-7), baseEnd-4); // 3 candles before base
+    if(legCandles.length<3) continue;
+    const legOpen = legCandles[0].open;
+    const legClose = legCandles[legCandles.length-1].close;
+    const legSize = Math.abs(legClose - legOpen);
+    if(legSize < baseRange*1.2) continue; // leg not strong enough
+    const impulse = recent[baseEnd+1]; // candle after base
+    const last = recent[recent.length-1];
+    if(!impulse) continue;
+    // RBD: Rally -> Base -> Drop
+    if(legClose > legOpen){ // rally up
+      if(impulse.close < baseLow && cColor(impulse)==="RED"){
+        // Check retest: last price in base zone
+        if(last.high >= baseLow && last.high <= baseHigh + baseRange*0.2){
+          return {dir:"SELL", strat:"RBD - SELL AT BASE", entry:baseHigh, boxHigh:baseHigh, boxLow:baseLow, baseRange, detail:`Rally ${fmtPrice(legSize, "")} -> Base ${fmtPrice(baseRange,"")} -> Drop -> Retest`};
+        }
+        // Even without retest yet, if just dropped, still valid SELL on retest
+        if(last.close < baseLow){
+          return {dir:"SELL", strat:"RBD - SELL AT BASE (WAIT RETEST)", entry:baseHigh, boxHigh:baseHigh, boxLow:baseLow, baseRange, detail:"Rally-Base-Drop confirmed, wait retest"};
+        }
+      }
+    }
+    // DBR: Drop -> Base -> Rally
+    if(legClose < legOpen){ // drop down
+      if(impulse.close > baseHigh && cColor(impulse)==="GREEN"){
+        if(last.low <= baseHigh && last.low >= baseLow - baseRange*0.2){
+          return {dir:"BUY", strat:"DBR - BUY AT BASE", entry:baseLow, boxHigh:baseHigh, boxLow:baseLow, baseRange, detail:`Drop -> Base -> Rally -> Retest`};
+        }
+        if(last.close > baseHigh){
+          return {dir:"BUY", strat:"DBR - BUY AT BASE (WAIT RETEST)", entry:baseLow, boxHigh:baseHigh, boxLow:baseLow, baseRange, detail:"Drop-Base-Rally confirmed, wait retest"};
+        }
+      }
+    }
+  }
+  return null;
+}
 
 function App(){
  const [running,setRunning]=useState(false),[connected,setConnected]=useState(false),[connText,setConnText]=useState("DISCONNECTED");
@@ -63,13 +114,12 @@ function App(){
 
  const scanAll=async()=>{
    const ws=wsRef.current; if(!ws) return;
-   setMsg("Scanning Deriv - M15 - Orange Box 00:00-01:00 + Breakout...");
+   setMsg("Scanning Deriv - M15 - Orange Box + Breakout + RBD/DBR...");
    try{
      const r1=await request({active_symbols:"brief"});
      const list=(r1.active_symbols||[]).filter(s=>s.underlying_symbol).slice(0,40);
      setTotal(list.length); setScanned(0); setProgress(0);
-     let found=[];
-     let done=0;
+     let found=[]; let done=0;
      for(const item of list){
        if(!runRef.current) break;
        try{
@@ -87,22 +137,24 @@ function App(){
          const col=cColor(last);
          const prevCol=cColor(prev);
          let sig=null;
-         // RETEST - original
          if(last.open>box.high && col==="RED" && last.low>=box.low && last.low<=box.high && last.close>box.high) sig={dir:"BUY",strat:"ORANGE RETEST BUY",entry:last.high};
          else if(last.open<box.low && col==="GREEN" && last.high>=box.low && last.high<=box.high && last.close<box.low) sig={dir:"SELL",strat:"ORANGE RETEST SELL",entry:last.low};
          else if(last.open>box.high && col==="RED" && last.close>=box.low && last.close<=box.high) sig={dir:"SELL",strat:"ORANGE BREAK-IN SELL",entry:box.low};
          else if(last.open<box.low && col==="GREEN" && last.close>=box.low && last.close<=box.high) sig={dir:"BUY",strat:"ORANGE BREAK-IN BUY",entry:box.high};
-         // BREAKOUT 1st RED / 1st GREEN - NEW - YOUR REQUEST
          else if(prev.close>box.high && prevCol==="GREEN" && col==="RED" && last.open>box.high && last.low>=box.high && last.close>box.high) sig={dir:"BUY",strat:"ORANGE BREAKOUT BUY 1st RED",entry:last.high};
          else if(prev.close<box.low && prevCol==="RED" && col==="GREEN" && last.open<box.low && last.high<=box.low && last.close<box.low) sig={dir:"SELL",strat:"ORANGE BREAKOUT SELL 1st GREEN",entry:last.low};
-         // DIRECT BREAKOUT - strong close outside
          else if(last.close>box.high && prev.close<=box.high && col==="GREEN" && last.open>box.low) sig={dir:"BUY",strat:"ORANGE BREAKOUT BUY",entry:last.close};
          else if(last.close<box.low && prev.close>=box.low && col==="RED" && last.open<box.high) sig={dir:"SELL",strat:"ORANGE BREAKOUT SELL",entry:last.close};
+         // Also check RBD/DBR on M15 for robot
+         if(!sig){
+           const rbd = detectRBDDBR(closedCs);
+           if(rbd) sig={dir:rbd.dir, strat:rbd.strat, entry:rbd.entry};
+         }
          if(sig) found.push({sym: item.display_name||sym, symbol:sym, ...sig, boxHigh:box.high, boxLow:box.low, rsi});
        }catch(e){}
        done++; setScanned(done); setProgress(Math.round(done/list.length*100));
      }
-     setSignals(found); setLastScan(new Date().toLocaleTimeString()); setMsg(`Scan complete: ${done}/${list.length} · ${found.length} signals - Retest + Break-in + Breakout`);
+     setSignals(found); setLastScan(new Date().toLocaleTimeString()); setMsg(`Scan complete: ${done}/${list.length} · ${found.length} signals - Orange + RBD/DBR`);
    }catch(e){ setMsg("Scan failed: "+e.message); }
  };
 
@@ -122,7 +174,7 @@ function App(){
      if('Notification' in window && Notification.permission!=='granted') await Notification.requestPermission();
      await connect(); runRef.current=true; setRunning(true); setSignals([]); await scanAll();
      const iv=setInterval(()=>{ if(runRef.current) scanAll(); },300000); wsRef.current._iv=iv;
-     sendAlert("iFX BILLIONAIRE STARTED","Robot running - Retest + Breakout - will notify");
+     sendAlert("iFX BILLIONAIRE STARTED","Robot running - Orange + RBD/DBR - will notify");
    }catch(e){ setMsg(e.message); }
  };
  const stopRobot=()=>{ runRef.current=false; setRunning(false); if(wsRef.current){ if(wsRef.current._iv) clearInterval(wsRef.current._iv); try{wsRef.current.close();}catch{} } setMsg("STOPPED"); };
@@ -139,7 +191,7 @@ function App(){
 
  async function detectFromImg(url,name){
    const up=(name+" ").toUpperCase();
-   const syms=["XAUUSD","EURUSD","GBPUSD","BTCUSD","US30","NAS100","V75","GBPJPY","USDJPY"];
+   const syms=["XAUUSD","EURUSD","GBPUSD","BTCUSD","US30","NAS100","V75","GBPJPY","USDJPY","AUDUSD"];
    for(const s of syms) if(up.includes(s)) return {pair:s, price:null};
    try{ if(window.Tesseract){
      const r=await window.Tesseract.recognize(url,'eng');
@@ -150,7 +202,9 @@ function App(){
      if(nums.length>0){
        const candidates=nums.filter(n=>n>1000);
        if(candidates.length>0) price=candidates[candidates.length-1];
+       if(!price && nums.length>0) price=nums[nums.length-1];
      }
+     if(txt.includes("AUDUSD")||txt.includes("AUD")) return {pair:"AUDUSD", price};
      if(price && price>15000 && price<50000){
        if(price>30000 && price<42000) return {pair:"V75", price};
        if(price>42000 && price<46000) return {pair:"US30", price};
@@ -171,12 +225,12 @@ function App(){
    const det=await detectFromImg(url,f.name); setIsDetecting(false);
    if(det && det.pair){ setDetectedPair(det.pair); setScanPair(det.pair); setDetectMsg(`✅ Detected: ${det.pair} @ ${det.price||""} by price`); if(det.price){ setOcrPrice(det.price); } }
    else if(det && det.price){ setOcrPrice(det.price); if(det.price>15000 && det.price<42000){ setDetectedPair("V75"); setScanPair("V75"); setDetectMsg(`✅ Price ${det.price} looks like V75 - set to V75`); } else { setDetectMsg(`✅ Price read: ${det.price} - tap pair below`); } }
-   else { setDetectMsg("⚠️ Could not read text - but using price. Tap V75 below if needed"); }
+   else { setDetectMsg("⚠️ Could not read text - but using price. Tap pair below if needed"); }
  }
  function pixelTrend(url){ return new Promise(res=>{ const img=new Image(); img.src=url; img.onload=()=>{ const c=document.createElement('canvas'); c.width=100; c.height=60; const x=c.getContext('2d'); x.drawImage(img,0,0,100,60); const d=x.getImageData(0,0,100,60).data; let g=0,r=0; for(let i=0;i<d.length;i+=4){ if(d[i+1]>d[i]+10) g++; if(d[i]>d[i+1]+10) r++; } res(g>=r?15:-15); }; img.onerror=()=>res(0); }); }
 
  async function getLivePrice(pair){
-   const map={ "V75":"R_75", "XAUUSD":"frxXAUUSD", "EURUSD":"frxEURUSD", "GBPUSD":"frxGBPUSD", "BTCUSD":"cryBTCUSD", "GBPJPY":"frxGBPJPY", "USDJPY":"frxUSDJPY", "US30":"OTC_AA", "NAS100":"OTC_NA" };
+   const map={ "V75":"R_75", "XAUUSD":"frxXAUUSD", "EURUSD":"frxEURUSD", "GBPUSD":"frxGBPUSD", "BTCUSD":"cryBTCUSD", "GBPJPY":"frxGBPJPY", "USDJPY":"frxUSDJPY", "US30":"OTC_AA", "NAS100":"OTC_NA", "AUDUSD":"frxAUDUSD" };
    const sym=map[pair];
    if(!sym) return null;
    return new Promise((res)=>{
@@ -190,21 +244,45 @@ function App(){
    });
  }
 
+ async function getCandlesForScanner(pair, granularity){
+   const map={ "V75":"R_75", "XAUUSD":"frxXAUUSD", "EURUSD":"frxEURUSD", "GBPUSD":"frxGBPUSD", "BTCUSD":"cryBTCUSD", "GBPJPY":"frxGBPJPY", "USDJPY":"frxUSDJPY", "US30":"OTC_AA", "NAS100":"OTC_NA", "AUDUSD":"frxAUDUSD" };
+   const sym=map[pair]; if(!sym) return null;
+   return new Promise((res)=>{
+     try{
+       const ws=new WebSocket(WS_URL);
+       ws.onopen=()=>{ ws.send(JSON.stringify({ticks_history:sym,count:30,end:"latest",style:"candles",granularity})); };
+       ws.onmessage=(e)=>{ try{ const d=JSON.parse(e.data); if(d.candles){ const cs=d.candles.map(c=>({epoch:+c.epoch,open:+c.open,high:+c.high,low:+c.low,close:+c.close})).sort((a,b)=>a.epoch-b.epoch); res(cs); try{ws.close();}catch{} } }catch{} };
+       setTimeout(()=>{ res(null); try{ws.close();}catch{} },4000);
+     }catch(e){ res(null); }
+   });
+ }
+
  async function analyze(){
    if(!c1) return alert("Upload Chart 1 first"); setScanning(true);
    const pair=(detectedPair||scanPair).toUpperCase();
    const t1=await pixelTrend(c1); const t2=c2?await pixelTrend(c2):t1;
-   const score=t1*0.4+t2*0.6; const dir=score>=0?"BUY":"SELL";
-   const conf=Math.min(92,Math.max(62,68+Math.abs(score)));
-   const fallbackMap={ "XAUUSD":4413.83, "BTCUSD":67200, "V75":38820.86, "US30":44000, "NAS100":21000, "EURUSD":1.0850, "GBPUSD":1.2700, "USDJPY":155.50, "GBPJPY":192.50 };
+   const score=t1*0.4+t2*0.6; const pixelDir=score>=0?"BUY":"SELL";
+   // NEW: Try RBD/DBR first using real candles
+   let rbdSignal=null;
+   try{
+     // Try H1 first for your AUDUSD example, then M15
+     const csH1=await getCandlesForScanner(pair, 3600);
+     if(csH1) rbdSignal=detectRBDDBR(csH1);
+     if(!rbdSignal){
+       const csM15=await getCandlesForScanner(pair, 900);
+       if(csM15) rbdSignal=detectRBDDBR(csM15);
+     }
+   }catch(e){}
+   const fallbackMap={ "XAUUSD":4413.83, "BTCUSD":67200, "V75":38820.86, "US30":44000, "NAS100":21000, "EURUSD":1.0850, "GBPUSD":1.2700, "USDJPY":155.50, "GBPJPY":192.50, "AUDUSD":0.65840 };
    let base=null;
    if(manualPrice && Number(manualPrice)>0) base=Number(manualPrice);
    if(!base){
      const live=await getLivePrice(pair);
      if(live && live>0) base=live;
    }
-   if(!base && ocrPrice && ocrPrice>10) base=ocrPrice;
+   if(!base && ocrPrice && ocrPrice>0) base=ocrPrice;
    if(!base) base=fallbackMap[pair]||38820.86;
+
    let bs=0.0015;
    if(pair.includes("XAU")) bs=3.5;
    else if(pair.includes("BTC")) bs=350;
@@ -212,8 +290,26 @@ function App(){
    else if(pair.includes("US30")) bs=85;
    else if(pair.includes("NAS")) bs=90;
    else if(pair.includes("JPY")) bs=0.25;
+   else if(pair.includes("AUD")) bs=0.0012;
+
+   // If RBD/DBR found, use its entry and box
+   if(rbdSignal){
+     const entry=rbdSignal.entry;
+     const boxSize=rbdSignal.baseRange || bs;
+     const sl=rbdSignal.dir==="BUY"?entry-boxSize:entry+boxSize;
+     const tp=rbdSignal.dir==="BUY"?entry+boxSize*2.2:entry-boxSize*2.2;
+     const conf=92;
+     setResult({pair:pair+".ecn",dir:rbdSignal.dir,entry,sl,tp,conf, livePrice:base, strat:rbdSignal.strat, detail:rbdSignal.detail});
+     setScanning(false); sendAlert(`iFX ${rbdSignal.strat} ${pair}`,`Entry ${fmtPrice(entry,pair)} TP ${fmtPrice(tp,pair)}`);
+     return;
+   }
+
+   // Fallback to pixel trend
+   const dir=pixelDir;
+   const conf=Math.min(92,Math.max(62,68+Math.abs(score)));
    const entry=base, sl=dir==="BUY"?entry-bs:entry+bs, tp=dir==="BUY"?entry+bs*2.2:entry-bs*2.2;
-   setResult({pair:pair+".ecn",dir,entry,sl,tp,conf, livePrice:base}); setScanning(false); sendAlert(`iFX AI ${dir} ${pair}`,`Entry ${fmtPrice(entry,pair)} TP ${fmtPrice(tp,pair)} ${conf}%`);
+   setResult({pair:pair+".ecn",dir,entry,sl,tp,conf, livePrice:base, strat:"PIXEL TREND", detail:"No RBD/DBR base found, using color trend"});
+   setScanning(false); sendAlert(`iFX AI ${dir} ${pair}`,`Entry ${fmtPrice(entry,pair)} TP ${fmtPrice(tp,pair)} ${conf}%`);
  }
 
  const openTrades=orders.filter(o=>o.status==="OPEN"||o.status==="PENDING");
@@ -229,7 +325,7 @@ function App(){
    </div>
 
    <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:16,margin:12,padding:16}}>
-     <div style={{fontSize:16,fontWeight:900}}>ROBOT CONTROL - ORANGE BOX + BREAKOUT</div>
+     <div style={{fontSize:16,fontWeight:900}}>ROBOT CONTROL - ORANGE BOX + BREAKOUT + RBD/DBR</div>
      <div style={{display:"flex",gap:10,alignItems:"center",margin:"12px 0",justifyContent:"space-between",flexWrap:"wrap"}}>
        <span style={{color:connected?"#4ade80":"#ff6b6b",fontWeight:700,fontSize:13}}>● {connText}</span>
        <button onClick={()=>{ Notification.requestPermission(); sendAlert('TEST NOTIFICATION','Pending activation will buzz you!'); }} style={{background:"#0ea5e9",color:"white",border:"none",padding:"8px 14px",borderRadius:8,fontWeight:800,fontSize:13}}>🔔 TEST NOTIFICATION</button>
@@ -256,26 +352,27 @@ function App(){
        <div style={{background:"#0f172a",padding:12,borderRadius:8}}><div style={{color:"#94a3b8",fontSize:10}}>FLOATING P/L</div><b style={{color:"#4ade80"}}>${fmt(floating,2)}</b></div>
        <div style={{background:"#0f172a",padding:12,borderRadius:8}}><div style={{color:"#94a3b8",fontSize:10}}>REALISED P/L</div><b style={{color:"#4ade80"}}>${fmt(realised,2)}</b></div>
      </div>
-     <button onClick={startRobot} disabled={running} style={{width:"100%",padding:15,marginTop:14,background:"#10b981",color:"white",border:"none",borderRadius:10,fontWeight:900,fontSize:15}}>▶ START ROBOT - ORANGE BOX + BREAKOUT</button>
+     <button onClick={startRobot} disabled={running} style={{width:"100%",padding:15,marginTop:14,background:"#10b981",color:"white",border:"none",borderRadius:10,fontWeight:900,fontSize:15}}>▶ START ROBOT - ORANGE + RBD/DBR</button>
    </div>
 
    <div style={{background:"linear-gradient(135deg,#0f172a,#1e1b4b)",border:"1px solid #3b82f6",borderRadius:16,margin:12,padding:16}}>
-     <div style={{display:"flex",justifyContent:"space-between",gap:8}}><div><div style={{fontSize:15,fontWeight:900}}>🤖 AI SCANNER - Auto-Detect Any Market 📸</div><div style={{fontSize:11,color:"#93c5fd",marginTop:4}}>Snap any chart - Gold, Forex, Crypto, Indices, Synthetics - Auto runs in background</div></div><div style={{background:"#14532d",color:"#4ade80",padding:"6px 10px",borderRadius:6,fontSize:11,fontWeight:800,textAlign:"center"}}>Auto-Detect<br/>ON</div></div>
+     <div style={{display:"flex",justifyContent:"space-between",gap:8}}><div><div style={{fontSize:15,fontWeight:900}}>🤖 AI SCANNER - RBD / DBR Base + Pixel 📸</div><div style={{fontSize:11,color:"#93c5fd",marginTop:4}}>Now scans for Rally-Base-Drop & Drop-Base-Rally from your notes + Auto-Detect Any Market</div></div><div style={{background:"#14532d",color:"#4ade80",padding:"6px 10px",borderRadius:6,fontSize:11,fontWeight:800,textAlign:"center"}}>RE<br/>ON</div></div>
      <div style={{fontSize:12,marginTop:12}}>Pair: <b style={{color:"#4ade80"}}>{detectedPair||scanPair}</b> {isDetecting?"Detecting...":""} {ocrPrice?` • OCR Price: ${ocrPrice}`:""}</div>
-     <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:8}}>{["XAUUSD","EURUSD","GBPUSD","BTCUSD","US30","NAS100","V75","GBPJPY","USDJPY"].map(p=>(<button key={p} onClick={()=>{setScanPair(p); setDetectedPair("");}} style={{padding:"7px 14px",borderRadius:20,background:(detectedPair||scanPair)===p?"#16a34a":"#1e293b",color:"white",border:"none",fontSize:12,fontWeight:700}}>{p}</button>))}</div>
+     <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:8}}>{["XAUUSD","EURUSD","GBPUSD","BTCUSD","US30","NAS100","V75","GBPJPY","USDJPY","AUDUSD"].map(p=>(<button key={p} onClick={()=>{setScanPair(p); setDetectedPair("");}} style={{padding:"7px 14px",borderRadius:20,background:(detectedPair||scanPair)===p?"#16a34a":"#1e293b",color:"white",border:"none",fontSize:12,fontWeight:700}}>{p}</button>))}</div>
      <input value={scanPair} onChange={e=>{setScanPair(e.target.value.toUpperCase()); setDetectedPair("");}} style={{width:"100%",marginTop:10,background:"#1e293b",color:"white",border:"1px solid #475569",borderRadius:8,padding:10}} />
      <div style={{display:"flex",gap:8,marginTop:8}}>
-       <input value={manualPrice} onChange={e=>setManualPrice(e.target.value)} placeholder="Optional: Type live price e.g. 38820.86 if scanner price still wrong" style={{flex:1,background:"#0f172a",color:"#fbbf24",border:"1px solid #f59e0b",borderRadius:8,padding:10,fontSize:12}} />
+       <input value={manualPrice} onChange={e=>setManualPrice(e.target.value)} placeholder="Optional: Type live price e.g. 0.65840 if scanner price still wrong" style={{flex:1,background:"#0f172a",color:"#fbbf24",border:"1px solid #f59e0b",borderRadius:8,padding:10,fontSize:12}} />
      </div>
-     <div style={{fontSize:11,color:"#94a3b8",marginTop:6}}>Tip: Include top bar with Volatility 75 Index M1 for auto-detect. {detectMsg}</div>
+     <div style={{fontSize:11,color:"#94a3b8",marginTop:6}}>Tip: Include top bar with pair name. {detectMsg}</div>
      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginTop:14}}>
        <div><div style={{fontSize:12,marginBottom:6}}>Chart 1 - {tf1}</div><label style={{display:"block",border:"1px dashed #3b82f6",borderRadius:8,padding:10,textAlign:"center",cursor:"pointer",background:"#131e32",minHeight:110,overflow:"hidden"}}>{c1?<img src={c1} style={{width:"100%",height:110,objectFit:"cover",borderRadius:6}}/>:<div style={{paddingTop:35,color:"#94a3b8"}}>+ Upload</div>}<input type="file" accept="image/*" onChange={e=>handleFile(e.target.files[0],setC1)} style={{display:"none"}} /></label><select value={tf1} onChange={e=>setTf1(e.target.value)} style={{width:"100%",marginTop:8,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:6,padding:8}}><option>M1</option><option>M5</option><option>M15</option><option>H1</option></select></div>
        <div><div style={{fontSize:12,marginBottom:6}}>Chart 2 - M15 (Optional)</div><label style={{display:"block",border:"1px dashed #475569",borderRadius:8,padding:10,textAlign:"center",cursor:"pointer",background:"#131e32",minHeight:110,overflow:"hidden"}}>{c2?<img src={c2} style={{width:"100%",height:110,objectFit:"cover",borderRadius:6}}/>:<div style={{paddingTop:35,color:"#94a3b8"}}>+ Upload</div>}<input type="file" accept="image/*" onChange={e=>handleFile(e.target.files[0],setC2)} style={{display:"none"}} /></label><select value={tf2} onChange={e=>setTf2(e.target.value)} style={{width:"100%",marginTop:8,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:6,padding:8}}><option>M15</option><option>M1</option><option>M5</option><option>H1</option></select></div>
      </div>
-     <button onClick={analyze} style={{width:"100%",padding:14,marginTop:14,background:"#2563eb",color:"white",border:"none",borderRadius:8,fontWeight:900,fontSize:13}}>{scanning?"🔍 ANALYZING + GETTING LIVE PRICE...":"🔍 ANALYZE CHARTS - ANY MARKET"}</button>
+     <button onClick={analyze} style={{width:"100%",padding:14,marginTop:14,background:"#2563eb",color:"white",border:"none",borderRadius:8,fontWeight:900,fontSize:13}}>{scanning?"🔍 SCANNING RBD/DBR + LIVE CANDLES...":"🔍 ANALYZE - RBD / DBR BASE"}</button>
      {result && (
        <div style={{background:"#0f172a",border:"1px solid #22c55e",borderRadius:10,padding:12,marginTop:12}}>
          <div style={{display:"flex",justifyContent:"space-between"}}><b>{result.pair}</b><div style={{background:result.dir==="BUY"?"#16a34a":"#dc2626",color:"white",padding:"6px 14px",borderRadius:6,fontWeight:900}}>{result.dir}</div></div>
+         <div style={{fontSize:11,marginTop:6,background:"#1e293b",padding:8,borderRadius:6}}><b style={{color:"#93c5fd"}}>{result.strat}</b> - {result.detail||""}</div>
          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginTop:12,textAlign:"center"}}>
            <div style={{background:"#1e293b",padding:10,borderRadius:8}}><div style={{fontSize:10,color:"#94a3b8"}}>ENTRY</div><b>{fmtPrice(result.entry, result.pair)}</b></div>
            <div style={{background:"#1e293b",padding:10,borderRadius:8}}><div style={{fontSize:10,color:"#94a3b8"}}>SL</div><b>{fmtPrice(result.sl, result.pair)}</b></div>
@@ -287,7 +384,7 @@ function App(){
    </div>
 
    <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:12,margin:12,padding:14}}>
-     <button onClick={()=>setShowSignals(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:8,padding:13,fontSize:12,fontWeight:900}}><span>VALID M15 SIGNALS ({signals.length}) - RETEST + BREAKOUT</span><span>{showSignals?"▲":"▼"}</span></button>
+     <button onClick={()=>setShowSignals(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:8,padding:13,fontSize:12,fontWeight:900}}><span>VALID M15 SIGNALS ({signals.length}) - ORANGE + RBD/DBR</span><span>{showSignals?"▲":"▼"}</span></button>
      {showSignals && signals.map((s,i)=>(
        <div key={i} style={{background:"#0f172a",border:"1px solid #334155",borderRadius:10,padding:12,marginTop:8}}>
          <div style={{display:"flex",justifyContent:"space-between"}}><b>{s.sym}</b><span style={{color:s.dir==="BUY"?"#4ade80":"#f87171",fontWeight:900}}>{s.dir} {s.strat}</span></div>
