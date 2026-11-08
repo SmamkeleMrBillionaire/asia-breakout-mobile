@@ -1,134 +1,21 @@
-<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>iFX BILLIONAIRE EA</title>
-<link rel="manifest" href="/manifest.json" />
-<meta name="theme-color" content="#0a0f1a" />
-<meta name="mobile-web-app-capable" content="yes" />
-<meta name="apple-mobile-web-app-capable" content="yes" />
-<link rel="apple-touch-icon" href="/icon-192.png" />
-<link rel="icon" type="image/png" href="/icon-192.png" />
-<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
-<style>body{margin:0;background:#0b1120;color:white;font-family:Inter,system-ui} *{box-sizing:border-box}</style>
-</head><body><div id="root"></div>
-<script type="text/babel">
-const {useState,useEffect,useRef}=React;
-const PRIORITY_SYMBOLS=["XAUUSD","EURUSD","GBPUSD","BTCUSD","US30","NAS100","V75","GBPJPY","USDJPY","BOOM1000","CRASH1000","VIX75"];
-
-function App(){
- const [balance,setBalance]=useState(10000),[risk,setRisk]=useState(1),[lots,setLots]=useState(0.1);
- const [running,setRunning]=useState(false),[openTrades,setOpenTrades]=useState(0);
- const [scanPair,setScanPair]=useState("XAUUSD"),[detectedPair,setDetectedPair]=useState(""),[detectMsg,setDetectMsg]=useState(""),[isDetecting,setIsDetecting]=useState(false);
- const [strategy,setStrategy]=useState("Auto"); // HIDDEN - ALWAYS AUTO
- const [c1,setC1]=useState(null),[c2,setC2]=useState(null),[tf1,setTf1]=useState("M1"),[tf2,setTf2]=useState("M15");
- const [result,setResult]=useState(null),[scanning,setScanning]=useState(false);
- const [livePrice,setLivePrice]=useState(null);
-
- async function autoDetectFromImage(imageUrl,fileName=""){
-   const txtUp=(fileName+" ").toUpperCase();
-   for(const s of PRIORITY_SYMBOLS) if(txtUp.includes(s)) return {pair:s,source:"filename"};
-   try{
-     if(window.Tesseract){
-       const r=await window.Tesseract.recognize(imageUrl,'eng');
-       const txt=(r.data.text||"").toUpperCase().replace(/[^A-Z0-9\s]/g," ");
-       for(const s of PRIORITY_SYMBOLS) if(txt.includes(s)) return {pair:s,source:"OCR",raw:txt.slice(0,100)};
-       if(txt.includes("GOLD")||txt.includes("XAU")) return {pair:"XAUUSD",source:"OCR-GOLD"};
-       if(txt.includes("V75")||txt.includes("VOLATILITY 75")) return {pair:"V75",source:"OCR"};
-       if(txt.includes("BTC")) return {pair:"BTCUSD",source:"OCR"};
-     }
-   }catch(e){}
-   return null;
- }
- async function handleFile(file,setter){
-   if(!file) return;
-   const url=URL.createObjectURL(file); setter(url);
-   setIsDetecting(true); setDetectMsg("🔍 Auto-detecting market...");
-   const det=await autoDetectFromImage(url,file.name);
-   setIsDetecting(false);
-   if(det){ setDetectedPair(det.pair); setScanPair(det.pair); setDetectMsg(`✅ Detected: ${det.pair} • ${tf2} • via ${det.source}`);}
-   else { setDetectMsg("⚠️ Could not auto-detect - TAP a pair below"); }
- }
- function analyzePixelTrend(imgUrl){
-   return new Promise(res=>{
-     const img=new Image(); img.src=imgUrl; img.onload=()=>{
-       const c=document.createElement('canvas'); c.width=100; c.height=60; const x=c.getContext('2d'); x.drawImage(img,0,0,100,60);
-       const d=x.getImageData(0,0,100,60).data; let g=0,r=0;
-       for(let i=0;i<d.length;i+=4){ if(d[i+1]>d[i]+10) g++; if(d[i]>d[i+1]+10) r++; }
-       res(g>=r?"Bullish":"Bearish");
-     }; img.onerror=()=>res("Bullish");
-   });
- }
- async function analyze(){
-   if(!c1) return alert("Upload Chart 1 first");
-   setScanning(true);
-   const pair=detectedPair||scanPair;
-   const trend1=await analyzePixelTrend(c1);
-   const trend2=c2?await analyzePixelTrend(c2):trend1;
-   // ORANGE BOX LOGIC - 00:00-01:00 Box + Live Price
-   const aligned=trend1===trend2;
-   const dir=trend1;
-   const conf=aligned?92:78;
-   // Fake live price for demo, real will come from Deriv WS in EA
-   const base=pair.includes("XAU")?4413.83:pair.includes("BTC")?67200:1.0850;
-   const entry=base, sl=pair.includes("XAU")?base-3.5:base*0.999, tp=pair.includes("XAU")?base+7.7:base*1.0015;
-   setResult({pair:pair+".ecn",dir,entry,sl,tp,conf,trend1,trend2,aligned,strategy:"Auto"});
-   setScanning(false);
- }
- return (
-  <div style={{maxWidth:480,margin:"0 auto",padding:12,background:"#0b1120",minHeight:"100vh"}}>
-   <div style={{background:"#1e293b",borderRadius:12,padding:12,border:"1px solid #334155"}}>
-    <div style={{display:"flex",gap:8}}><label style={{flex:1,fontSize:12}}>Balance $ <input value={balance} onChange={e=>setBalance(e.target.value)} style={{width:"100%",background:"#0f172a",color:"white",border:"1px solid #475569",borderRadius:6,padding:7}} /></label><label style={{width:80,fontSize:12}}>Risk % <input value={risk} onChange={e=>setRisk(e.target.value)} style={{width:"100%",background:"#0f172a",color:"white",border:"1px solid #475569",borderRadius:6,padding:7}} /></label></div>
-    <label style={{fontSize:12}}>Lots <input value={lots} onChange={e=>setLots(e.target.value)} style={{width:80,background:"#0f172a",color:"white",border:"1px solid #475569",borderRadius:6,padding:7,marginLeft:6}} /></label>
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:10}}>
-     <div style={{background:"#0f172a",padding:10,borderRadius:8}}><div style={{fontSize:10,color:"#94a3b8"}}>OPEN / PENDING</div><b>{openTrades}</b></div>
-     <div style={{background:"#0f172a",padding:10,borderRadius:8}}><div style={{fontSize:10,color:"#94a3b8"}}>DAILY TRADES</div><b>0/4</b></div>
-     <div style={{background:"#0f172a",padding:10,borderRadius:8}}><div style={{fontSize:10,color:"#94a3b8"}}>FLOATING P/L</div><b style={{color:"#4ade80"}}>$0.00</b></div>
-     <div style={{background:"#0f172a",padding:10,borderRadius:8}}><div style={{fontSize:10,color:"#94a3b8"}}>REALISED P/L</div><b style={{color:"#4ade80"}}>$0.00</b></div>
-    </div>
-    <button onClick={()=>setRunning(!running)} style={{width:"100%",marginTop:12,padding:12,borderRadius:8,border:"none",fontWeight:800,background:running?"#ef4444":"#16a34a",color:"white"}}>{running?"■ STOP ROBOT - ORANGE BOX RUNNING":"▶ START ROBOT - ORANGE BOX"}</button>
-    {running&&<div style={{fontSize:11,color:"#4ade80",textAlign:"center",marginTop:6}}>Robot using Orange Box (Supply/Demand 00:00-01:00) • Auto Strategy • Live Deriv Price</div>}
-   </div>
-
-   <div style={{background:"#1e293b",borderRadius:12,padding:12,marginTop:12,border:"1px solid #334155"}}>
-    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><b style={{fontSize:14}}>🤖 AI SCANNER - Auto-Detect Any Market 📸</b><span style={{fontSize:11,background:"#14532d",color:"#4ade80",padding:"3px 7px",borderRadius:6}}>Auto-Detect ON</span></div>
-    <div style={{fontSize:11,color:"#94a3b8",marginTop:4}}>Snap any chart - Gold, Forex, Crypto, Indices, Synthetics - Auto runs in background</div>
-
-    {/* STRATEGY HIDDEN - AUTO ALWAYS */}
-    <div style={{display:"none"}}><button onClick={()=>setStrategy("Auto")}>Auto</button></div>
-
-    <div style={{background:"#0f172a",border:"1px solid #334155",borderRadius:8,padding:10,marginTop:12}}>
-     <div style={{display:"flex",gap:8,alignItems:"center",fontSize:12}}>Pair: <b style={{color:"#4ade80"}}>{detectedPair?detectedPair+".ecn":scanPair}</b> {detectedPair&&<span style={{background:"#14532d",color:"#4ade80",padding:"2px 6px",borderRadius:4,fontSize:10}}>AUTO-DETECTED ✅</span>} {isDetecting&&<span style={{color:"#fbbf24"}}>Detecting...</span>}</div>
-     <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:8}}>
-      {["XAUUSD","EURUSD","GBPUSD","BTCUSD","US30","NAS100","V75","GBPJPY","USDJPY"].map(p=>(
-       <button key={p} onClick={()=>{setScanPair(p); setDetectedPair(p); setDetectMsg(`✅ Manually selected: ${p} - ready to scan`);}} style={{padding:"5px 10px",borderRadius:20,background:(detectedPair===p||scanPair===p)?"#16a34a":"#1e293b",color:"white",border:"none",fontSize:11,fontWeight:700}}>{p}</button>
-      ))}
-     </div>
-     <input value={scanPair} onChange={e=>{setScanPair(e.target.value.toUpperCase()); setDetectedPair(e.target.value.toUpperCase());}} placeholder="or type EURUSD..." style={{width:"100%",marginTop:8,background:"#1e293b",color:"white",border:"1px solid #475569",borderRadius:6,padding:8,fontSize:12}} />
-     <div style={{fontSize:11,color:"#94a3b8",marginTop:6}}>{detectMsg||"Tip: Include top bar with XAUUSD.ecn M1 for auto-detect."}</div>
-    </div>
-
-    <div style={{display:"flex",gap:10,marginTop:12}}>
-     <div style={{flex:1}}><div style={{fontSize:12,marginBottom:6}}>Chart 1 - M1</div><label style={{display:"block",background:"#0f172a",border:"1px dashed #475569",borderRadius:8,height:120,overflow:"hidden",cursor:"pointer",textAlign:"center"}}>{c1?<img src={c1} style={{width:"100%",height:"100%",objectFit:"cover"}}/>:<div style={{paddingTop:45,color:"#64748b"}}>+ Upload</div>}<input type="file" accept="image/*" hidden onChange={e=>handleFile(e.target.files[0],setC1)} /></label><select value={tf1} onChange={e=>setTf1(e.target.value)} style={{width:"100%",marginTop:6,background:"#0f172a",color:"white",padding:7,borderRadius:6,border:"1px solid #334155"}}><option>M1</option><option>M5</option><option>M15</option></select></div>
-     <div style={{flex:1}}><div style={{fontSize:12,marginBottom:6}}>Chart 2 - M15 (Optional)</div><label style={{display:"block",background:"#0f172a",border:"1px dashed #475569",borderRadius:8,height:120,overflow:"hidden",cursor:"pointer",textAlign:"center"}}>{c2?<img src={c2} style={{width:"100%",height:"100%",objectFit:"cover"}}/>:<div style={{paddingTop:45,color:"#64748b"}}>+ Upload</div>}<input type="file" accept="image/*" hidden onChange={e=>handleFile(e.target.files[0],setC2)} /></label><select value={tf2} onChange={e=>setTf2(e.target.value)} style={{width:"100%",marginTop:6,background:"#0f172a",color:"white",padding:7,borderRadius:6,border:"1px solid #334155"}}><option>M15</option><option>M1</option><option>M5</option><option>H1</option></select></div>
-    </div>
-    <button onClick={analyze} style={{width:"100%",marginTop:12,padding:13,borderRadius:8,border:"none",fontWeight:800,background:"#2563eb",color:"white"}}>{scanning?"🔍 ANALYZING...":"🔍 ANALYZE CHARTS - ANY MARKET"}</button>
-    {result&&(
-     <div style={{marginTop:12,background:"#0f172a",borderRadius:10,padding:12,border:"1px solid #16a34a"}}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{fontSize:11,color:"#94a3b8"}}>iFX AI SCANNER • Auto • Auto-Detected</div><b style={{fontSize:16}}>{result.pair}</b><div style={{fontSize:11,color:"#94a3b8"}}>{result.trend1} {tf1} • {result.trend2} {tf2} • {result.aligned?"Aligned ✅":"Not Aligned"}</div></div><span style={{background:result.dir==="Bullish"?"#16a34a":"#dc2626",color:"white",padding:"8px 14px",borderRadius:8,fontWeight:800}}>{result.dir==="Bullish"?"↗ BUY":"↘ SELL"}</span></div>
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginTop:10,textAlign:"center"}}>
-       <div><div style={{fontSize:10,color:"#94a3b8"}}>ENTRY</div><b>{result.entry.toFixed(2)}</b></div>
-       <div><div style={{fontSize:10,color:"#94a3b8"}}>SL</div><b style={{color:"#f87171"}}>{result.sl.toFixed(2)}</b></div>
-       <div><div style={{fontSize:10,color:"#94a3b8"}}>TP</div><b style={{color:"#4ade80"}}>{result.tp.toFixed(2)}</b></div>
-      </div>
-      <div style={{marginTop:10,background:"#1e293b",padding:8,borderRadius:6,textAlign:"center",fontSize:12}}>Confidence: <b style={{color:"#4ade80"}}>{result.conf}% • HIGH</b> • Orange Box Confirmed</div>
-     </div>
-    )}
-   </div>
-   <div style={{textAlign:"center",fontSize:10,color:"#64748b",marginTop:10}}>iFX AI SCANNER V11.3 CLEAN • Auto Strategy • Orange Box Supply/Demand • Built by Twin</div>
-  </div>
- );
-}
-ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
-</script></body></html>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="/icon-192.png" />
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#0a0f1a" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="iFX BILLIONAIRE" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <title>iFX BILLIONAIRE EA</title>
+    <style>body{margin:0;background:#0a0f1a} *{box-sizing:border-box}</style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
