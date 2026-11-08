@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-// iFX BILLIONAIRE EA + AI SCANNER V11.3 - TOP AS PER IMAGE + ORANGE BOX A,B,C LOCKED
+// iFX BILLIONAIRE EA V11.4 - TOP IMAGE + BOTTOM IMAGE COMBINED + ORANGE BOX A,B,C
 function sendIFXAlert(title, body) {
   if (navigator.vibrate) navigator.vibrate([300,100,300,100,300]);
   try { const audio = new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg'); audio.play().catch(()=>{}); } catch(e){}
@@ -17,6 +17,7 @@ const TRADING_START_HOUR = 7; const TRADING_END_HOUR = 22;
 const TP_BOX_MULTIPLIER = 4.0; const SL_EXTRA_PIPS = 0; const MAX_SPREAD_POINTS = 300;
 const MAX_DAILY_TRADES = 4; const MAX_OPEN_TRADES = 4; const PENDING_EXPIRY_SECONDS = 3600;
 const PRIORITY_SYMBOLS = ["EURUSD","GBPUSD","USDJPY","USDCHF","AUDUSD","USDCAD","NZDUSD","EURJPY","GBPJPY","EURGBP","XAUUSD","XAGUSD","BTCUSD","ETHUSD","US30","USTEC","NAS100","SPX500","V75","V100","BOOM1000","CRASH1000","AUDCAD","NZDJPY","GBPCAD","AUDJPY","EURAUD","EURCAD","NZDCHF","CADJPY","USDCAD"];
+const QUICK_PAIRS = ["XAUUSD","EURUSD","GBPUSD","BTCUSD","US30","NAS100","V75","GBPJPY","USDJPY"];
 const CATEGORIES = ["All","Forex","Indices","Metals","Synthetics","Crypto","Stocks","Other"];
 const fmt = (n, d = 5) => Number.isFinite(Number(n)) ? Number(n).toFixed(d) : "—";
 const serverDay = e => new Date(e * 1000).toISOString().slice(0, 10);
@@ -44,7 +45,7 @@ function calculateRSI(candles,idx,period=3){ if(!candles||idx<period) return nul
 function buildOrangeBox(candles,day){ const f=candles.filter(c=>serverDay(c.epoch)===day&&serverHour(c.epoch)===0&&[0,15,30,45].includes(serverMinute(c.epoch))).sort((a,b)=>a.epoch-b.epoch).slice(0,4); if(f.length!==4) return null; const ok=f.every((c,i)=>i===0||c.epoch-f[i-1].epoch===TIMEFRAME); if(!ok) return null; const high=Math.max(...f.map(c=>c.high)); const low=Math.min(...f.map(c=>c.low)); if(!(high>low)) return null; return {type:"ORANGE",day,high,low,size:high-low,startEpoch:f[0].epoch,createdEpoch:f[0].epoch,boxId:makeBoxId("ORANGE",day,high,low)}; }
 function makeSignal({direction,strategy,candle,orangeBox,pip,entryLevel,reason,rsi,pendingType}){ return {direction,strategy,boxType:"ORANGE",touchType:strategy,signalId:`${orangeBox.boxId}|${strategy}|${candle.epoch}`,boxId:orangeBox.boxId,orangeBoxId:orangeBox.boxId,boxHigh:orangeBox.high,boxLow:orangeBox.low,boxSize:orangeBox.size,entryLevel,pendingType,pip,candleTime:candle.epoch,candleColor:candleColor(candle),rsi,reason}; }
 
-// ===== ORANGE BOX - CONFIRMED A,B,C - UNCHANGED =====
+// ===== ORANGE BOX A,B,C LOCKED =====
 function findClosedEntrySignal(candles,symbol,category,marketPip){
   const empty={direction:"NONE",reason:"Waiting",boxCount:0};
   if(!candles||candles.length<30) return {...empty,reason:"Not enough M15"};
@@ -60,18 +61,16 @@ function findClosedEntrySignal(candles,symbol,category,marketPip){
   const closeAbove=candle.close>orangeBox.high; 
   const closeBelow=candle.close<orangeBox.low; 
   const closeInside=candle.close>=orangeBox.low&&candle.close<=orangeBox.high;
-
   // A) RETEST
   if(openAbove && candle.low<=orangeBox.high && candle.low>=orangeBox.low && closeAbove) {
-    return {...makeSignal({direction:"BUY",strategy:"ORANGE RETEST BUY",candle,orangeBox,pip,entryLevel:candle.high,pendingType:"BUY STOP",rsi,reason:"Retest: Opened above, wicked into box, closed above. Buy Stop on retest candle high."}),...boxInfo};
+    return {...makeSignal({direction:"BUY",strategy:"ORANGE RETEST BUY",candle,orangeBox,pip,entryLevel:candle.high,pendingType:"BUY STOP",rsi,reason:"Retest: Opened above, wicked into box, closed above."}),...boxInfo};
   }
   if(openBelow && candle.high>=orangeBox.low && candle.high<=orangeBox.high && closeBelow) {
-    return {...makeSignal({direction:"SELL",strategy:"ORANGE RETEST SELL",candle,orangeBox,pip,entryLevel:candle.low,pendingType:"SELL STOP",rsi,reason:"Retest: Opened below, wicked into box, closed below. Sell Stop on retest candle low."}),...boxInfo};
+    return {...makeSignal({direction:"SELL",strategy:"ORANGE RETEST SELL",candle,orangeBox,pip,entryLevel:candle.low,pendingType:"SELL STOP",rsi,reason:"Retest: Opened below, wicked into box, closed below."}),...boxInfo};
   }
   // B) BREAK-IN
   if(openAbove && closeInside) return {...makeSignal({direction:"SELL",strategy:"ORANGE BREAK-IN SELL",candle,orangeBox,pip,entryLevel:candle.low-pip,pendingType:"SELL STOP",rsi,reason:"Break-In: Opened above and closed inside."}),...boxInfo};
   if(openBelow && closeInside) return {...makeSignal({direction:"BUY",strategy:"ORANGE BREAK-IN BUY",candle,orangeBox,pip,entryLevel:candle.high+pip,pendingType:"BUY STOP",rsi,reason:"Break-In: Opened below and closed inside."}),...boxInfo};
-
   // C) BREAKOUT + FIRST OPPOSITE
   for(let bIdx = li-1; bIdx >= Math.max(0, li-10); bIdx--){
     const bC = candles[bIdx];
@@ -84,18 +83,14 @@ function findClosedEntrySignal(candles,symbol,category,marketPip){
       let redAlready = false;
       for(let k=bIdx+1;k<li;k++){ if(candleColor(candles[k])==="RED"){ redAlready=true; break; } }
       if(redAlready) break;
-      if(color==="RED"){
-        return {...makeSignal({direction:"BUY",strategy:"BREAKOUT BUY 1ST RED",candle,orangeBox,pip,entryLevel:candle.high,pendingType:"BUY STOP",rsi,reason:"Breakout up. First RED after breakout - Buy Stop on its high."}),...boxInfo};
-      }
+      if(color==="RED") return {...makeSignal({direction:"BUY",strategy:"BREAKOUT BUY 1ST RED",candle,orangeBox,pip,entryLevel:candle.high,pendingType:"BUY STOP",rsi,reason:"Breakout up. First RED after breakout."}),...boxInfo};
       break;
     }
     if(bCloseBelow){
       let greenAlready = false;
       for(let k=bIdx+1;k<li;k++){ if(candleColor(candles[k])==="GREEN"){ greenAlready=true; break; } }
       if(greenAlready) break;
-      if(color==="GREEN"){
-        return {...makeSignal({direction:"SELL",strategy:"BREAKOUT SELL 1ST GREEN",candle,orangeBox,pip,entryLevel:candle.low,pendingType:"SELL STOP",rsi,reason:"Breakout down. First GREEN after breakout - Sell Stop on its low."}),...boxInfo};
-      }
+      if(color==="GREEN") return {...makeSignal({direction:"SELL",strategy:"BREAKOUT SELL 1ST GREEN",candle,orangeBox,pip,entryLevel:candle.low,pendingType:"SELL STOP",rsi,reason:"Breakout down. First GREEN after breakout."}),...boxInfo};
       break;
     }
   }
@@ -177,7 +172,7 @@ export default function App(){
   const [lastScan,setLastScan]=useState("Not scanned");
   const [clock,setClock]=useState(Math.floor(Date.now()/1000));
   const [scanImg1,setScanImg1]=useState(null); const [scanImg2,setScanImg2]=useState(null);
-  const [scanPair,setScanPair]=useState("AUTO-DETECT"); const [detectedPair,setDetectedPair]=useState(""); const [autoDetectOn,setAutoDetectOn]=useState(true);
+  const [scanPair,setScanPair]=useState("XAUUSD"); const [detectedPair,setDetectedPair]=useState(""); const [autoDetectOn,setAutoDetectOn]=useState(true);
   const [scanTF1,setScanTF1]=useState("M1"); const [scanTF2,setScanTF2]=useState("M15");
   const [scanStrategy,setScanStrategy]=useState("Auto");
   const [isAnalyzing,setIsAnalyzing]=useState(false); const [isDetecting,setIsDetecting]=useState(false); const [scanResult,setScanResult]=useState(null); const [scanHistory,setScanHistory]=useState([]);
@@ -263,136 +258,124 @@ export default function App(){
 
   return (
     <div style={{background:"#0a0f1a",minHeight:"100vh",color:"#e6edf7",fontFamily:"system-ui",paddingBottom:30}}>
-      {/* ===== TOP PART - EXACT AS YOUR IMAGE ===== */}
+      {/* ===== IMAGE 1 TOP ===== */}
       <div style={{padding:"14px 16px",display:"flex",justifyContent:"space-between",alignItems:"center",borderBottom:"1px solid #1e2d45"}}>
         <div><div style={{fontSize:28,fontWeight:900,letterSpacing:"-0.5px"}}>iFX BILLIONAIRE EA</div></div>
-        <div style={{background:"#3a1a1a",color:"#ff6b6b",padding:"8px 16px",borderRadius:20,fontSize:13,fontWeight:800,border:"1px solid #4a2222"}}>● STOPPED</div>
+        <div style={{background:"#3a1a1a",color:"#ff6b6b",padding:"8px 16px",borderRadius:20,fontSize:13,fontWeight:800}}>● {running?"RUNNING":"STOPPED"}</div>
       </div>
 
       <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:16,margin:12,padding:16}}>
-        <div style={{fontSize:16,fontWeight:900,letterSpacing:"0.5px"}}>ROBOT CONTROL</div>
+        <div style={{fontSize:16,fontWeight:900}}>ROBOT CONTROL</div>
         <div style={{display:"flex",gap:10,alignItems:"center",margin:"14px 0",fontSize:13,flexWrap:"wrap"}}>
-          <span style={{color:"#ff6b6b",fontWeight:700}}>● DISCONNECTED</span>
+          <span style={{color:connected?"#4ade80":"#ff6b6b",fontWeight:700}}>● {connectionText}</span>
           <button onClick={()=>{ Notification.requestPermission(); sendIFXAlert('TEST NOTIFICATION','If you see this, pending activation will buzz you!'); }} style={{background:"#0ea5e9",color:"white",border:"none",padding:"10px 16px",borderRadius:8,fontWeight:800,fontSize:13}}>🔔 TEST NOTIFICATION</button>
         </div>
         <div style={{display:"flex",gap:10}}>
           <button onClick={startRobot} disabled={running} style={{flex:1,padding:18,border:"none",borderRadius:10,fontWeight:900,fontSize:16,background:"#10b981",color:"white",opacity:running?0.5:1}}>▶ START ROBOT</button>
           <button onClick={stopRobot} style={{flex:1,padding:18,border:"none",borderRadius:10,fontWeight:900,fontSize:16,background:"#dc2626",color:"white"}}>■ STOP</button>
         </div>
-        <div style={{fontSize:13,color:"#8a9bb5",marginTop:14,overflowWrap:"anywhere"}}>{message}</div>
-        <div style={{height:5,background:"#1e2d45",borderRadius:3,margin:"14px 0 10px"}}><div style={{height:"100%",background:"#3b82f6",width:`${progress}%`,transition:"width .2s"}} /></div>
+        <div style={{fontSize:13,color:"#8a9bb5",marginTop:14}}>{message}</div>
+        <div style={{height:5,background:"#1e2d45",borderRadius:3,margin:"14px 0 10px"}}><div style={{height:"100%",background:"#3b82f6",width:`${progress}%`}} /></div>
         <div style={{fontSize:12,color:"#8a9bb5"}}>Scan: {scanned}/{symbols.length} · {progress}% · Every 5 MIN · UTC: {new Date(clock*1000).toISOString().slice(11,19)} · Last: {lastScan}</div>
-        <div style={{background:isTradingHours?"#14532d":"#1a3a25",color:isTradingHours?"#4ade80":"#4ade80",padding:14,borderRadius:8,fontSize:14,fontWeight:800,textAlign:"center",marginTop:12}}>TRADING: ACTIVE - 07:00 - 21:59</div>
-        <div style={{display:"flex",gap:8,marginTop:14,fontSize:11,flexWrap:"wrap"}}>
-          <label>Balance $<input type="number" value={balance} onChange={e=>setBalance(Number(e.target.value))} style={{width:80,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:4,padding:4}} /></label>
-          <label>Risk %<input type="number" value={riskPct} onChange={e=>setRiskPct(Number(e.target.value))} style={{width:50,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:4,padding:4}} /></label>
-          <label>Lots<input type="number" step="0.01" value={fixedLots} onChange={e=>setFixedLots(Number(e.target.value))} style={{width:60,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:4,padding:4}} /></label>
-        </div>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(2,minmax(0,1fr))",gap:8,marginTop:14}}>
-          <div style={{background:"#0f172a",padding:10,borderRadius:8}}><div style={{color:"#94a3b8",fontSize:10}}>OPEN / PENDING</div><b>{openTrades.length}</b></div>
-          <div style={{background:"#0f172a",padding:10,borderRadius:8}}><div style={{color:"#94a3b8",fontSize:10}}>DAILY TRADES</div><b>{dailyCount}/{MAX_DAILY_TRADES}</b></div>
-          <div style={{background:"#0f172a",padding:10,borderRadius:8}}><div style={{color:"#94a3b8",fontSize:10}}>FLOATING P/L</div><b style={{color:floatingPnl>=0?"#4ade80":"#f87171"}}>${fmt(floatingPnl,2)}</b></div>
-          <div style={{background:"#0f172a",padding:10,borderRadius:8}}><div style={{color:"#94a3b8",fontSize:10}}>REALISED P/L</div><b style={{color:realisedPnl>=0?"#4ade80":"#f87171"}}>${fmt(realisedPnl,2)}</b></div>
-        </div>
+        <div style={{background:"#14532d",color:"#4ade80",padding:14,borderRadius:8,fontSize:14,fontWeight:800,textAlign:"center",marginTop:12}}>TRADING: ACTIVE - 07:00 - 21:59</div>
       </div>
 
-      {/* ===== EVERYTHING ELSE SAME AS BEFORE ===== */}
-      <div style={{background:"linear-gradient(135deg,#0f172a,#1e1b4b)",border:"1px solid #3b82f6",borderRadius:12,margin:12,padding:14}}>
-        <button onClick={()=>setScannerOpen(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",alignItems:"center",background:"transparent",border:"none",color:"white",fontSize:13,fontWeight:900,textAlign:"left",cursor:"pointer"}}>
-          <span>🤖 AI SCANNER - Auto-Detect Any Market 📸</span><span>{scannerOpen?"▲":"▼"}</span>
-        </button>
-        {scannerOpen && (
-          <>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:8}}>
-              <div style={{fontSize:11,color:"#93c5fd"}}>Snap any chart - Gold, Forex, Crypto, Indices, Synthetics</div>
-              <label style={{fontSize:11,display:"flex",gap:4,alignItems:"center",cursor:"pointer"}}><input type="checkbox" checked={autoDetectOn} onChange={e=>setAutoDetectOn(e.target.checked)} /> Auto-Detect ON</label>
+      {/* ===== IMAGE 2 - BALANCE / STATS / ORANGE BOX BUTTON ===== */}
+      <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:16,margin:12,padding:16}}>
+        <div style={{display:"flex",gap:10}}>
+          <div style={{flex:1}}>
+            <div style={{fontSize:12,color:"#cbd5e1",marginBottom:4}}>Balance $</div>
+            <input type="number" value={balance} onChange={e=>setBalance(Number(e.target.value))} style={{width:"100%",background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:8,padding:10,boxSizing:"border-box"}} />
+          </div>
+          <div style={{width:90}}>
+            <div style={{fontSize:12,color:"#cbd5e1",marginBottom:4}}>Risk %</div>
+            <input type="number" value={riskPct} onChange={e=>setRiskPct(Number(e.target.value))} style={{width:"100%",background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:8,padding:10,boxSizing:"border-box"}} />
+          </div>
+        </div>
+        <div style={{marginTop:10,display:"flex",gap:10,alignItems:"center"}}>
+          <span style={{fontSize:12}}>Lots</span>
+          <input type="number" step="0.01" value={fixedLots} onChange={e=>setFixedLots(Number(e.target.value))} style={{width:100,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:8,padding:8}} />
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginTop:14}}>
+          <div style={{background:"#0f172a",padding:12,borderRadius:8}}><div style={{color:"#94a3b8",fontSize:10}}>OPEN / PENDING</div><b style={{fontSize:18}}>{openTrades.length}</b></div>
+          <div style={{background:"#0f172a",padding:12,borderRadius:8}}><div style={{color:"#94a3b8",fontSize:10}}>DAILY TRADES</div><b style={{fontSize:18}}>{dailyCount}/4</b></div>
+          <div style={{background:"#0f172a",padding:12,borderRadius:8}}><div style={{color:"#94a3b8",fontSize:10}}>FLOATING P/L</div><b style={{color:"#4ade80",fontSize:16}}>${fmt(floatingPnl,2)}</b></div>
+          <div style={{background:"#0f172a",padding:12,borderRadius:8}}><div style={{color:"#94a3b8",fontSize:10}}>REALISED P/L</div><b style={{color:"#4ade80",fontSize:16}}>${fmt(realisedPnl,2)}</b></div>
+        </div>
+        <button onClick={startRobot} disabled={running} style={{width:"100%",padding:16,marginTop:14,background:"#10b981",color:"white",border:"none",borderRadius:10,fontWeight:900,fontSize:15}}>▶ START ROBOT - ORANGE BOX</button>
+      </div>
+
+      {/* ===== IMAGE 2 - AI SCANNER WITH CHIPS ===== */}
+      <div style={{background:"linear-gradient(135deg,#0f172a,#1e1b4b)",border:"1px solid #3b82f6",borderRadius:16,margin:12,padding:16}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+          <div>
+            <div style={{fontSize:15,fontWeight:900}}>🤖 AI SCANNER - Auto-Detect Any Market 📸</div>
+            <div style={{fontSize:11,color:"#93c5fd",marginTop:4}}>Snap any chart - Gold, Forex, Crypto, Indices, Synthetics - Auto runs in background</div>
+          </div>
+          <div style={{background:"#14532d",color:"#4ade80",padding:"6px 10px",borderRadius:6,fontSize:11,fontWeight:800,textAlign:"center"}}>Auto-Detect<br/>ON</div>
+        </div>
+
+        <div style={{fontSize:12,marginTop:14}}>Pair: <b style={{color:"#4ade80"}}>{detectedPair||scanPair}</b></div>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:8}}>
+          {QUICK_PAIRS.map(p=>(
+            <button key={p} onClick={()=>{setScanPair(p); setDetectedPair("");}} style={{padding:"7px 14px",borderRadius:20,background:(detectedPair||scanPair)===p?"#16a34a":"#1e293b",color:"white",border:"none",fontSize:12,fontWeight:700}}>{p}</button>
+          ))}
+        </div>
+        <input value={scanPair} onChange={e=>{setScanPair(e.target.value); setDetectedPair("");}} placeholder="XAUUSD" style={{width:"100%",marginTop:10,background:"#1e293b",color:"white",border:"1px solid #475569",borderRadius:8,padding:10,boxSizing:"border-box"}} />
+        <div style={{fontSize:11,color:"#94a3b8",marginTop:6}}>Tip: Include top bar with XAUUSD.ecn M1 for auto-detect. {detectMsg}</div>
+
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginTop:14}}>
+          <div>
+            <div style={{fontSize:12,marginBottom:6}}>Chart 1 - {scanTF1}</div>
+            <label style={{display:"block",border:"1px dashed #3b82f6",borderRadius:8,padding:20,textAlign:"center",cursor:"pointer",background:scanImg1?"#0f172a":"#131e32",minHeight:110}}>
+              {scanImg1?<img src={scanImg1.url} style={{width:"100%",maxHeight:120,objectFit:"cover",borderRadius:6}}/>:<>+ Upload</>}
+              <input type="file" accept="image/*" onChange={e=>handleFile(e,setScanImg1,true)} style={{display:"none"}} />
+            </label>
+            <select value={scanTF1} onChange={e=>setScanTF1(e.target.value)} style={{width:"100%",marginTop:8,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:6,padding:8}}><option>M1</option><option>M5</option><option>M15</option><option>H1</option><option>H4</option></select>
+          </div>
+          <div>
+            <div style={{fontSize:12,marginBottom:6}}>Chart 2 - M15 (Optional)</div>
+            <label style={{display:"block",border:"1px dashed #475569",borderRadius:8,padding:20,textAlign:"center",cursor:"pointer",background:scanImg2?"#0f172a":"#131e32",minHeight:110}}>
+              {scanImg2?<img src={scanImg2.url} style={{width:"100%",maxHeight:120,objectFit:"cover",borderRadius:6}}/>:<>+ Upload</>}
+              <input type="file" accept="image/*" onChange={e=>handleFile(e,setScanImg2,false)} style={{display:"none"}} />
+            </label>
+            <select value={scanTF2} onChange={e=>setScanTF2(e.target.value)} style={{width:"100%",marginTop:8,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:6,padding:8}}><option>M15</option><option>M1</option><option>M5</option><option>H1</option><option>H4</option></select>
+          </div>
+        </div>
+
+        <button onClick={runAIScan} disabled={isAnalyzing} style={{width:"100%",padding:14,marginTop:14,background:"#2563eb",color:"white",border:"none",borderRadius:8,fontWeight:900,fontSize:13}}>{isAnalyzing?"🔍 ANALYZING...":"🔍 ANALYZE CHARTS - ANY MARKET"}</button>
+
+        {scanResult && !scanResult.error && (
+          <div style={{background:"#0f172a",border:"1px solid #22c55e",borderRadius:10,padding:12,marginTop:12}}>
+            <div style={{display:"flex",justifyContent:"space-between"}}><b>{scanResult.pair}</b><div style={{background:scanResult.direction==="BUY"?"#16a34a":"#dc2626",color:"white",padding:"6px 14px",borderRadius:6,fontWeight:900}}>{scanResult.direction}</div></div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginTop:12,textAlign:"center"}}>
+              <div style={{background:"#1e293b",padding:10,borderRadius:8}}><div style={{fontSize:10,color:"#94a3b8"}}>ENTRY</div><b>{fmt(scanResult.entry,2)}</b></div>
+              <div style={{background:"#1e293b",padding:10,borderRadius:8}}><div style={{fontSize:10,color:"#94a3b8"}}>STOP LOSS</div><b>{fmt(scanResult.sl,2)}</b></div>
+              <div style={{background:"#1e293b",padding:10,borderRadius:8}}><div style={{fontSize:10,color:"#fbbf24"}}>TAKE PROFIT</div><b style={{color:"#4ade80"}}>{fmt(scanResult.tp,2)}</b></div>
             </div>
-            <div style={{display:"flex",gap:6,marginTop:10,flexWrap:"wrap"}}>
-              {["Auto","SMC","ICT","Price Action","Supply/Demand"].map(s=>(<button key={s} onClick={()=>setScanStrategy(s)} style={{padding:"6px 12px",borderRadius:20,background:scanStrategy===s?"#3b82f6":"#1e293b",color:"white",border:"none",fontSize:11,fontWeight:700}}>{s}</button>))}
-            </div>
-            <div style={{background:"#0f172a",border:"1px solid #334155",borderRadius:8,padding:10,marginTop:12}}>
-              <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",fontSize:12}}>
-                <span>Pair:</span>
-                <b style={{color:"#4ade80"}}>{detectedPair?detectedPair+".ecn":scanPair}</b>
-                {detectedPair && <span style={{background:"#14532d",color:"#4ade80",padding:"2px 6px",borderRadius:4,fontSize:10}}>AUTO-DETECTED ✅</span>}
-                {isDetecting && <span style={{color:"#fbbf24"}}>Detecting...</span>}
-                <input value={scanPair} onChange={e=>{setScanPair(e.target.value); setDetectedPair("");}} placeholder="or type EURUSD, BTCUSD..." style={{flex:1,minWidth:120,background:"#1e293b",color:"white",border:"1px solid #475569",borderRadius:6,padding:6,fontSize:12}} />
-              </div>
-              <div style={{fontSize:11,color:"#94a3b8",marginTop:6}}>{detectMsg || "Upload screenshot with pair name visible at top - e.g. XAUUSD.ecn M1 - for 100% detection"}</div>
-            </div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:12}}>
-              <div>
-                <div style={{fontSize:11,marginBottom:6}}>Chart 1 - {scanTF1}</div>
-                <label style={{display:"block",border:"1px dashed #3b82f6",borderRadius:8,padding:14,textAlign:"center",cursor:"pointer",background:scanImg1?"#0f172a":"transparent"}}>
-                  {scanImg1?<img src={scanImg1.url} style={{width:"100%",maxHeight:120,objectFit:"cover",borderRadius:6}}/>:<>📤<div style={{fontSize:11}}>Upload Chart 1</div><div style={{fontSize:10,color:"#94a3b8"}}>Any market</div></>}
-                  <input type="file" accept="image/*" onChange={e=>handleFile(e,setScanImg1,true)} style={{display:"none"}} />
-                </label>
-                <select value={scanTF1} onChange={e=>setScanTF1(e.target.value)} style={{width:"100%",marginTop:6,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:4,padding:6}}><option>M1</option><option>M5</option><option>M15</option><option>H1</option><option>H4</option></select>
-              </div>
-              <div>
-                <div style={{fontSize:11,marginBottom:6}}>Chart 2 - {scanTF2} (Optional)</div>
-                <label style={{display:"block",border:"1px dashed #475569",borderRadius:8,padding:14,textAlign:"center",cursor:"pointer",background:scanImg2?"#0f172a":"transparent"}}>
-                  {scanImg2?<img src={scanImg2.url} style={{width:"100%",maxHeight:120,objectFit:"cover",borderRadius:6}}/>:<>📤<div style={{fontSize:11}}>+ Add Chart 2</div><div style={{fontSize:10,color:"#94a3b8"}}>Confirms trend</div></>}
-                  <input type="file" accept="image/*" onChange={e=>handleFile(e,setScanImg2,false)} style={{display:"none"}} />
-                </label>
-                <select value={scanTF2} onChange={e=>setScanTF2(e.target.value)} style={{width:"100%",marginTop:6,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:4,padding:6}}><option>M15</option><option>M1</option><option>M5</option><option>H1</option><option>H4</option></select>
-              </div>
-            </div>
-            <button onClick={runAIScan} disabled={isAnalyzing} style={{width:"100%",padding:14,marginTop:12,background:"#2563eb",color:"white",border:"none",borderRadius:8,fontWeight:900,fontSize:13}}>{isAnalyzing?"🔍 ANALYZING CHARTS...":"🔍 ANALYZE CHARTS - ANY MARKET"}</button>
-            {isAnalyzing && <div style={{textAlign:"center",padding:14}}><div style={{width:50,height:50,border:"3px solid #3b82f6",borderTop:"3px solid transparent",borderRadius:"50%",margin:"0 auto",animation:"spin 1s linear infinite"}}></div><div style={{fontSize:12,marginTop:8}}>Analyzing {detectedPair||scanPair}...<br/>AI is comparing across timeframes</div><style>{`@keyframes spin{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}`}</style></div>}
-            {scanResult && !scanResult.error && (
-              <div style={{background:"#0f172a",border:"1px solid #22c55e",borderRadius:10,padding:12,marginTop:12}}>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{fontSize:11,color:"#94a3b8"}}>iFX AI SCANNER • {scanResult.strategy} {scanResult.autoDetected?"• Auto-Detected":""}</div><b style={{fontSize:16}}>{scanResult.pair}</b></div><div style={{background:scanResult.direction==="BUY"?"#16a34a":"#dc2626",color:"white",padding:"6px 14px",borderRadius:6,fontWeight:900}}>↗ {scanResult.direction}</div></div>
-                <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginTop:12,textAlign:"center"}}>
-                  <div style={{background:"#1e293b",padding:10,borderRadius:8}}><div style={{fontSize:10,color:"#94a3b8"}}>ENTRY</div><b>{fmt(scanResult.entry,2)}</b></div>
-                  <div style={{background:"#1e293b",padding:10,borderRadius:8}}><div style={{fontSize:10,color:"#94a3b8"}}>STOP LOSS</div><b>{fmt(scanResult.sl,2)}</b></div>
-                  <div style={{background:"#1e293b",padding:10,borderRadius:8}}><div style={{fontSize:10,color:"#fbbf24"}}>TAKE PROFIT</div><b style={{color:"#4ade80"}}>{fmt(scanResult.tp,2)}</b></div>
-                </div>
-                <div style={{marginTop:10,fontSize:11}}>Confidence: <b style={{color:scanResult.confLabel==="HIGH"?"#4ade80":"#fbbf24"}}>{scanResult.confidence}% • {scanResult.confLabel}</b> • {scanResult.aligned?"✅ Timeframes Aligned":"⚠️ Mixed - Trade with caution"}</div>
-                <div style={{display:"flex",gap:8,marginTop:8,fontSize:11}}><span style={{background:"#1e293b",padding:"4px 8px",borderRadius:4}}>{scanResult.tf1}: {scanResult.tf1Bias}</span><span style={{background:"#1e293b",padding:"4px 8px",borderRadius:4}}>{scanResult.tf2}: {scanResult.tf2Bias}</span></div>
-                <div style={{fontSize:10,color:"#94a3b8",marginTop:8}}>Scanned {scanResult.time} • AI + Orange Box + Live Deriv Price • Works for ALL markets</div>
-              </div>
-            )}
-            {scanResult?.error && <div style={{color:"#f87171",fontSize:12,marginTop:10}}>Error: {scanResult.error}</div>}
-            {scanHistory.length>0 && <div style={{marginTop:12}}><div style={{fontSize:11,fontWeight:800}}>Scan History - Any Market ({scanHistory.length})</div>{scanHistory.slice(0,3).map(h=>(<div key={h.id} style={{display:"flex",justifyContent:"space-between",fontSize:11,padding:"6px 0",borderBottom:"1px solid #1e293b"}}><span>{h.pair} {h.time}</span><span style={{color:h.direction==="BUY"?"#4ade80":"#f87171",fontWeight:800}}>{h.direction} {fmt(h.entry,2)} • {h.confidence}%</span></div>))}</div>}
-          </>
+            <div style={{marginTop:10,fontSize:11}}>Confidence: <b>{scanResult.confidence}% • {scanResult.confLabel}</b></div>
+          </div>
         )}
       </div>
 
       <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:12,margin:12,padding:14}}>
-        <button onClick={()=>setSignalsCollapsed(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,background:"#0f172a",color:"#e6edf7",border:"1px solid #334155",borderRadius:8,padding:13,fontSize:12,fontWeight:900,textAlign:"left",cursor:"pointer"}}><span>VALID M15 SIGNALS ({visibleSymbols.length})</span><span style={{color:"#fbbf24",fontSize:16}}>{signalsCollapsed?"▼":"▲"}</span></button>
+        <button onClick={()=>setSignalsCollapsed(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:8,padding:13,fontSize:12,fontWeight:900}}><span>VALID M15 SIGNALS ({visibleSymbols.length})</span><span>{signalsCollapsed?"▼":"▲"}</span></button>
         {!signalsCollapsed && (
           <>
             <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search..." style={{width:"100%",padding:12,background:"#0f172a",border:"1px solid #334155",borderRadius:8,color:"white",margin:"12px 0",boxSizing:"border-box"}} />
-            <div style={{display:"flex",gap:6,overflowX:"auto"}}>{CATEGORIES.map(c=>(<button key={c} onClick={()=>setCategory(c)} style={{padding:"7px 14px",borderRadius:20,background:category===c?"#0ea5e9":"#1e293b",color:category===c?"white":"#94a3b8",border:"none",whiteSpace:"nowrap"}}>{c}</button>))}</div>
+            <div style={{display:"flex",gap:6,overflowX:"auto"}}>{CATEGORIES.map(c=>(<button key={c} onClick={()=>setCategory(c)} style={{padding:"7px 14px",borderRadius:20,background:category===c?"#0ea5e9":"#1e293b",color:"white",border:"none"}}>{c}</button>))}</div>
             <div style={{marginTop:12,display:"flex",flexDirection:"column",gap:8}}>
-              {visibleSymbols.length===0 && <div style={{fontSize:12,color:"#8a9bb5",textAlign:"center",padding:20}}>No valid signals touching box right now. Robot scanning every 5 min.</div>}
+              {visibleSymbols.length===0 && <div style={{fontSize:12,color:"#8a9bb5",textAlign:"center",padding:20}}>No valid signals touching box right now.</div>}
               {visibleSymbols.map(item=>{ const sig=signals[item.symbol]; const sc=scannerStates[item.symbol]; return (
                   <div key={item.symbol} style={{background:"#0f172a",border:"1px solid #334155",borderRadius:10,padding:12}}>
                     <div style={{display:"flex",justifyContent:"space-between"}}><b>{item.display_name}</b><span style={{color:sig.direction==="BUY"?"#4ade80":"#f87171",fontWeight:900}}>{sig.direction} {sig.strategy}</span></div>
-                    <div style={{fontSize:11,color:"#94a3b8",margin:"6px 0"}}>{sig.reason} • Entry {fmt(sig.entryLevel,5)} • {sig.pendingType} • Box {fmt(sig.boxHigh,5)} / {fmt(sig.boxLow,5)} • {sc?.state}</div>
-                    <button onClick={()=>activateSignal(item)} style={{width:"100%",padding:10,background:"#f59e0b",color:"black",border:"none",borderRadius:8,fontWeight:900}}>PLACE PENDING {sig.pendingType} - WILL NOTIFY ON ACTIVATION 🔔</button>
+                    <div style={{fontSize:11,color:"#94a3b8",margin:"6px 0"}}>{sig.reason} • Entry {fmt(sig.entryLevel,5)} • {sig.pendingType} • Box {fmt(sig.boxHigh,5)} / {fmt(sig.boxLow,5)}</div>
+                    <button onClick={()=>activateSignal(item)} style={{width:"100%",padding:10,background:"#f59e0b",color:"black",border:"none",borderRadius:8,fontWeight:900}}>PLACE PENDING {sig.pendingType} 🔔</button>
                   </div>
                 ); })}
             </div>
           </>
         )}
-      </div>
-
-      <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:12,margin:12,padding:14}}>
-        <div style={{fontSize:12,fontWeight:900}}>OPEN / PENDING ORDERS ({openTrades.length})</div>
-        {openTrades.map(o=>(
-          <div key={o.id} style={{background:"#0f172a",border:"1px solid #334155",borderRadius:8,padding:10,marginTop:8,fontSize:12}}>
-            <div style={{display:"flex",justifyContent:"space-between"}}><b>{o.displayName}</b><span style={{color:o.status==="PENDING DEMO TRADE"?"#fbbf24":"#4ade80"}}>{o.status}</span></div>
-            <div>{o.direction} {o.pendingType} @ {fmt(o.entry,5)} • SL {fmt(o.sl,5)} • TP {fmt(o.tp,5)} • P/L ${fmt(o.floatingPnl,2)}</div>
-          </div>
-        ))}
-        {openTrades.length===0 && <div style={{fontSize:11,color:"#8a9bb5",marginTop:8}}>No open trades.</div>}
-      </div>
-
-      <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:12,margin:12,padding:14}}>
-        <div style={{fontSize:12,fontWeight:900}}>CLOSED TRADES</div>
-        {closedTrades.slice(0,10).map((t,i)=>(<div key={i} style={{fontSize:11,padding:"8px 0",borderBottom:"1px solid #1e2d45"}}>{t.displayName} - {t.exitReason} ${fmt(t.realisedPnl,2)} • {t.closedAt}</div>))}
       </div>
     </div>
   );
