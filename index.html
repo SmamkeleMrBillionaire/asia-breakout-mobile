@@ -28,9 +28,14 @@ function sendAlert(t,b){
 }
 async function sendToMT4(result, setMsg){
   try{
-    let sym = result.pair.replace(".ecn","").replace("m","").toUpperCase();
-    if(sym.includes("XAU")) sym="XAUUSD";
-    if(sym.includes("V75")) sym="V75";
+    let raw = result.pair.replace(".ecn","").replace("m","").toUpperCase();
+    let sym = raw;
+    if(raw.includes("XAU")) sym="XAUUSDm";
+    else if(raw.includes("V75")) sym="Volatility 75 Index";
+    else if(raw.includes("BTC")) sym="BTCUSDm";
+    else if(raw.includes("US30")) sym="US30m";
+    else if(raw.includes("NAS")) sym="USTECm";
+    else sym = raw + "m";
     const payload={action:result.dir, symbol:sym, entry:result.entry, sl:result.sl, tp:result.tp, time: Math.floor(Date.now()/1000)};
     const r = await fetch("/api/signal", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload)});
     const j = await r.json();
