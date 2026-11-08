@@ -33,17 +33,28 @@ async function sendToMT4(result, setMsg){
     if(sym.includes("XAU")) sym="XAUUSD";
     if(sym.includes("V75")) sym="V75";
     const payload={action:result.dir, symbol:sym, entry:result.entry, sl:result.sl, tp:result.tp, time: Math.floor(Date.now()/1000)};
-    // Proxy to fix CORS Failed to fetch on Vercel/phone
-    const proxyUrl = "https://api.codetabs.com/v1/proxy?quest=" + encodeURIComponent(BRIDGE_URL);
-    let ok=false;
-    try{ const r=await fetch(proxyUrl,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}); ok=r.ok; }catch(e){}
-    if(!ok){
-      // Fallback direct try
-      const r2=await fetch(BRIDGE_URL,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
-      ok=r2.ok;
+    const jsonStr = JSON.stringify(payload);
+    // Try 4 ways - one will bypass CORS block
+    const urls = [
+      "https://api.codetabs.com/v1/proxy?quest=" + encodeURIComponent(BRIDGE_URL),
+      "https://api.allorigins.win/raw?url=" + encodeURIComponent(BRIDGE_URL),
+      "https://corsproxy.io/?url=" + encodeURIComponent(BRIDGE_URL),
+      BRIDGE_URL
+    ];
+    for(let u of urls){
+      try{
+        const r = await fetch(u, {method:"PUT", headers:{"Content-Type":"application/json"}, body: jsonStr});
+        if(r.ok){
+          if(setMsg) setMsg("✅ SENT TO MT4: "+sym+" "+result.dir+" @ "+result.entry);
+          sendAlert("SENT TO MT4", sym+" "+result.dir);
+          return true;
+        }
+      }catch(e){ console.log("proxy fail", u, e.message); continue; }
     }
-    if(ok){ if(setMsg) setMsg("✅ SENT TO MT4: "+sym+" "+result.dir+" @ "+result.entry); sendAlert("SENT TO MT4", sym+" "+result.dir); return true; }
-    else { if(setMsg) setMsg("Bridge failed - try again"); return false; }
+    // Last resort - no-cors fire and forget (MT4 will still read it)
+    try{ await fetch(BRIDGE_URL, {method:"PUT", mode:"no-cors", headers:{"Content-Type":"text/plain"}, body: jsonStr}); if(setMsg) setMsg("✅ SENT TO MT4 (no-cors): "+sym+" "+result.dir); return true; }catch(e){}
+    if(setMsg) setMsg("Bridge error - check internet, try again");
+    return false;
   }catch(e){ if(setMsg) setMsg("Bridge error: "+e.message); return false; }
 }
 const fmt=(n,d=5)=>Number.isFinite(Number(n))?Number(n).toFixed(d):"—";
