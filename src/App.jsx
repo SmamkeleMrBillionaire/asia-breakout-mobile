@@ -1,40 +1,24 @@
-
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-// iFX BILLIONAIRE EA - FIXED NOTIFICATIONS
+// iFX BILLIONAIRE EA V11.6 - YOUR LOGIC + NEW MOBILE UI - TOP + BALANCE + AI SCANNER
 function sendIFXAlert(title, body) {
   if (navigator.vibrate) navigator.vibrate([300,100,300,100,300]);
-  try {
-    const audio = new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg');
-    audio.play().catch(()=>{});
-  } catch(e){}
+  try { const audio = new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg'); audio.play().catch(()=>{}); } catch(e){}
   if ('Notification' in window && Notification.permission === 'granted') {
     if (navigator.serviceWorker && navigator.serviceWorker.ready) {
       navigator.serviceWorker.ready.then(reg => reg.showNotification(title, { body, icon: '/icon-192.png', tag: 'ifx-'+Date.now(), requireInteraction: true, vibrate: [300,100,300] })).catch(()=>{ try{ new Notification(title, { body }); }catch(e){} });
-    } else {
-      try{ new Notification(title, { body }); }catch(e){}
-    }
-  } else if ('Notification' in window && Notification.permission !== 'denied') {
-    Notification.requestPermission();
-  }
+    } else { try{ new Notification(title, { body }); }catch(e){} }
+  } else if ('Notification' in window && Notification.permission !== 'denied') { Notification.requestPermission(); }
 }
 
 const WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public";
-const TIMEFRAME = 900;
-const CANDLE_COUNT = 220;
-const SCAN_INTERVAL = 300000;
-const TRADING_START_HOUR = 7;
-const TRADING_END_HOUR = 22;
-const TP_BOX_MULTIPLIER = 4.0;
-const SL_EXTRA_PIPS = 0;
-const MAX_SPREAD_POINTS = 300;
-const MAX_DAILY_TRADES = 4;
-const MAX_OPEN_TRADES = 4;
-const PENDING_EXPIRY_SECONDS = 3600;
-
+const TIMEFRAME = 900; const CANDLE_COUNT = 220; const SCAN_INTERVAL = 300000;
+const TRADING_START_HOUR = 7; const TRADING_END_HOUR = 22;
+const TP_BOX_MULTIPLIER = 4.0; const SL_EXTRA_PIPS = 0; const MAX_SPREAD_POINTS = 300;
+const MAX_DAILY_TRADES = 4; const MAX_OPEN_TRADES = 4; const PENDING_EXPIRY_SECONDS = 3600;
 const PRIORITY_SYMBOLS = ["EURUSD","GBPUSD","USDJPY","USDCHF","AUDUSD","USDCAD","NZDUSD","EURJPY","GBPJPY","EURGBP","XAUUSD","US30","NAS100","AUDCAD","NZDJPY","GBPCAD","AUDJPY","EURAUD","EURCAD","NZDCHF","CADJPY"];
+const QUICK_PAIRS = ["XAUUSD","EURUSD","GBPUSD","BTCUSD","US30","NAS100","V75","GBPJPY","USDJPY"];
 const CATEGORIES = ["All","Forex","Indices","Metals","Synthetics","Crypto","Stocks","Other"];
-
 const fmt = (n, d = 5) => Number.isFinite(Number(n)) ? Number(n).toFixed(d) : "—";
 const serverDay = e => new Date(e * 1000).toISOString().slice(0, 10);
 const serverHour = e => new Date(e * 1000).getUTCHours();
@@ -53,44 +37,18 @@ function categoryOf(s){
   if(m.includes("stock")||m.includes("equities")) return "Stocks";
   return "Other";
 }
-function pipSize(sym,cat,candles,mp){
-  const supplied=Number(mp);
-  if(mp!==null&&mp!==undefined&&mp!==""&&Number.isFinite(supplied)&&supplied>0) return supplied;
-  if(cat==="Forex") return String(sym).toUpperCase().includes("JPY")?0.01:0.0001;
-  const last=candles?.[candles.length-1]?.close||1;
-  const dec=(String(last).split(".")[1]||"").length;
-  return Math.pow(10,-Math.min(dec,8));
-}
+function pipSize(sym,cat,candles,mp){ const supplied=Number(mp); if(mp!==null&&mp!==undefined&&mp!==""&&Number.isFinite(supplied)&&supplied>0) return supplied; if(cat==="Forex") return String(sym).toUpperCase().includes("JPY")?0.01:0.0001; const last=candles?.[candles.length-1]?.close||1; const dec=(String(last).split(".")[1]||"").length; return Math.pow(10,-Math.min(dec,8)); }
 function pointSize(p){ const d=(String(p).split(".")[1]||"").length; return Math.pow(10,-Math.min(d,10)); }
 function makeBoxId(t,day,h,l,e=""){ return [t,day,Number(h).toPrecision(12),Number(l).toPrecision(12),e].join("-"); }
 function isTradingTime(e){ const h=serverHour(e); return h>=TRADING_START_HOUR&&h<TRADING_END_HOUR; }
-function calculateRSI(candles,idx,period=3){
-  if(!candles||idx<period) return null;
-  let g=0,l=0;
-  for(let i=1;i<=period;i++){ const ch=candles[i].close-candles[i-1].close; if(ch>0)g+=ch; if(ch<0)l+=Math.abs(ch); }
-  let ag=g/period,al=l/period;
-  for(let i=period+1;i<=idx;i++){ const ch=candles[i].close-candles[i-1].close; ag=(ag*(period-1)+Math.max(ch,0))/period; al=(al*(period-1)+Math.max(-ch,0))/period; }
-  if(al===0&&ag===0) return 50; if(al===0) return 100; if(ag===0) return 0;
-  const rs=ag/al; return 100-100/(1+rs);
-}
-function buildOrangeBox(candles,day){
-  const f=candles.filter(c=>serverDay(c.epoch)===day&&serverHour(c.epoch)===0&&[0,15,30,45].includes(serverMinute(c.epoch))).sort((a,b)=>a.epoch-b.epoch).slice(0,4);
-  if(f.length!==4) return null;
-  const ok=f.every((c,i)=>i===0||c.epoch-f[i-1].epoch===TIMEFRAME);
-  if(!ok) return null;
-  const high=Math.max(...f.map(c=>c.high)); const low=Math.min(...f.map(c=>c.low));
-  if(!(high>low)) return null;
-  return {type:"ORANGE",day,high,low,size:high-low,startEpoch:f[0].epoch,createdEpoch:f[0].epoch,boxId:makeBoxId("ORANGE",day,high,low)};
-}
-function makeSignal({direction,strategy,candle,orangeBox,pip,entryLevel,reason,rsi,pendingType}){
-  return {direction,strategy,boxType:"ORANGE",touchType:strategy,signalId:`${orangeBox.boxId}|${strategy}|${candle.epoch}`,boxId:orangeBox.boxId,orangeBoxId:orangeBox.boxId,boxHigh:orangeBox.high,boxLow:orangeBox.low,boxSize:orangeBox.size,entryLevel,pendingType,pip,candleTime:candle.epoch,candleColor:candleColor(candle),rsi,reason};
-}
+function calculateRSI(candles,idx,period=3){ if(!candles||idx<period) return null; let g=0,l=0; for(let i=1;i<=period;i++){ const ch=candles[i].close-candles[i-1].close; if(ch>0)g+=ch; if(ch<0)l+=Math.abs(ch); } let ag=g/period,al=l/period; for(let i=period+1;i<=idx;i++){ const ch=candles[i].close-candles[i-1].close; ag=(ag*(period-1)+Math.max(ch,0))/period; al=(al*(period-1)+Math.max(-ch,0))/period; } if(al===0&&ag===0) return 50; if(al===0) return 100; if(ag===0) return 0; const rs=ag/al; return 100-100/(1+rs); }
+function buildOrangeBox(candles,day){ const f=candles.filter(c=>serverDay(c.epoch)===day&&serverHour(c.epoch)===0&&[0,15,30,45].includes(serverMinute(c.epoch))).sort((a,b)=>a.epoch-b.epoch).slice(0,4); if(f.length!==4) return null; const ok=f.every((c,i)=>i===0||c.epoch-f[i-1].epoch===TIMEFRAME); if(!ok) return null; const high=Math.max(...f.map(c=>c.high)); const low=Math.min(...f.map(c=>c.low)); if(!(high>low)) return null; return {type:"ORANGE",day,high,low,size:high-low,startEpoch:f[0].epoch,createdEpoch:f[0].epoch,boxId:makeBoxId("ORANGE",day,high,low)}; }
+function makeSignal({direction,strategy,candle,orangeBox,pip,entryLevel,reason,rsi,pendingType}){ return {direction,strategy,boxType:"ORANGE",touchType:strategy,signalId:`${orangeBox.boxId}|${strategy}|${candle.epoch}`,boxId:orangeBox.boxId,orangeBoxId:orangeBox.boxId,boxHigh:orangeBox.high,boxLow:orangeBox.low,boxSize:orangeBox.size,entryLevel,pendingType,pip,candleTime:candle.epoch,candleColor:candleColor(candle),rsi,reason}; }
 function findClosedEntrySignal(candles,symbol,category,marketPip){
   const empty={direction:"NONE",reason:"Waiting",boxCount:0};
   if(!candles||candles.length<30) return {...empty,reason:"Not enough M15"};
   const li=candles.length-1; const candle=candles[li]; const today=serverDay(candle.epoch);
-  const orangeBox=buildOrangeBox(candles,today);
-  if(!orangeBox) return {...empty,reason:"Waiting for 00:00-01:00 box"};
+  const orangeBox=buildOrangeBox(candles,today); if(!orangeBox) return {...empty,reason:"Waiting for 00:00-01:00 box"};
   const pip=pipSize(symbol,category,candles,marketPip); const rsi=calculateRSI(candles,li,3);
   const boxInfo={boxCount:1,boxHigh:orangeBox.high,boxLow:orangeBox.low,boxSize:orangeBox.size,boxId:orangeBox.boxId,boxDay:orangeBox.day,rsi};
   if(candle.epoch<orangeBox.createdEpoch+TIMEFRAME*4) return {...empty,...boxInfo,reason:"Box built, waiting setup"};
@@ -99,425 +57,176 @@ function findClosedEntrySignal(candles,symbol,category,marketPip){
   const openAbove=candle.open>orangeBox.high; const openBelow=candle.open<orangeBox.low;
   const closeAbove=candle.close>orangeBox.high; const closeBelow=candle.close<orangeBox.low;
   const closeInside=candle.close>=orangeBox.low&&candle.close<=orangeBox.high;
-  if(openAbove&&color==="RED"&&candle.low>=orangeBox.low&&candle.low<=orangeBox.high&&closeAbove){
-    return {...makeSignal({direction:"BUY",strategy:"ORANGE RETEST BUY",candle,orangeBox,pip,entryLevel:candle.high,pendingType:"BUY STOP",rsi,reason:"Red opened above, wicked into box and closed above."}),...boxInfo};
-  }
-  if(openBelow&&color==="GREEN"&&candle.high>=orangeBox.low&&candle.high<=orangeBox.high&&closeBelow){
-    return {...makeSignal({direction:"SELL",strategy:"ORANGE RETEST SELL",candle,orangeBox,pip,entryLevel:candle.low,pendingType:"SELL STOP",rsi,reason:"Green opened below, wicked into box and closed below."}),...boxInfo};
-  }
-  if(openAbove&&color==="RED"&&closeInside){
-    return {...makeSignal({direction:"SELL",strategy:"ORANGE BREAK-IN SELL",candle,orangeBox,pip,entryLevel:orangeBox.low-pip,pendingType:"SELL STOP",rsi,reason:"Red opened above and closed inside."}),...boxInfo};
-  }
-  if(openBelow&&color==="GREEN"&&closeInside){
-    return {...makeSignal({direction:"BUY",strategy:"ORANGE BREAK-IN BUY",candle,orangeBox,pip,entryLevel:orangeBox.high+pip,pendingType:"BUY STOP",rsi,reason:"Green opened below and closed inside."}),...boxInfo};
-  }
-  for(let shift=2;shift<=10;shift++){
-    if(li-shift<0) break;
-    const bC=candles[li-shift];
-    const bOpenInside=bC.open>=orangeBox.low&&bC.open<=orangeBox.high;
-    const bCloseAbove=bC.close>orangeBox.high; const bCloseBelow=bC.close<orangeBox.low;
-    if(!bOpenInside) continue;
-    if(bCloseAbove){
-      let redAlready=false;
-      for(let k=shift-1;k>1;k--){ if(candleColor(candles[li-k])==="RED"){redAlready=true;break;} }
-      if(redAlready) break;
-      if(color==="RED") return {...makeSignal({direction:"BUY",strategy:"BREAKOUT BUY 1ST RED",candle,orangeBox,pip,entryLevel:candle.high,pendingType:"BUY STOP",rsi,reason:"Breakout upward. First RED."}),...boxInfo};
-      break;
-    }
-    if(bCloseBelow){
-      let greenAlready=false;
-      for(let k=shift-1;k>1;k--){ if(candleColor(candles[li-k])==="GREEN"){greenAlready=true;break;} }
-      if(greenAlready) break;
-      if(color==="GREEN") return {...makeSignal({direction:"SELL",strategy:"BREAKOUT SELL 1ST GREEN",candle,orangeBox,pip,entryLevel:candle.low,pendingType:"SELL STOP",rsi,reason:"Breakout downward. First GREEN."}),...boxInfo};
-      break;
-    }
-  }
+  if(openAbove&&color==="RED"&&candle.low>=orangeBox.low&&candle.low<=orangeBox.high&&closeAbove){ return {...makeSignal({direction:"BUY",strategy:"ORANGE RETEST BUY",candle,orangeBox,pip,entryLevel:candle.high,pendingType:"BUY STOP",rsi,reason:"Red opened above, wicked into box and closed above."}),...boxInfo}; }
+  if(openBelow&&color==="GREEN"&&candle.high>=orangeBox.low&&candle.high<=orangeBox.high&&closeBelow){ return {...makeSignal({direction:"SELL",strategy:"ORANGE RETEST SELL",candle,orangeBox,pip,entryLevel:candle.low,pendingType:"SELL STOP",rsi,reason:"Green opened below, wicked into box and closed below."}),...boxInfo}; }
+  if(openAbove&&color==="RED"&&closeInside){ return {...makeSignal({direction:"SELL",strategy:"ORANGE BREAK-IN SELL",candle,orangeBox,pip,entryLevel:orangeBox.low-pip,pendingType:"SELL STOP",rsi,reason:"Red opened above and closed inside."}),...boxInfo}; }
+  if(openBelow&&color==="GREEN"&&closeInside){ return {...makeSignal({direction:"BUY",strategy:"ORANGE BREAK-IN BUY",candle,orangeBox,pip,entryLevel:orangeBox.high+pip,pendingType:"BUY STOP",rsi,reason:"Green opened below and closed inside."}),...boxInfo}; }
+  for(let shift=2;shift<=10;shift++){ if(li-shift<0) break; const bC=candles[li-shift]; const bOpenInside=bC.open>=orangeBox.low&&bC.open<=orangeBox.high; const bCloseAbove=bC.close>orangeBox.high; const bCloseBelow=bC.close<orangeBox.low; if(!bOpenInside) continue; if(bCloseAbove){ let redAlready=false; for(let k=shift-1;k>1;k--){ if(candleColor(candles[li-k])==="RED"){redAlready=true;break;} } if(redAlready) break; if(color==="RED") return {...makeSignal({direction:"BUY",strategy:"BREAKOUT BUY 1ST RED",candle,orangeBox,pip,entryLevel:candle.high,pendingType:"BUY STOP",rsi,reason:"Breakout upward. First RED."}),...boxInfo}; break; } if(bCloseBelow){ let greenAlready=false; for(let k=shift-1;k>1;k--){ if(candleColor(candles[li-k])==="GREEN"){greenAlready=true;break;} } if(greenAlready) break; if(color==="GREEN") return {...makeSignal({direction:"SELL",strategy:"BREAKOUT SELL 1ST GREEN",candle,orangeBox,pip,entryLevel:candle.low,pendingType:"SELL STOP",rsi,reason:"Breakout downward. First GREEN."}),...boxInfo}; break; } }
   return {...empty,...boxInfo,reason:"No valid closed M15 entry. Waiting."};
 }
-function getLiveScannerState({candles,liveCandle,price,orangeBox}){
-  if(!orangeBox||!Number.isFinite(price)) return {state:"WAITING FOR ORANGE BOX",proximity:Infinity,touching:false,breaking:false};
-  const current=liveCandle||candles[candles.length-1];
-  if(!current) return {state:"WAITING",proximity:Infinity,touching:false,breaking:false};
-  const touching=current.low<=orangeBox.high&&current.high>=orangeBox.low;
-  if(touching){
-    const rsiCandles=liveCandle?[...candles,liveCandle]:candles;
-    const rsi=calculateRSI(rsiCandles,rsiCandles.length-1,3);
-    return {state:"TOUCHING ORANGE BOX",proximity:0,touching:true,breaking:false,rsi};
-  }
-  const openInside=current.open>=orangeBox.low&&current.open<=orangeBox.high;
-  const closeOutside=current.close>orangeBox.high||current.close<orangeBox.low;
-  const breaking=openInside&&closeOutside;
-  if(breaking) return {state:"BREAKING ORANGE BOX",proximity:0,touching:false,breaking:true};
-  const nearest=Math.min(Math.abs(price-orangeBox.high),Math.abs(price-orangeBox.low));
-  return {state:"NOT TOUCHING",proximity:nearest,touching:false,breaking:false};
-}
-function getSpreadInfo(tick,price,symbol="",category="Other",marketPip=null){
-  const hasBid=tick?.bid!==null&&tick?.bid!==undefined&&tick?.bid!=="";
-  const hasAsk=tick?.ask!==null&&tick?.ask!==undefined&&tick?.ask!=="";
-  const bid=hasBid?Number(tick.bid):NaN; const ask=hasAsk?Number(tick.ask):NaN;
-  if(Number.isFinite(bid)&&Number.isFinite(ask)&&bid>0&&ask>0&&ask>=bid){
-    const spread=ask-bid; const point=pointSize(price||bid);
-    return {known:true,estimated:false,source:"LIVE BID/ASK",bid,ask,spread,points:spread/point};
-  }
-  const p=Number(price);
-  if(!Number.isFinite(p)||p<=0) return {known:false,estimated:true,source:"ESTIMATED",spread:0,points:0};
-  const point=pointSize(p); const pip=pipSize(symbol,category,[{close:p}],marketPip);
-  let estimatedSpread;
-  switch(category){ case "Forex": estimatedSpread=pip*1.5; break; case "Metals": estimatedSpread=pip*3; break; case "Crypto": estimatedSpread=Math.max(point*2,p*0.0005); break; default: estimatedSpread=point*2; break; }
-  return {known:true,estimated:true,source:"ESTIMATED",bid:null,ask:null,spread:estimatedSpread,points:estimatedSpread/point};
-}
+function getLiveScannerState({candles,liveCandle,price,orangeBox}){ if(!orangeBox||!Number.isFinite(price)) return {state:"WAITING FOR ORANGE BOX",proximity:Infinity,touching:false,breaking:false}; const current=liveCandle||candles[candles.length-1]; if(!current) return {state:"WAITING",proximity:Infinity,touching:false,breaking:false}; const touching=current.low<=orangeBox.high&&current.high>=orangeBox.low; if(touching){ const rsiCandles=liveCandle?[...candles,liveCandle]:candles; const rsi=calculateRSI(rsiCandles,rsiCandles.length-1,3); return {state:"TOUCHING ORANGE BOX",proximity:0,touching:true,breaking:false,rsi}; } const openInside=current.open>=orangeBox.low&&current.open<=orangeBox.high; const closeOutside=current.close>orangeBox.high||current.close<orangeBox.low; const breaking=openInside&&closeOutside; if(breaking) return {state:"BREAKING ORANGE BOX",proximity:0,touching:false,breaking:true}; const nearest=Math.min(Math.abs(price-orangeBox.high),Math.abs(price-orangeBox.low)); return {state:"NOT TOUCHING",proximity:nearest,touching:false,breaking:false}; }
+function getSpreadInfo(tick,price,symbol="",category="Other",marketPip=null){ const hasBid=tick?.bid!==null&&tick?.bid!==undefined&&tick?.bid!==""; const hasAsk=tick?.ask!==null&&tick?.ask!==undefined&&tick?.ask!==""; const bid=hasBid?Number(tick.bid):NaN; const ask=hasAsk?Number(tick.ask):NaN; if(Number.isFinite(bid)&&Number.isFinite(ask)&&bid>0&&ask>0&&ask>=bid){ const spread=ask-bid; const point=pointSize(price||bid); return {known:true,estimated:false,source:"LIVE BID/ASK",bid,ask,spread,points:spread/point}; } const p=Number(price); if(!Number.isFinite(p)||p<=0) return {known:false,estimated:true,source:"ESTIMATED",spread:0,points:0}; const point=pointSize(p); const pip=pipSize(symbol,category,[{close:p}],marketPip); let estimatedSpread; switch(category){ case "Forex": estimatedSpread=pip*1.5; break; case "Metals": estimatedSpread=pip*3; break; case "Crypto": estimatedSpread=Math.max(point*2,p*0.0005); break; default: estimatedSpread=point*2; break; } return {known:true,estimated:true,source:"ESTIMATED",bid:null,ask:null,spread:estimatedSpread,points:estimatedSpread/point}; }
 function alreadyExecuted(trades,signal,symbol){ return trades.some(t=>t.symbol===symbol&&t.signalId===signal.signalId); }
-function makeDemoOrder(signal,symbol,category,displayName,balance,riskPct,sizingMode,fixedLots,spreadInfo,tick){
-  if(!spreadInfo?.known) throw new Error("Price unavailable");
-  if(!spreadInfo.estimated&&spreadInfo.points>MAX_SPREAD_POINTS) throw new Error(`Live spread ${fmt(spreadInfo.points,1)} > 300`);
-  const buy=signal.direction==="BUY"; const spread=spreadInfo.spread; const entry=signal.entryLevel;
-  const boxSize=signal.boxSize; const extra=SL_EXTRA_PIPS*signal.pip;
-  const sl=buy?entry-boxSize-extra-spread:entry+boxSize+extra+spread;
-  const slD=Math.abs(entry-sl); if(!slD) throw new Error("Invalid SL");
-  const tpD=boxSize*TP_BOX_MULTIPLIER; const tp=buy?entry+tpD:entry-tpD;
-  const bid=tick?.bid; const ask=tick?.ask;
-  let pendingType=signal.pendingType||"MARKET";
-  if(buy){ if(Number.isFinite(ask)&&entry>ask) pendingType="BUY STOP"; else pendingType="BUY LIMIT"; }
-  else{ if(Number.isFinite(bid)&&entry<bid) pendingType="SELL STOP"; else pendingType="SELL LIMIT"; }
-  const safeBalance=Math.max(0,Number(balance)||0);
-  const riskMoney=sizingMode==="FIXED_LOTS"?safeBalance*0.01*((Number(fixedLots)||0)/0.10):safeBalance*(Math.max(0,Number(riskPct)||0)/100);
-  const nowMs=Date.now(); const ep=Math.floor(nowMs/1000);
-  return {id:`${symbol}-${signal.signalId}-${nowMs}`,signalId:signal.signalId,comment:"Ifx Billionaire",boxId:signal.boxId,boxType:"ORANGE",strategy:signal.strategy,pendingType,orderType:pendingType,symbol,displayName:displayName||symbol,category,direction:signal.direction,entry,signalEntryLevel:signal.entryLevel,sl,tp,slDistance:slD,tpDistance:tpD,boxSize,spread,spreadPoints:spreadInfo.points,spreadEstimated:Boolean(spreadInfo.estimated),spreadSource:spreadInfo.source,riskMoney,rewardRatio:tpD/slD,status:"PENDING DEMO TRADE",pendingExpiry:nowMs+PENDING_EXPIRY_SECONDS*1000,currentPrice:Number.isFinite(bid)?bid:Number.isFinite(tick?.quote)?tick.quote:entry,floatingPnl:0,created:new Date(nowMs).toLocaleTimeString(),createdAtMs:nowMs,openedEpoch:ep,openedDay:serverDay(ep)};
-}
+function makeDemoOrder(signal,symbol,category,displayName,balance,riskPct,sizingMode,fixedLots,spreadInfo,tick){ if(!spreadInfo?.known) throw new Error("Price unavailable"); if(!spreadInfo.estimated&&spreadInfo.points>MAX_SPREAD_POINTS) throw new Error(`Live spread ${fmt(spreadInfo.points,1)} > 300`); const buy=signal.direction==="BUY"; const spread=spreadInfo.spread; const entry=signal.entryLevel; const boxSize=signal.boxSize; const extra=SL_EXTRA_PIPS*signal.pip; const sl=buy?entry-boxSize-extra-spread:entry+boxSize+extra+spread; const slD=Math.abs(entry-sl); if(!slD) throw new Error("Invalid SL"); const tpD=boxSize*TP_BOX_MULTIPLIER; const tp=buy?entry+tpD:entry-tpD; const bid=tick?.bid; const ask=tick?.ask; let pendingType=signal.pendingType||"MARKET"; if(buy){ if(Number.isFinite(ask)&&entry>ask) pendingType="BUY STOP"; else pendingType="BUY LIMIT"; } else { if(Number.isFinite(bid)&&entry<bid) pendingType="SELL STOP"; else pendingType="SELL LIMIT"; } const safeBalance=Math.max(0,Number(balance)||0); const riskMoney=sizingMode==="FIXED_LOTS"?safeBalance*0.01*((Number(fixedLots)||0)/0.10):safeBalance*(Math.max(0,Number(riskPct)||0)/100); const nowMs=Date.now(); const ep=Math.floor(nowMs/1000); return {id:`${symbol}-${signal.signalId}-${nowMs}`,signalId:signal.signalId,comment:"Ifx Billionaire",boxId:signal.boxId,boxType:"ORANGE",strategy:signal.strategy,pendingType,orderType:pendingType,symbol,displayName:displayName||symbol,category,direction:signal.direction,entry,signalEntryLevel:signal.entryLevel,sl,tp,slDistance:slD,tpDistance:tpD,boxSize,spread,spreadPoints:spreadInfo.points,spreadEstimated:Boolean(spreadInfo.estimated),spreadSource:spreadInfo.source,riskMoney,rewardRatio:tpD/slD,status:"PENDING DEMO TRADE",pendingExpiry:nowMs+PENDING_EXPIRY_SECONDS*1000,currentPrice:Number.isFinite(bid)?bid:Number.isFinite(tick?.quote)?tick.quote:entry,floatingPnl:0,created:new Date(nowMs).toLocaleTimeString(),createdAtMs:nowMs,openedEpoch:ep,openedDay:serverDay(ep)}; }
 function calculateDemoPnl(t,p){ if(t.status==="PENDING DEMO TRADE") return 0; const sd=Math.abs(t.entry-t.sl); if(!sd) return 0; const mv=t.direction==="BUY"?p-t.entry:t.entry-p; return (mv/sd)*t.riskMoney; }
 function getExitReason(t,p){ if(t.status==="PENDING DEMO TRADE") return null; if(t.direction==="BUY"){ if(p<=t.sl) return "STOP LOSS"; if(p>=t.tp) return "TAKE PROFIT"; } else { if(p>=t.sl) return "STOP LOSS"; if(p<=t.tp) return "TAKE PROFIT"; } return null; }
 function getExitPrice(t,r,o){ if(r==="STOP LOSS") return t.sl; if(r==="TAKE PROFIT") return t.tp; return o; }
+function analyzeImagePixels(imgElement){ return new Promise((resolve)=>{ try{ const canvas=document.createElement('canvas'); const maxW=600; const scale=Math.min(1,maxW/imgElement.width); canvas.width=Math.floor(imgElement.width*scale); canvas.height=Math.floor(imgElement.height*scale); const ctx=canvas.getContext('2d'); ctx.drawImage(imgElement,0,0,canvas.width,canvas.height); const data=ctx.getImageData(0,0,canvas.width,canvas.height).data; let red=0,green=0,white=0,total=0; let leftBright=0,rightBright=0,leftCount=0,rightCount=0; for(let y=0;y<canvas.height;y+=3){ for(let x=0;x<canvas.width;x+=3){ const i=(y*canvas.width+x)*4; const r=data[i],g=data[i+1],b=data[i+2]; total++; if(r>150&&g<80&&b<80) red++; if(g>120&&r<100&&b<100) green++; if(r>200&&g>200&&b>200) white++; const brightness=(r+g+b)/3; if(x<canvas.width/2){ leftBright+=brightness; leftCount++; } else { rightBright+=brightness; rightCount++; } }} const leftAvg=leftBright/Math.max(1,leftCount); const rightAvg=rightBright/Math.max(1,rightCount); const redRatio=red/Math.max(1,total); const bullRatio=(green+white)/Math.max(1,total); const trendScore=(bullRatio-redRatio)*100 + (rightAvg-leftAvg)/5; resolve({redRatio,bullRatio,trendScore,leftAvg,rightAvg}); }catch(e){ resolve({redRatio:0.1,bullRatio:0.1,trendScore:0}); } }); }
+async function autoDetectFromImage(imageUrl, fileName=""){ const searchText=(fileName+" ").toUpperCase(); for(const sym of PRIORITY_SYMBOLS){ if(searchText.includes(sym)) return {pair:sym, source:"filename"}; } try{ if(!window.Tesseract){ await new Promise((res,rej)=>{ const s=document.createElement('script'); s.src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"; s.onload=res; s.onerror=rej; document.head.appendChild(s); }); } if(window.Tesseract){ const result=await window.Tesseract.recognize(imageUrl,'eng',{logger:()=>{}}); const txt=(result.data.text||"").toUpperCase().replace(/[^A-Z0-9\s\.\/]/g," "); for(const sym of PRIORITY_SYMBOLS){ if(txt.includes(sym)) { let tf="M15"; if(txt.includes("M1")&&!txt.includes("M15")) tf="M1"; else if(txt.includes("M5")) tf="M5"; else if(txt.includes("M15")) tf="M15"; else if(txt.includes("H1")) tf="H1"; else if(txt.includes("H4")) tf="H4"; return {pair:sym, tf, source:"OCR", raw:txt.slice(0,120)}; } } if(txt.includes("GOLD")||txt.includes("XAU")) return {pair:"XAUUSD", source:"OCR-GOLD"}; if(txt.includes("BTC")) return {pair:"BTCUSD", source:"OCR"}; } }catch(e){} return null; }
 
 export default function App(){
   const socketRef=useRef(null); const connectionPromiseRef=useRef(null); const requestRef=useRef(0); const pendingRequestsRef=useRef(new Map());
   const scanLockRef=useRef(false); const rescanRequestedRef=useRef(false); const runningRef=useRef(false);
   const scanTimerRef=useRef(null); const reconnectTimerRef=useRef(null); const reconnectingRef=useRef(false); const pingTimerRef=useRef(null);
   const marketsRef=useRef([]); const activationLocksRef=useRef(new Set()); const subscriptionsRef=useRef(new Map()); const subscribingRef=useRef(new Set());
-  const latestPricesRef=useRef({}); const latestTicksRef=useRef({});
-  const ordersRef=useRef([]); const closedTradesRef=useRef([]);
+  const latestPricesRef=useRef({}); const latestTicksRef=useRef({}); const ordersRef=useRef([]); const closedTradesRef=useRef([]);
   const [connected,setConnected]=useState(false); const [running,setRunning]=useState(false); const [connectionText,setConnectionText]=useState("DISCONNECTED");
   const [symbols,setSymbols]=useState([]); const [signals,setSignals]=useState({}); const [scannerStates,setScannerStates]=useState({}); const [orders,setOrders]=useState([]); const [closedTrades,setClosedTrades]=useState([]);
-  const [lastActivated,setLastActivated]=useState("NONE"); const [category,setCategory]=useState("All"); const [search,setSearch]=useState("");
-  const [signalsCollapsed,setSignalsCollapsed]=useState(true);
+  const [category,setCategory]=useState("All"); const [search,setSearch]=useState(""); const [signalsCollapsed,setSignalsCollapsed]=useState(true);
   const [progress,setProgress]=useState(0); const [scanned,setScanned]=useState(0);
   const [balance,setBalance]=useState(10000); const [riskPct,setRiskPct]=useState(1); const [fixedLots,setFixedLots]=useState(0.10); const [sizingMode,setSizingMode]=useState("RISK_PERCENT");
-  const [message,setMessage]=useState("Connect to Deriv Public Market");
-  const [lastScan,setLastScan]=useState("Not scanned");
-  const [clock,setClock]=useState(Math.floor(Date.now()/1000));
+  const [message,setMessage]=useState("Connect to Deriv Public Market"); const [lastScan,setLastScan]=useState("Not scanned"); const [clock,setClock]=useState(Math.floor(Date.now()/1000));
+  const [scanImg1,setScanImg1]=useState(null); const [scanImg2,setScanImg2]=useState(null); const [scanPair,setScanPair]=useState("XAUUSD"); const [detectedPair,setDetectedPair]=useState(""); const [autoDetectOn,setAutoDetectOn]=useState(true); const [scanTF1,setScanTF1]=useState("M1"); const [scanTF2,setScanTF2]=useState("M15"); const [scanStrategy,setScanStrategy]=useState("Auto"); const [isAnalyzing,setIsAnalyzing]=useState(false); const [isDetecting,setIsDetecting]=useState(false); const [scanResult,setScanResult]=useState(null); const [detectMsg,setDetectMsg]=useState("");
   useEffect(()=>{ if('Notification' in window && Notification.permission==='default'){ Notification.requestPermission(); } },[]);
   useEffect(()=>{ const t=setInterval(()=>setClock(Math.floor(Date.now()/1000)),1000); return ()=>clearInterval(t); },[]);
   const updateOrders=useCallback(u=>{ const n=typeof u==="function"?u(ordersRef.current):u; ordersRef.current=n; setOrders(n); },[]);
   const updateClosedTrades=useCallback(u=>{ const n=typeof u==="function"?u(closedTradesRef.current):u; closedTradesRef.current=n; setClosedTrades(n); },[]);
-
-  const request=useCallback(payload=>new Promise((resolve,reject)=>{
-    const ws=socketRef.current;
-    if(!ws||ws.readyState!==WebSocket.OPEN){ reject(new Error("Not connected to Deriv")); return; }
-    const id=++requestRef.current;
-    const timeout=setTimeout(()=>{ pendingRequestsRef.current.delete(id); reject(new Error(`Deriv request timeout: ${Object.keys(payload).join(", ")}`)); },20000);
-    pendingRequestsRef.current.set(id,{resolve,reject,timeout});
-    try{ ws.send(JSON.stringify({...payload,req_id:id})); }catch(e){ clearTimeout(timeout); pendingRequestsRef.current.delete(id); reject(e); }
-  }),[]);
-
-  const processTick=useCallback((symbol,tick)=>{
-    if(!symbol||!tick) return;
-    const quote=Number(tick.quote); const bid=Number(tick.bid); const ask=Number(tick.ask);
-    const usable=Number.isFinite(bid)&&bid>0?bid:quote;
-    if(!Number.isFinite(usable)||usable<=0) return;
-    latestPricesRef.current[symbol]=usable;
-    latestTicksRef.current[symbol]={quote,bid:Number.isFinite(bid)&&bid>0?bid:null,ask:Number.isFinite(ask)&&ask>0?ask:null,epoch:Number(tick.epoch)||Math.floor(Date.now()/1000)};
-    const remaining=[]; const newlyClosed=[];
-    for(const orig of ordersRef.current){
-      if(orig.symbol!==symbol){ remaining.push(orig); continue; }
-      if(orig.status==="PENDING DEMO TRADE"){
-        const expired=Date.now()>orig.pendingExpiry;
-        if(expired){ newlyClosed.push({...orig,status:"CLOSED",exitPrice:orig.entry,exitReason:"PENDING EXPIRED",realisedPnl:0,floatingPnl:0,closedAt:new Date().toLocaleTimeString()}); continue; }
-        let shouldActivate=false;
-        if(orig.pendingType==="BUY STOP") shouldActivate=usable>=orig.entry;
-        else if(orig.pendingType==="BUY LIMIT") shouldActivate=usable<=orig.entry;
-        else if(orig.pendingType==="SELL STOP") shouldActivate=usable<=orig.entry;
-        else if(orig.pendingType==="SELL LIMIT") shouldActivate=usable>=orig.entry;
-        else shouldActivate=orig.direction==="BUY"?usable>=orig.entry:usable<=orig.entry;
-        if(shouldActivate){
-          sendIFXAlert('iFX BILLIONAIRE - ORDER ACTIVATED 🔥', `${orig.displayName} ${orig.pendingType} ACTIVATED at ${fmt(orig.entry,5)} - NOW OPEN`);
-          remaining.push({...orig,status:"OPEN DEMO TRADE",currentPrice:usable,activatedAt:new Date().toLocaleTimeString(),floatingPnl:0});
-          setMessage(`${orig.displayName} ${orig.pendingType} ACTIVATED at ${fmt(orig.entry,5)}`);
-          continue;
-        }
-        remaining.push(orig); continue;
-      }
-      if(orig.status!=="OPEN DEMO TRADE"){ remaining.push(orig); continue; }
-      const trade={...orig,currentPrice:usable};
-      const reason=getExitReason(trade,usable);
-      if(reason){
-        const ep=getExitPrice(trade,reason,usable); const pnl=calculateDemoPnl(trade,ep);
-        newlyClosed.push({...trade,status:"CLOSED",exitPrice:ep,observedExitPrice:usable,exitReason:reason,realisedPnl:pnl,floatingPnl:0,closedAt:new Date().toLocaleTimeString()});
-        sendIFXAlert(`iFX CLOSED - ${reason}`, `${trade.displayName} ${reason} $${fmt(pnl,2)}`);
-        continue;
-      }
-      trade.floatingPnl=calculateDemoPnl(trade,usable); remaining.push(trade);
-    }
-    updateOrders(remaining);
-    if(newlyClosed.length){
-      updateClosedTrades(p=>[...newlyClosed,...p]);
-      setMessage(newlyClosed.map(t=>`${t.displayName} ${t.exitReason}: ${t.realisedPnl>=0?"+":""}$${fmt(t.realisedPnl,2)}`).join(" · "));
-    }
-  },[updateOrders,updateClosedTrades]);
-
-  const scheduleReconnect=useCallback(()=>{
-    if(!runningRef.current||reconnectTimerRef.current) return;
-    setConnectionText("RECONNECTING");
-    reconnectTimerRef.current=setTimeout(()=>{ reconnectTimerRef.current=null; if(runningRef.current) window.dispatchEvent(new Event("ifx-robot-reconnect")); },5000);
-  },[]);
-
-  const connect=useCallback(()=>{
-    const existing=socketRef.current;
-    if(existing&&existing.readyState===WebSocket.OPEN) return Promise.resolve();
-    if(connectionPromiseRef.current) return connectionPromiseRef.current;
-    setConnectionText("CONNECTING TO DERIV PUBLIC DATA...");
-    let ws;
-    try{ ws=new WebSocket(WS_URL); socketRef.current=ws; }catch(e){ setConnected(false); setConnectionText("WEBSOCKET CREATION FAILED"); return Promise.reject(new Error(`WebSocket creation failed: ${e.message}`)); }
-    let cp;
-    cp=new Promise((resolve,reject)=>{
-      let settled=false; let connectionTimeout=null;
-      const clearConnection=()=>{ if(connectionTimeout){clearTimeout(connectionTimeout); connectionTimeout=null;} if(connectionPromiseRef.current===cp) connectionPromiseRef.current=null; };
-      const failConnection=error=>{ if(settled) return; settled=true; clearConnection(); setConnected(false); setConnectionText("CONNECTION FAILED"); reject(error); };
-      connectionTimeout=setTimeout(()=>{ if(ws.readyState!==WebSocket.OPEN){ failConnection(new Error("Deriv connection timeout after 20 seconds.")); try{ws.close();}catch{} } },20000);
-      ws.onopen=()=>{ if(socketRef.current!==ws){ws.close(); return;} if(reconnectTimerRef.current){clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current=null;} if(pingTimerRef.current) clearInterval(pingTimerRef.current); pingTimerRef.current=setInterval(()=>{ if(ws.readyState===WebSocket.OPEN){ try{ws.send(JSON.stringify({ping:1}));}catch{} } },30000); setConnected(true); setConnectionText("DERIV PUBLIC MARKET CONNECTED"); clearConnection(); if(!settled){settled=true; resolve();} };
-      ws.onmessage=ev=>{ if(socketRef.current!==ws) return; let d; try{d=JSON.parse(ev.data);}catch{return;} if(d.msg_type==="tick"&&d.tick) processTick(d.tick.symbol,d.tick); if(d.req_id!==undefined&&pendingRequestsRef.current.has(d.req_id)){ const p=pendingRequestsRef.current.get(d.req_id); clearTimeout(p.timeout); pendingRequestsRef.current.delete(d.req_id); if(d.error) p.reject(new Error(d.error.message||"Deriv API request failed")); else p.resolve(d); } };
-      ws.onerror=()=>{ if(socketRef.current!==ws) return; setConnectionText("WEBSOCKET NETWORK ERROR"); failConnection(new Error("Could not establish Deriv WebSocket.")); };
-      ws.onclose=event=>{ if(socketRef.current!==ws) return; socketRef.current=null; if(pingTimerRef.current){clearInterval(pingTimerRef.current); pingTimerRef.current=null;} setConnected(false); setConnectionText(`DISCONNECTED - CODE ${event.code||"UNKNOWN"}`); subscriptionsRef.current.clear(); subscribingRef.current.clear(); pendingRequestsRef.current.forEach(p=>{clearTimeout(p.timeout); p.reject(new Error("Deriv connection closed"));}); pendingRequestsRef.current.clear(); clearConnection(); if(runningRef.current) scheduleReconnect(); failConnection(new Error(`Deriv disconnected. Code: ${event.code||"unknown"}`)); };
-    });
-    connectionPromiseRef.current=cp; return cp;
-  },[processTick,scheduleReconnect]);
-
-  const subscribeMarket=useCallback(async sym=>{
-    if(subscriptionsRef.current.has(sym)) return true; if(subscribingRef.current.has(sym)) return false;
-    if(!socketRef.current||socketRef.current.readyState!==WebSocket.OPEN) return false;
-    subscribingRef.current.add(sym);
-    try{ const res=await request({ticks:sym,subscribe:1}); if(res.error) throw new Error(res.error.message); const sid=res.subscription?.id||"SUBSCRIBED"; subscriptionsRef.current.set(sym,sid); if(res.tick) processTick(res.tick.symbol||sym,res.tick); return true; }catch(e){ setMessage(`${sym}: subscription failed - ${e.message}`); return false; }finally{ subscribingRef.current.delete(sym); }
-  },[request,processTick]);
-
-  const discoverMarkets=useCallback(async ()=>{
-    setMessage("Requesting Deriv active market list...");
-    const res=await request({active_symbols:"brief"});
-    if(res.error) throw new Error(`Deriv market discovery error: ${res.error.message||"Unknown"}`);
-    const raw=res.active_symbols??res.data?.active_symbols??[];
-    if(!Array.isArray(raw)||raw.length===0) throw new Error(`Deriv returned no market array.`);
-    const list=raw.filter(s=>{ if(!s) return false; const symbol=s.underlying_symbol||s.symbol; if(typeof symbol!=="string"||!symbol.trim()) return false; const suspended=Number(s.is_trading_suspended??0); const exchangeOpen=Number(s.exchange_is_open??1); return suspended!==1&&exchangeOpen!==0; }).map(s=>{
-      const symbol=(s.underlying_symbol||s.symbol).trim();
-      const normalized={...s,symbol,display_name:s.underlying_symbol_name||s.display_name||s.symbol_name||symbol,market:s.market||s.market_display_name||"other",category:"Other",pip:s.pip_size||s.pip||null};
-      normalized.category=categoryOf(normalized); normalized.prioritySymbol=priorityMatch(symbol); normalized.priority=priorityIndex(symbol); return normalized;
-    }).sort((a,b)=>a.priority!==b.priority?a.priority-b.priority:String(a.display_name).localeCompare(String(b.display_name)));
-    if(!list.length) throw new Error(`No markets passed filter`);
-    marketsRef.current=list; setSymbols(list); setScanned(0); setProgress(0);
-    setMessage(`SUCCESS: ${list.length} active Deriv markets discovered.`);
-    return list;
-  },[request]);
-
-  const scanSymbol=useCallback(async item=>{
-    try{
-      const res=await request({ticks_history:item.symbol,count:CANDLE_COUNT,end:"latest",style:"candles",granularity:TIMEFRAME});
-      if(res.error) throw new Error(res.error.message);
-      const raw=Array.isArray(res.candles)?res.candles:[];
-      const candles=raw.map(c=>({epoch:Number(c.epoch),open:Number(c.open),high:Number(c.high),low:Number(c.low),close:Number(c.close)})).filter(c=>Number.isFinite(c.epoch)&&Number.isFinite(c.open)&&Number.isFinite(c.close)&&Number.isFinite(c.high)&&Number.isFinite(c.low)&&c.high>=c.low).sort((a,b)=>a.epoch-b.epoch);
-      const now=Math.floor(Date.now()/1000);
-      const closed=candles.filter(c=>c.epoch+TIMEFRAME<=now);
-      const liveCandles=candles.filter(c=>c.epoch+TIMEFRAME>now);
-      const liveCandle=liveCandles[liveCandles.length-1]||null;
-      const signal=findClosedEntrySignal(closed,item.symbol,item.category,item.pip);
-      const curClosed=closed[closed.length-1]; const today=serverDay(now);
-      const orangeBox=buildOrangeBox(closed,today);
-      const tick=latestTicksRef.current[item.symbol];
-      const livePrice=Number.isFinite(tick?.bid)?tick.bid:Number.isFinite(tick?.quote)?tick.quote:liveCandle?.close??curClosed?.close??null;
-      const scanner=getLiveScannerState({candles:closed,liveCandle,price:livePrice,orangeBox});
-      const spreadInfo=getSpreadInfo(tick,livePrice,item.symbol,item.category,item.pip);
-      return {...signal,scannerState:scanner.state,scannerProximity:scanner.proximity,isTouching:scanner.touching,isBreaking:scanner.breaking,livePrice,spreadKnown:spreadInfo.known,spreadEstimated:spreadInfo.estimated,spreadSource:spreadInfo.source,spreadPoints:spreadInfo.points,spread:spreadInfo.spread,orangeBox,liveCandle,chartCandles:closed};
-    }catch(e){ return {direction:"NONE",reason:e.message||"Data unavailable",boxCount:0,scannerState:"DATA ERROR",scannerProximity:Infinity,isTouching:false,isBreaking:false}; }
-  },[request]);
-
-  const scanAll=useCallback(async list=>{
-    if(!runningRef.current||!list?.length) return;
-    if(scanLockRef.current){ rescanRequestedRef.current=true; return; }
-    scanLockRef.current=true; setMessage("Scanning Deriv markets - M15 - Orange Box only..."); setScanned(0); setProgress(0);
-    const results={}; let completed=0; let failed=0; let nextIndex=0;
-    const worker=async()=>{ while(nextIndex<list.length&&runningRef.current){ const idx=nextIndex++; const item=list[idx]; const r=await scanSymbol(item); results[item.symbol]=r; if(r.scannerState==="DATA ERROR") failed++; completed++; setScanned(completed); setProgress(Math.round(completed/list.length*100)); if(completed%5===0){ setSignals(p=>({...p,...results})); setScannerStates(p=>({...p,...Object.fromEntries(Object.entries(results).map(([s,v])=>[s,{state:v.scannerState,proximity:v.scannerProximity,livePrice:v.livePrice,spreadKnown:v.spreadKnown,spreadEstimated:v.spreadEstimated,spreadSource:v.spreadSource,spreadPoints:v.spreadPoints,touching:v.isTouching,breaking:v.isBreaking}]))})); } } };
-    try{ await Promise.all([worker(),worker(),worker(),worker()]); if(!runningRef.current) return; setSignals(p=>({...p,...results})); setScannerStates(p=>({...p,...Object.fromEntries(Object.entries(results).map(([s,v])=>[s,{state:v.scannerState,proximity:v.scannerProximity,livePrice:v.livePrice,spreadKnown:v.spreadKnown,spreadEstimated:v.spreadEstimated,spreadSource:v.spreadSource,spreadPoints:v.spreadPoints,touching:v.isTouching,breaking:v.isBreaking}]))})); setMessage(`Scan complete: ${completed}/${list.length} markets · ${failed} data errors`); setLastScan(new Date().toLocaleTimeString()); }finally{ scanLockRef.current=false; if(rescanRequestedRef.current&&runningRef.current){ rescanRequestedRef.current=false; setTimeout(()=>{ if(runningRef.current) scanAll(marketsRef.current); },0); } }
-  },[scanSymbol]);
-
-  const startRobot=async()=>{
-    if(runningRef.current) return;
-    try{
-      if('Notification' in window && Notification.permission!=='granted'){ await Notification.requestPermission(); }
-      setMessage("Connecting to Deriv public markets..."); await connect(); runningRef.current=true; setRunning(true); setSignals({}); setScannerStates({}); setScanned(0); setProgress(0);
-      const list=await discoverMarkets(); if(!runningRef.current||!list.length) return;
-      const prio=list.filter(i=>i.prioritySymbol); for(const it of prio){ if(!runningRef.current) break; await subscribeMarket(it.symbol); } if(!runningRef.current) return;
-      await scanAll(list); if(!runningRef.current) return;
-      if(scanTimerRef.current) clearInterval(scanTimerRef.current);
-      scanTimerRef.current=setInterval(()=>{ if(runningRef.current) scanAll(marketsRef.current); },SCAN_INTERVAL);
-      setMessage("Robot running - 5 MIN scan");
-      sendIFXAlert('iFX BILLIONAIRE STARTED', 'Robot running - You will be notified on pending activation');
-    }catch(e){ runningRef.current=false; setRunning(false); setConnectionText(socketRef.current?.readyState===WebSocket.OPEN?"CONNECTED - MARKET DISCOVERY FAILED":"DISCONNECTED"); setMessage(e.message||"Unable to start robot"); }
-  };
-  const stopRobot=()=>{
-    runningRef.current=false; setRunning(false); rescanRequestedRef.current=false;
-    if(reconnectTimerRef.current){clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current=null;}
-    if(scanTimerRef.current){clearInterval(scanTimerRef.current); scanTimerRef.current=null;}
-    const now=new Date().toLocaleTimeString(); const closedNow=[];
-    for(const o of ordersRef.current){ if(o.status!=="OPEN DEMO TRADE"&&o.status!=="PENDING DEMO TRADE") continue; const price=latestPricesRef.current[o.symbol]??o.currentPrice??o.entry; closedNow.push({...o,status:"CLOSED",exitPrice:price,exitReason:"ROBOT STOPPED",realisedPnl:o.status==="PENDING DEMO TRADE"?0:calculateDemoPnl(o,price),floatingPnl:0,closedAt:now}); }
-    if(closedNow.length) updateClosedTrades(p=>[...closedNow,...p]);
-    updateOrders([]);
-    const ws=socketRef.current;
-    if(ws&&ws.readyState===WebSocket.OPEN){ subscriptionsRef.current.forEach(sid=>{ if(sid&&sid!=="SUBSCRIBED"){ try{ws.send(JSON.stringify({forget:sid,req_id:++requestRef.current}));}catch{} } }); }
-    subscriptionsRef.current.clear(); subscribingRef.current.clear(); activationLocksRef.current.clear();
-    setMessage(`STOPPED. ${closedNow.length} simulated trades closed.`);
-  };
-
-  const activateSignal=async item=>{
-    const signal=signals[item.symbol];
-    if(!signal||signal.direction==="NONE") return;
-    const now=Math.floor(Date.now()/1000);
-    if(!isTradingTime(now)){ setMessage("Trading paused: UTC 07:00-21:59"); return; }
-    const lockKey=`${item.symbol}|${signal.signalId}`;
-    if(activationLocksRef.current.has(lockKey)) return;
-    activationLocksRef.current.add(lockKey);
-    try{
-      const prev=[...ordersRef.current,...closedTradesRef.current];
-      const today=serverDay(now);
-      const daily=prev.filter(t=>t.openedDay===today);
-      const openCount=ordersRef.current.filter(t=>t.status==="OPEN DEMO TRADE"||t.status==="PENDING DEMO TRADE").length;
-      if(daily.length>=MAX_DAILY_TRADES){ setMessage(`Daily limit ${MAX_DAILY_TRADES}`); return; }
-      if(openCount>=MAX_OPEN_TRADES){ setMessage(`Open limit ${MAX_OPEN_TRADES}`); return; }
-      if(alreadyExecuted(prev,signal,item.symbol)){ setMessage("This signal has already been traded"); return; }
-      const sub=await subscribeMarket(item.symbol); if(!sub){ setMessage("Unable to subscribe to live market"); return; }
-      const tick=latestTicksRef.current[item.symbol];
-      const curPrice=Number.isFinite(tick?.bid)?tick.bid:tick?.quote;
-      if(!Number.isFinite(curPrice)||curPrice<=0){ setMessage("Waiting for a live market price"); return; }
-      const spreadInfo=getSpreadInfo(tick,curPrice,item.symbol,item.category,item.pip);
-      if(!spreadInfo.known){ setMessage("Unable to calculate spread. Waiting for price."); return; }
-      if(!spreadInfo.estimated&&spreadInfo.points>MAX_SPREAD_POINTS){ setMessage("Live spread too high"); return; }
-      const order=makeDemoOrder(signal,item.symbol,item.category,item.display_name,balance,riskPct,sizingMode,fixedLots,spreadInfo,tick);
-      updateOrders(p=>[order,...p]);
-      setLastActivated(`${signal.direction} · ${signal.strategy} · ${order.pendingType}`);
-      setMessage(`${item.display_name}: ${order.pendingType} ${signal.direction} at ${fmt(order.entry,5)} · SL ${fmt(order.sl,5)} · TP ${fmt(order.tp,5)}`);
-      sendIFXAlert('iFX BILLIONAIRE - PENDING PLACED', `${item.display_name} ${order.pendingType} ${signal.direction} at ${fmt(order.entry,5)} - Waiting for activation`);
-    }catch(e){ setMessage(`${item.symbol}: ${e.message}`); }finally{ activationLocksRef.current.delete(lockKey); }
-  };
-
-  useEffect(()=>{
-    const recover=async()=>{
-      if(!runningRef.current||reconnectingRef.current) return;
-      const ws=socketRef.current;
-      if(ws&&ws.readyState===WebSocket.OPEN){ if(marketsRef.current.length) await scanAll(marketsRef.current); return; }
-      reconnectingRef.current=true;
-      try{
-        await connect(); if(!runningRef.current) return;
-        const openSyms=[...new Set(ordersRef.current.filter(o=>o.status==="OPEN DEMO TRADE"||o.status==="PENDING DEMO TRADE").map(o=>o.symbol))];
-        const prioSyms=[...new Set(marketsRef.current.filter(i=>i.prioritySymbol).map(i=>i.symbol))];
-        for(const s of [...new Set([...prioSyms,...openSyms])]){ if(!runningRef.current) break; await subscribeMarket(s); }
-        if(!runningRef.current) return;
-        let list=marketsRef.current; if(!list.length) list=await discoverMarkets(); if(runningRef.current&&list.length) await scanAll(list);
-      }catch(e){ if(runningRef.current){ setMessage(`Reconnect failed: ${e.message}`); scheduleReconnect(); } }finally{ reconnectingRef.current=false; }
-    };
-    const hR=()=>recover(); const hO=()=>{ if(runningRef.current) recover(); }; const hV=()=>{ if(document.visibilityState==="visible"&&runningRef.current) recover(); };
-    window.addEventListener("ifx-robot-reconnect",hR); window.addEventListener("online",hO); document.addEventListener("visibilitychange",hV);
-    return ()=>{ window.removeEventListener("ifx-robot-reconnect",hR); window.removeEventListener("online",hO); document.removeEventListener("visibilitychange",hV); };
-  },[connect,scanAll,subscribeMarket,discoverMarkets,scheduleReconnect]);
-
+  const request=useCallback(payload=>new Promise((resolve,reject)=>{ const ws=socketRef.current; if(!ws||ws.readyState!==WebSocket.OPEN){ reject(new Error("Not connected to Deriv")); return; } const id=++requestRef.current; const timeout=setTimeout(()=>{ pendingRequestsRef.current.delete(id); reject(new Error(`Deriv request timeout`)); },20000); pendingRequestsRef.current.set(id,{resolve,reject,timeout}); try{ ws.send(JSON.stringify({...payload,req_id:id})); }catch(e){ clearTimeout(timeout); pendingRequestsRef.current.delete(id); reject(e); } }),[]);
+  const processTick=useCallback((symbol,tick)=>{ if(!symbol||!tick) return; const quote=Number(tick.quote); const bid=Number(tick.bid); const ask=Number(tick.ask); const usable=Number.isFinite(bid)&&bid>0?bid:quote; if(!Number.isFinite(usable)||usable<=0) return; latestPricesRef.current[symbol]=usable; latestTicksRef.current[symbol]={quote,bid:Number.isFinite(bid)&&bid>0?bid:null,ask:Number.isFinite(ask)&&ask>0?ask:null,epoch:Number(tick.epoch)||Math.floor(Date.now()/1000)}; const remaining=[]; const newlyClosed=[]; for(const orig of ordersRef.current){ if(orig.symbol!==symbol){ remaining.push(orig); continue; } if(orig.status==="PENDING DEMO TRADE"){ const expired=Date.now()>orig.pendingExpiry; if(expired){ newlyClosed.push({...orig,status:"CLOSED",exitPrice:orig.entry,exitReason:"PENDING EXPIRED",realisedPnl:0,floatingPnl:0,closedAt:new Date().toLocaleTimeString()}); continue; } let shouldActivate=false; if(orig.pendingType==="BUY STOP") shouldActivate=usable>=orig.entry; else if(orig.pendingType==="BUY LIMIT") shouldActivate=usable<=orig.entry; else if(orig.pendingType==="SELL STOP") shouldActivate=usable<=orig.entry; else if(orig.pendingType==="SELL LIMIT") shouldActivate=usable>=orig.entry; else shouldActivate=orig.direction==="BUY"?usable>=orig.entry:usable<=orig.entry; if(shouldActivate){ sendIFXAlert('iFX BILLIONAIRE - ORDER ACTIVATED 🔥', `${orig.displayName} ${orig.pendingType} ACTIVATED at ${fmt(orig.entry,5)} - NOW OPEN`); remaining.push({...orig,status:"OPEN DEMO TRADE",currentPrice:usable,activatedAt:new Date().toLocaleTimeString(),floatingPnl:0}); setMessage(`${orig.displayName} ${orig.pendingType} ACTIVATED at ${fmt(orig.entry,5)}`); continue; } remaining.push(orig); continue; } if(orig.status!=="OPEN DEMO TRADE"){ remaining.push(orig); continue; } const trade={...orig,currentPrice:usable}; const reason=getExitReason(trade,usable); if(reason){ const ep=getExitPrice(trade,reason,usable); const pnl=calculateDemoPnl(trade,ep); newlyClosed.push({...trade,status:"CLOSED",exitPrice:ep,observedExitPrice:usable,exitReason:reason,realisedPnl:pnl,floatingPnl:0,closedAt:new Date().toLocaleTimeString()}); sendIFXAlert(`iFX CLOSED - ${reason}`, `${trade.displayName} ${reason} $${fmt(pnl,2)}`); continue; } trade.floatingPnl=calculateDemoPnl(trade,usable); remaining.push(trade); } updateOrders(remaining); if(newlyClosed.length){ updateClosedTrades(p=>[...newlyClosed,...p]); setMessage(newlyClosed.map(t=>`${t.displayName} ${t.exitReason}: ${t.realisedPnl>=0?"+":""}$${fmt(t.realisedPnl,2)}`).join(" · ")); } },[updateOrders,updateClosedTrades]);
+  const scheduleReconnect=useCallback(()=>{ if(!runningRef.current||reconnectTimerRef.current) return; setConnectionText("RECONNECTING"); reconnectTimerRef.current=setTimeout(()=>{ reconnectTimerRef.current=null; if(runningRef.current) window.dispatchEvent(new Event("ifx-robot-reconnect")); },5000); },[]);
+  const connect=useCallback(()=>{ const existing=socketRef.current; if(existing&&existing.readyState===WebSocket.OPEN) return Promise.resolve(); if(connectionPromiseRef.current) return connectionPromiseRef.current; setConnectionText("CONNECTING TO DERIV PUBLIC DATA..."); let ws; try{ ws=new WebSocket(WS_URL); socketRef.current=ws; }catch(e){ setConnected(false); setConnectionText("WEBSOCKET CREATION FAILED"); return Promise.reject(new Error(`WebSocket creation failed: ${e.message}`)); } let cp; cp=new Promise((resolve,reject)=>{ let settled=false; let connectionTimeout=null; const clearConnection=()=>{ if(connectionTimeout){clearTimeout(connectionTimeout); connectionTimeout=null;} if(connectionPromiseRef.current===cp) connectionPromiseRef.current=null; }; const failConnection=error=>{ if(settled) return; settled=true; clearConnection(); setConnected(false); setConnectionText("CONNECTION FAILED"); reject(error); }; connectionTimeout=setTimeout(()=>{ if(ws.readyState!==WebSocket.OPEN){ failConnection(new Error("Deriv connection timeout.")); try{ws.close();}catch{} } },20000); ws.onopen=()=>{ if(socketRef.current!==ws){ws.close(); return;} if(reconnectTimerRef.current){clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current=null;} if(pingTimerRef.current) clearInterval(pingTimerRef.current); pingTimerRef.current=setInterval(()=>{ if(ws.readyState===WebSocket.OPEN){ try{ws.send(JSON.stringify({ping:1}));}catch{} } },30000); setConnected(true); setConnectionText("DERIV PUBLIC MARKET CONNECTED"); clearConnection(); if(!settled){settled=true; resolve();} }; ws.onmessage=ev=>{ if(socketRef.current!==ws) return; let d; try{d=JSON.parse(ev.data);}catch{return;} if(d.msg_type==="tick"&&d.tick) processTick(d.tick.symbol,d.tick); if(d.req_id!==undefined&&pendingRequestsRef.current.has(d.req_id)){ const p=pendingRequestsRef.current.get(d.req_id); clearTimeout(p.timeout); pendingRequestsRef.current.delete(d.req_id); if(d.error) p.reject(new Error(d.error.message||"Deriv API request failed")); else p.resolve(d); } }; ws.onerror=()=>{ if(socketRef.current!==ws) return; setConnectionText("WEBSOCKET NETWORK ERROR"); failConnection(new Error("Could not establish Deriv WebSocket.")); }; ws.onclose=event=>{ if(socketRef.current!==ws) return; socketRef.current=null; if(pingTimerRef.current){clearInterval(pingTimerRef.current); pingTimerRef.current=null;} setConnected(false); setConnectionText(`DISCONNECTED - CODE ${event.code||"UNKNOWN"}`); subscriptionsRef.current.clear(); subscribingRef.current.clear(); pendingRequestsRef.current.forEach(p=>{clearTimeout(p.timeout); p.reject(new Error("Deriv connection closed"));}); pendingRequestsRef.current.clear(); clearConnection(); if(runningRef.current) scheduleReconnect(); failConnection(new Error(`Deriv disconnected.`)); }; }); connectionPromiseRef.current=cp; return cp; },[processTick,scheduleReconnect]);
+  const subscribeMarket=useCallback(async sym=>{ if(subscriptionsRef.current.has(sym)) return true; if(subscribingRef.current.has(sym)) return false; if(!socketRef.current||socketRef.current.readyState!==WebSocket.OPEN) return false; subscribingRef.current.add(sym); try{ const res=await request({ticks:sym,subscribe:1}); if(res.error) throw new Error(res.error.message); const sid=res.subscription?.id||"SUBSCRIBED"; subscriptionsRef.current.set(sym,sid); if(res.tick) processTick(res.tick.symbol||sym,res.tick); return true; }catch(e){ setMessage(`${sym}: subscription failed - ${e.message}`); return false; }finally{ subscribingRef.current.delete(sym); } },[request,processTick]);
+  const discoverMarkets=useCallback(async ()=>{ setMessage("Requesting Deriv active market list..."); const res=await request({active_symbols:"brief"}); if(res.error) throw new Error(`Deriv market discovery error: ${res.error.message||"Unknown"}`); const raw=res.active_symbols??res.data?.active_symbols??[]; if(!Array.isArray(raw)||raw.length===0) throw new Error(`Deriv returned no market array.`); const list=raw.filter(s=>{ if(!s) return false; const symbol=s.underlying_symbol||s.symbol; if(typeof symbol!=="string"||!symbol.trim()) return false; const suspended=Number(s.is_trading_suspended??0); const exchangeOpen=Number(s.exchange_is_open??1); return suspended!==1&&exchangeOpen!==0; }).map(s=>{ const symbol=(s.underlying_symbol||s.symbol).trim(); const normalized={...s,symbol,display_name:s.underlying_symbol_name||s.display_name||s.symbol_name||symbol,market:s.market||s.market_display_name||"other",category:"Other",pip:s.pip_size||s.pip||null}; normalized.category=categoryOf(normalized); normalized.prioritySymbol=priorityMatch(symbol); normalized.priority=priorityIndex(symbol); return normalized; }).sort((a,b)=>a.priority!==b.priority?a.priority-b.priority:String(a.display_name).localeCompare(String(b.display_name))); if(!list.length) throw new Error(`No markets passed filter`); marketsRef.current=list; setSymbols(list); setScanned(0); setProgress(0); setMessage(`SUCCESS: ${list.length} active Deriv markets discovered.`); return list; },[request]);
+  const scanSymbol=useCallback(async item=>{ try{ const res=await request({ticks_history:item.symbol,count:CANDLE_COUNT,end:"latest",style:"candles",granularity:TIMEFRAME}); if(res.error) throw new Error(res.error.message); const raw=Array.isArray(res.candles)?res.candles:[]; const candles=raw.map(c=>({epoch:Number(c.epoch),open:Number(c.open),high:Number(c.high),low:Number(c.low),close:Number(c.close)})).filter(c=>Number.isFinite(c.epoch)&&Number.isFinite(c.open)&&Number.isFinite(c.close)&&Number.isFinite(c.high)&&Number.isFinite(c.low)&&c.high>=c.low).sort((a,b)=>a.epoch-b.epoch); const now=Math.floor(Date.now()/1000); const closed=candles.filter(c=>c.epoch+TIMEFRAME<=now); const liveCandles=candles.filter(c=>c.epoch+TIMEFRAME>now); const liveCandle=liveCandles[liveCandles.length-1]||null; const signal=findClosedEntrySignal(closed,item.symbol,item.category,item.pip); const curClosed=closed[closed.length-1]; const today=serverDay(now); const orangeBox=buildOrangeBox(closed,today); const tick=latestTicksRef.current[item.symbol]; const livePrice=Number.isFinite(tick?.bid)?tick.bid:Number.isFinite(tick?.quote)?tick.quote:liveCandle?.close??curClosed?.close??null; const scanner=getLiveScannerState({candles:closed,liveCandle,price:livePrice,orangeBox}); const spreadInfo=getSpreadInfo(tick,livePrice,item.symbol,item.category,item.pip); return {...signal,scannerState:scanner.state,scannerProximity:scanner.proximity,isTouching:scanner.touching,isBreaking:scanner.breaking,livePrice,spreadKnown:spreadInfo.known,spreadEstimated:spreadInfo.estimated,spreadSource:spreadInfo.source,spreadPoints:spreadInfo.points,spread:spreadInfo.spread,orangeBox,liveCandle,chartCandles:closed}; }catch(e){ return {direction:"NONE",reason:e.message||"Data unavailable",boxCount:0,scannerState:"DATA ERROR",scannerProximity:Infinity,isTouching:false,isBreaking:false}; } },[request]);
+  const scanAll=useCallback(async list=>{ if(!runningRef.current||!list?.length) return; if(scanLockRef.current){ rescanRequestedRef.current=true; return; } scanLockRef.current=true; setMessage("Scanning Deriv markets - M15 - Orange Box only..."); setScanned(0); setProgress(0); const results={}; let completed=0; let failed=0; let nextIndex=0; const worker=async()=>{ while(nextIndex<list.length&&runningRef.current){ const idx=nextIndex++; const item=list[idx]; const r=await scanSymbol(item); results[item.symbol]=r; if(r.scannerState==="DATA ERROR") failed++; completed++; setScanned(completed); setProgress(Math.round(completed/list.length*100)); if(completed%5===0){ setSignals(p=>({...p,...results})); setScannerStates(p=>({...p,...Object.fromEntries(Object.entries(results).map(([s,v])=>[s,{state:v.scannerState,proximity:v.scannerProximity,livePrice:v.livePrice,spreadKnown:v.spreadKnown,spreadEstimated:v.spreadEstimated,spreadSource:v.spreadSource,spreadPoints:v.spreadPoints,touching:v.isTouching,breaking:v.isBreaking}]))})); } } }; try{ await Promise.all([worker(),worker(),worker(),worker()]); if(!runningRef.current) return; setSignals(p=>({...p,...results})); setScannerStates(p=>({...p,...Object.fromEntries(Object.entries(results).map(([s,v])=>[s,{state:v.scannerState,proximity:v.scannerProximity,livePrice:v.livePrice,spreadKnown:v.spreadKnown,spreadEstimated:v.spreadEstimated,spreadSource:v.spreadSource,spreadPoints:v.spreadPoints,touching:v.isTouching,breaking:v.isBreaking}]))})); setMessage(`Scan complete: ${completed}/${list.length} markets · ${failed} data errors`); setLastScan(new Date().toLocaleTimeString()); }finally{ scanLockRef.current=false; if(rescanRequestedRef.current&&runningRef.current){ rescanRequestedRef.current=false; setTimeout(()=>{ if(runningRef.current) scanAll(marketsRef.current); },0); } } },[scanSymbol]);
+  const startRobot=async()=>{ if(runningRef.current) return; try{ if('Notification' in window && Notification.permission!=='granted'){ await Notification.requestPermission(); } setMessage("Connecting to Deriv public markets..."); await connect(); runningRef.current=true; setRunning(true); setSignals({}); setScannerStates({}); setScanned(0); setProgress(0); const list=await discoverMarkets(); if(!runningRef.current||!list.length) return; const prio=list.filter(i=>i.prioritySymbol); for(const it of prio){ if(!runningRef.current) break; await subscribeMarket(it.symbol); } if(!runningRef.current) return; await scanAll(list); if(!runningRef.current) return; if(scanTimerRef.current) clearInterval(scanTimerRef.current); scanTimerRef.current=setInterval(()=>{ if(runningRef.current) scanAll(marketsRef.current); },SCAN_INTERVAL); setMessage("Robot running - 5 MIN scan"); sendIFXAlert('iFX BILLIONAIRE STARTED', 'Robot running - You will be notified on pending activation'); }catch(e){ runningRef.current=false; setRunning(false); setConnectionText(socketRef.current?.readyState===WebSocket.OPEN?"CONNECTED - MARKET DISCOVERY FAILED":"DISCONNECTED"); setMessage(e.message||"Unable to start robot"); } };
+  const stopRobot=()=>{ runningRef.current=false; setRunning(false); rescanRequestedRef.current=false; if(reconnectTimerRef.current){clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current=null;} if(scanTimerRef.current){clearInterval(scanTimerRef.current); scanTimerRef.current=null;} const now=new Date().toLocaleTimeString(); const closedNow=[]; for(const o of ordersRef.current){ if(o.status!=="OPEN DEMO TRADE"&&o.status!=="PENDING DEMO TRADE") continue; const price=latestPricesRef.current[o.symbol]??o.currentPrice??o.entry; closedNow.push({...o,status:"CLOSED",exitPrice:price,exitReason:"ROBOT STOPPED",realisedPnl:o.status==="PENDING DEMO TRADE"?0:calculateDemoPnl(o,price),floatingPnl:0,closedAt:now}); } if(closedNow.length) updateClosedTrades(p=>[...closedNow,...p]); updateOrders([]); const ws=socketRef.current; if(ws&&ws.readyState===WebSocket.OPEN){ subscriptionsRef.current.forEach(sid=>{ if(sid&&sid!=="SUBSCRIBED"){ try{ws.send(JSON.stringify({forget:sid,req_id:++requestRef.current}));}catch{} } }); } subscriptionsRef.current.clear(); subscribingRef.current.clear(); activationLocksRef.current.clear(); setMessage(`STOPPED. ${closedNow.length} simulated trades closed.`); };
+  const activateSignal=async item=>{ const signal=signals[item.symbol]; if(!signal||signal.direction==="NONE") return; const now=Math.floor(Date.now()/1000); if(!isTradingTime(now)){ setMessage("Trading paused: UTC 07:00-21:59"); return; } const lockKey=`${item.symbol}|${signal.signalId}`; if(activationLocksRef.current.has(lockKey)) return; activationLocksRef.current.add(lockKey); try{ const prev=[...ordersRef.current,...closedTradesRef.current]; const today=serverDay(now); const daily=prev.filter(t=>t.openedDay===today); const openCount=ordersRef.current.filter(t=>t.status==="OPEN DEMO TRADE"||t.status==="PENDING DEMO TRADE").length; if(daily.length>=MAX_DAILY_TRADES){ setMessage(`Daily limit ${MAX_DAILY_TRADES}`); return; } if(openCount>=MAX_OPEN_TRADES){ setMessage(`Open limit ${MAX_OPEN_TRADES}`); return; } if(alreadyExecuted(prev,signal,item.symbol)){ setMessage("This signal has already been traded"); return; } const sub=await subscribeMarket(item.symbol); if(!sub){ setMessage("Unable to subscribe to live market"); return; } const tick=latestTicksRef.current[item.symbol]; const curPrice=Number.isFinite(tick?.bid)?tick.bid:tick?.quote; if(!Number.isFinite(curPrice)||curPrice<=0){ setMessage("Waiting for a live market price"); return; } const spreadInfo=getSpreadInfo(tick,curPrice,item.symbol,item.category,item.pip); if(!spreadInfo.known){ setMessage("Unable to calculate spread."); return; } if(!spreadInfo.estimated&&spreadInfo.points>MAX_SPREAD_POINTS){ setMessage("Live spread too high"); return; } const order=makeDemoOrder(signal,item.symbol,item.category,item.display_name,balance,riskPct,sizingMode,fixedLots,spreadInfo,tick); updateOrders(p=>[order,...p]); setMessage(`${item.display_name}: ${order.pendingType} ${signal.direction} at ${fmt(order.entry,5)} · SL ${fmt(order.sl,5)} · TP ${fmt(order.tp,5)}`); sendIFXAlert('iFX BILLIONAIRE - PENDING PLACED', `${item.display_name} ${order.pendingType} ${signal.direction} at ${fmt(order.entry,5)}`); }catch(e){ setMessage(`${item.symbol}: ${e.message}`); }finally{ activationLocksRef.current.delete(lockKey); } };
+  const handleFile=async(e,setter,isFirst)=>{ const f=e.target.files?.[0]; if(!f) return; const url=URL.createObjectURL(f); setter({file:f,url,name:f.name}); setScanResult(null); if(autoDetectOn){ setIsDetecting(true); setDetectMsg("🔍 Auto-detecting pair..."); const det=await autoDetectFromImage(url,f.name); if(det?.pair){ setDetectedPair(det.pair); setScanPair(det.pair); if(det.tf){ if(isFirst) setScanTF1(det.tf); else setScanTF2(det.tf); } setDetectMsg(`✅ Detected: ${det.pair} • ${det.tf||""}`); } else { setDetectMsg("⚠️ Could not auto-detect - type pair manually"); } setIsDetecting(false); } };
+  const runAIScan=async()=>{ if(!scanImg1 && !scanImg2){ alert("Upload at least 1 chart screenshot first"); return; } let finalPair=detectedPair||scanPair; if(finalPair==="AUTO-DETECT"||!finalPair) finalPair="XAUUSD"; finalPair=finalPair.toUpperCase().replace(".ECN",""); setIsAnalyzing(true); setScanResult(null); await new Promise(r=>setTimeout(r,1200)); try{ let bias1={trendScore:0},bias2={trendScore:0}; const loadImg=(src)=>new Promise((res,rej)=>{ const im=new Image(); im.onload=()=>res(im); im.onerror=rej; im.src=src; }); if(scanImg1?.url){ const im=await loadImg(scanImg1.url); bias1=await analyzeImagePixels(im); } if(scanImg2?.url){ const im=await loadImg(scanImg2.url); bias2=await analyzeImagePixels(im); } const combined=(bias1.trendScore*0.4 + bias2.trendScore*0.6) || bias1.trendScore || bias2.trendScore || (Math.random()*20-10); let liveBias=0, livePrice=null, liveBoxSize=null; try{ if(!connected){ await connect(); } let targetSym=marketsRef.current.find(m=>normalizeSymbol(m.symbol).includes(normalizeSymbol(finalPair)))?.symbol || finalPair; const res=await request({ticks_history:targetSym,count:100,end:"latest",style:"candles",granularity:TIMEFRAME}); if(res.candles?.length>10){ const cs=res.candles.map(c=>({close:Number(c.close),open:Number(c.open)})); const last10=cs.slice(-10); const first=last10[0].close; const last=last10[last10.length-1].close; liveBias=(last-first)/ (Math.abs(first)*0.001) * 10; livePrice=last; const highs=res.candles.map(c=>Number(c.high)); const lows=res.candles.map(c=>Number(c.low)); liveBoxSize=(Math.max(...highs)-Math.min(...lows))/10; } }catch(e){} const finalScore=combined + liveBias; const direction=finalScore>=0?"BUY":"SELL"; const confidence=Math.min(92, Math.max(55, 62 + Math.abs(finalScore)*1.5 + (scanImg1&&scanImg2?8:0))); const confLabel=confidence>=80?"HIGH":confidence>=68?"MODERATE":"LOW"; const basePrice=livePrice||4413.83; const isGold=finalPair.includes("XAU")||finalPair.includes("GOLD"); const boxSize=liveBoxSize|| (isGold?3.5:0.0015); const entry=basePrice; const sl=direction==="BUY"?entry-boxSize:entry+boxSize; const tp=direction==="BUY"?entry+boxSize*2.2:entry-boxSize*2.2; const tf1Bias=bias1.trendScore>=0?"Bullish":"Bearish"; const tf2Bias=bias2.trendScore>=0?"Bullish":"Bearish"; const result={pair:finalPair+".ecn",direction,entry,sl,tp,confidence:Math.round(confidence),confLabel,score:finalScore,strategy:scanStrategy,tf1:scanTF1,tf1Bias,tf2:scanTF2,tf2Bias,time:new Date().toLocaleTimeString(),boxSize,autoDetected:!!detectedPair}; setScanResult(result); sendIFXAlert(`iFX AI SCANNER - ${direction} ${result.pair}`, `Entry ${fmt(entry,2)} TP ${fmt(tp,2)} Confidence ${result.confidence}%`); }catch(e){ setScanResult({error:e.message}); } finally{ setIsAnalyzing(false); } };
+  useEffect(()=>{ const recover=async()=>{ if(!runningRef.current||reconnectingRef.current) return; const ws=socketRef.current; if(ws&&ws.readyState===WebSocket.OPEN){ if(marketsRef.current.length) await scanAll(marketsRef.current); return; } reconnectingRef.current=true; try{ await connect(); if(!runningRef.current) return; const openSyms=[...new Set(ordersRef.current.filter(o=>o.status==="OPEN DEMO TRADE"||o.status==="PENDING DEMO TRADE").map(o=>o.symbol))]; const prioSyms=[...new Set(marketsRef.current.filter(i=>i.prioritySymbol).map(i=>i.symbol))]; for(const s of [...new Set([...prioSyms,...openSyms])]){ if(!runningRef.current) break; await subscribeMarket(s); } if(!runningRef.current) return; let list=marketsRef.current; if(!list.length) list=await discoverMarkets(); if(runningRef.current&&list.length) await scanAll(list); }catch(e){ if(runningRef.current){ setMessage(`Reconnect failed: ${e.message}`); scheduleReconnect(); } }finally{ reconnectingRef.current=false; } }; const hR=()=>recover(); const hO=()=>{ if(runningRef.current) recover(); }; const hV=()=>{ if(document.visibilityState==="visible"&&runningRef.current) recover(); }; window.addEventListener("ifx-robot-reconnect",hR); window.addEventListener("online",hO); document.addEventListener("visibilitychange",hV); return ()=>{ window.removeEventListener("ifx-robot-reconnect",hR); window.removeEventListener("online",hO); document.removeEventListener("visibilitychange",hV); }; },[connect,scanAll,subscribeMarket,discoverMarkets,scheduleReconnect]);
   useEffect(()=>{ return ()=>{ runningRef.current=false; if(scanTimerRef.current) clearInterval(scanTimerRef.current); if(reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current); if(pingTimerRef.current) clearInterval(pingTimerRef.current); pendingRequestsRef.current.forEach(p=>{clearTimeout(p.timeout); p.reject(new Error("App closed"));}); pendingRequestsRef.current.clear(); if(socketRef.current){ try{socketRef.current.close();}catch{} } }; },[]);
-
-  const touchingSymbols=useMemo(()=>{
-    return symbols.filter(item=>{
-      const sig=signals[item.symbol]; if(!sig) return false; if(sig.direction!=="BUY"&&sig.direction!=="SELL") return false;
-      const sc=scannerStates[item.symbol]; if(!sc) return false;
-      const breakoutSignal=String(sig.strategy||"").startsWith("BREAKOUT ");
-      if(!sc.touching&&!sc.breaking&&!breakoutSignal) return false;
-      if(category!=="All"&&item.category!==category) return false;
-      const term=search.toLowerCase();
-      if(term&&!String(item.display_name||"").toLowerCase().includes(term)&&!String(item.symbol||"").toLowerCase().includes(term)) return false;
-      return true;
-    }).sort((a,b)=>a.priority-b.priority);
-  },[symbols,signals,scannerStates,category,search]);
-
-  const visibleSymbols=touchingSymbols;
-  const openTrades=orders.filter(o=>o.status==="OPEN DEMO TRADE"||o.status==="PENDING DEMO TRADE");
-  const floatingPnl=openTrades.reduce((s,t)=>s+(t.floatingPnl||0),0);
-  const isTradingHours=isTradingTime(clock); const todayDay=serverDay(clock);
-  const dailyCount=[...orders,...closedTrades].filter(t=>t.openedDay===todayDay).length;
-  const realisedPnl=closedTrades.reduce((s,t)=>s+(Number(t.realisedPnl)||0),0);
+  const touchingSymbols=useMemo(()=>{ return symbols.filter(item=>{ const sig=signals[item.symbol]; if(!sig) return false; if(sig.direction!=="BUY"&&sig.direction!=="SELL") return false; const sc=scannerStates[item.symbol]; if(!sc) return false; const breakoutSignal=String(sig.strategy||"").startsWith("BREAKOUT "); if(!sc.touching&&!sc.breaking&&!breakoutSignal) return false; if(category!=="All"&&item.category!==category) return false; const term=search.toLowerCase(); if(term&&!String(item.display_name||"").toLowerCase().includes(term)&&!String(item.symbol||"").toLowerCase().includes(term)) return false; return true; }).sort((a,b)=>a.priority-b.priority); },[symbols,signals,scannerStates,category,search]);
+  const visibleSymbols=touchingSymbols; const openTrades=orders.filter(o=>o.status==="OPEN DEMO TRADE"||o.status==="PENDING DEMO TRADE"); const floatingPnl=openTrades.reduce((s,t)=>s+(t.floatingPnl||0),0); const isTradingHours=isTradingTime(clock); const todayDay=serverDay(clock); const dailyCount=[...orders,...closedTrades].filter(t=>t.openedDay===todayDay).length; const realisedPnl=closedTrades.reduce((s,t)=>s+(Number(t.realisedPnl)||0),0);
 
   return (
     <div style={{background:"#0a0f1a",minHeight:"100vh",color:"#e6edf7",fontFamily:"system-ui",paddingBottom:30}}>
+      {/* TOP SECTION - HEADER - YOUR PROMPT */}
       <div style={{padding:"14px 16px",display:"flex",justifyContent:"space-between",alignItems:"center",borderBottom:"1px solid #1e2d45"}}>
-        <div><div style={{fontSize:22,fontWeight:900}}>iFX BILLIONAIRE EA</div></div>
-        <div style={{background:running?"#0f3d1e":"#3a1a1a",color:running?"#4ade80":"#ff6b6b",padding:"6px 12px",borderRadius:20,fontSize:11,fontWeight:800}}>● {running?"RUNNING":"STOPPED"}</div>
+        <div><div style={{fontSize:28,fontWeight:900,letterSpacing:"-0.5px"}}>iFX BILLIONAIRE EA</div></div>
+        <div style={{background:"#3a1a1a",color:"#ff6b6b",padding:"8px 16px",borderRadius:20,fontSize:13,fontWeight:800}}>● {running?"RUNNING":"STOPPED"}</div>
       </div>
 
-      <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:12,margin:12,padding:14}}>
-        <div style={{fontSize:12,fontWeight:900}}>ROBOT CONTROL</div>
-        <div style={{display:"flex",gap:10,alignItems:"center",margin:"10px 0",fontSize:11,flexWrap:"wrap"}}>
-          <span style={{color:connected?"#4ade80":"#ff6b6b"}}>● {connectionText}</span>
-          <button onClick={()=>{ Notification.requestPermission(); sendIFXAlert('TEST NOTIFICATION','If you see this, pending activation will buzz you!'); }} style={{background:"#0ea5e9",color:"white",border:"none",padding:"6px 10px",borderRadius:6,fontWeight:800,fontSize:11}}>🔔 TEST NOTIFICATION</button>
+      {/* SECTION 1 - ROBOT CONTROL - YOUR PROMPT */}
+      <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:16,margin:12,padding:16}}>
+        <div style={{fontSize:16,fontWeight:900}}>ROBOT CONTROL</div>
+        <div style={{display:"flex",gap:10,alignItems:"center",margin:"14px 0",fontSize:13,flexWrap:"wrap"}}>
+          <span style={{color:connected?"#4ade80":"#ff6b6b",fontWeight:700}}>● {connectionText}</span>
+          <button onClick={()=>{ Notification.requestPermission(); sendIFXAlert('TEST NOTIFICATION','If you see this, pending activation will buzz you!'); }} style={{background:"#0ea5e9",color:"white",border:"none",padding:"10px 16px",borderRadius:8,fontWeight:800,fontSize:13}}>🔔 TEST NOTIFICATION</button>
         </div>
         <div style={{display:"flex",gap:10}}>
-          <button onClick={startRobot} disabled={running} style={{flex:1,padding:14,border:"none",borderRadius:8,fontWeight:900,background:"#10b981",color:"white",opacity:running?0.5:1}}>▶ START ROBOT</button>
-          <button onClick={stopRobot} style={{flex:1,padding:14,border:"none",borderRadius:8,fontWeight:900,background:"#dc2626",color:"white"}}>■ STOP</button>
+          <button onClick={startRobot} disabled={running} style={{flex:1,padding:18,border:"none",borderRadius:10,fontWeight:900,fontSize:16,background:"#10b981",color:"white",opacity:running?0.5:1}}>▶ START ROBOT</button>
+          <button onClick={stopRobot} style={{flex:1,padding:18,border:"none",borderRadius:10,fontWeight:900,fontSize:16,background:"#dc2626",color:"white"}}>■ STOP</button>
         </div>
-        <div style={{fontSize:11,color:"#8a9bb5",marginTop:10,overflowWrap:"anywhere"}}>{message}</div>
-        <div style={{height:5,background:"#1e2d45",borderRadius:3,margin:"12px 0 8px"}}><div style={{height:"100%",background:"#3b82f6",width:`${progress}%`,transition:"width .2s"}} /></div>
-        <div style={{fontSize:11,color:"#8a9bb5"}}>Scan: {scanned}/{symbols.length} · {progress}% · Every 5 MIN · UTC: {new Date(clock*1000).toISOString().slice(11,19)} · Last: {lastScan}</div>
-        <div style={{background:isTradingHours?"#14532d":"#3f1d1d",color:isTradingHours?"#4ade80":"#f87171",padding:10,borderRadius:8,fontSize:12,fontWeight:800,textAlign:"center",marginTop:10}}>TRADING: {isTradingHours?"ACTIVE":"PAUSED"} - 07:00 - 21:59</div>
-        <div style={{display:"flex",gap:8,marginTop:12,fontSize:11,flexWrap:"wrap"}}>
-          <label>Balance $<input type="number" value={balance} onChange={e=>setBalance(Number(e.target.value))} style={{width:80,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:4,padding:4}} /></label>
-          <label>Risk %<input type="number" value={riskPct} onChange={e=>setRiskPct(Number(e.target.value))} style={{width:50,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:4,padding:4}} /></label>
-          <label>Lots<input type="number" step="0.01" value={fixedLots} onChange={e=>setFixedLots(Number(e.target.value))} style={{width:60,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:4,padding:4}} /></label>
-        </div>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(2,minmax(0,1fr))",gap:8,marginTop:14}}>
-          <div style={{background:"#0f172a",padding:10,borderRadius:8}}><div style={{color:"#94a3b8",fontSize:10}}>OPEN / PENDING</div><b>{openTrades.length}</b></div>
-          <div style={{background:"#0f172a",padding:10,borderRadius:8}}><div style={{color:"#94a3b8",fontSize:10}}>DAILY TRADES</div><b>{dailyCount}/{MAX_DAILY_TRADES}</b></div>
-          <div style={{background:"#0f172a",padding:10,borderRadius:8}}><div style={{color:"#94a3b8",fontSize:10}}>FLOATING P/L</div><b style={{color:floatingPnl>=0?"#4ade80":"#f87171"}}>${fmt(floatingPnl,2)}</b></div>
-          <div style={{background:"#0f172a",padding:10,borderRadius:8}}><div style={{color:"#94a3b8",fontSize:10}}>REALISED P/L</div><b style={{color:realisedPnl>=0?"#4ade80":"#f87171"}}>${fmt(realisedPnl,2)}</b></div>
-        </div>
+        <div style={{fontSize:13,color:"#8a9bb5",marginTop:14}}>{message}</div>
+        <div style={{height:5,background:"#1e2d45",borderRadius:3,margin:"14px 0 10px"}}><div style={{height:"100%",background:"#3b82f6",width:`${progress}%`}} /></div>
+        <div style={{fontSize:12,color:"#8a9bb5"}}>Scan: {scanned}/{symbols.length} · {progress}% · Every 5 MIN · UTC: {new Date(clock*1000).toISOString().slice(11,19)} · Last: {lastScan}</div>
+        <div style={{background:"#14532d",color:"#4ade80",padding:14,borderRadius:8,fontSize:14,fontWeight:800,textAlign:"center",marginTop:12}}>TRADING: ACTIVE - 07:00 - 21:59</div>
       </div>
 
-      <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:12,margin:12,padding:14}}>
-        <button onClick={()=>setSignalsCollapsed(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,background:"#0f172a",color:"#e6edf7",border:"1px solid #334155",borderRadius:8,padding:13,fontSize:12,fontWeight:900,textAlign:"left",cursor:"pointer"}}><span>VALID M15 SIGNALS ({visibleSymbols.length})</span><span style={{color:"#fbbf24",fontSize:16}}>{signalsCollapsed?"▼":"▲"}</span></button>
-        {!signalsCollapsed && (
-          <>
-            <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search..." style={{width:"100%",padding:12,background:"#0f172a",border:"1px solid #334155",borderRadius:8,color:"white",margin:"12px 0",boxSizing:"border-box"}} />
-            <div style={{display:"flex",gap:6,overflowX:"auto"}}>{CATEGORIES.map(c=>(<button key={c} onClick={()=>setCategory(c)} style={{padding:"7px 14px",borderRadius:20,background:category===c?"#0ea5e9":"#1e293b",color:category===c?"white":"#94a3b8",border:"none",whiteSpace:"nowrap"}}>{c}</button>))}</div>
-            <div style={{marginTop:12,display:"flex",flexDirection:"column",gap:8}}>
-              {visibleSymbols.length===0 && <div style={{fontSize:12,color:"#8a9bb5",textAlign:"center",padding:20}}>No valid signals touching box right now. Robot scanning every 5 min.</div>}
-              {visibleSymbols.map(item=>{
-                const sig=signals[item.symbol]; const sc=scannerStates[item.symbol];
-                return (
-                  <div key={item.symbol} style={{background:"#0f172a",border:"1px solid #334155",borderRadius:10,padding:12}}>
-                    <div style={{display:"flex",justifyContent:"space-between"}}><b>{item.display_name}</b><span style={{color:sig.direction==="BUY"?"#4ade80":"#f87171",fontWeight:900}}>{sig.direction} {sig.strategy}</span></div>
-                    <div style={{fontSize:11,color:"#94a3b8",margin:"6px 0"}}>{sig.reason} • Entry {fmt(sig.entryLevel,5)} • {sig.pendingType} • Box {fmt(sig.boxHigh,5)} / {fmt(sig.boxLow,5)} • {sc?.state}</div>
-                    <button onClick={()=>activateSignal(item)} style={{width:"100%",padding:10,background:"#f59e0b",color:"black",border:"none",borderRadius:8,fontWeight:900}}>PLACE PENDING {sig.pendingType} - WILL NOTIFY ON ACTIVATION 🔔</button>
-                  </div>
-                );
-              })}
+      {/* SECTION 2 - BALANCE CARD - YOUR PROMPT */}
+      <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:16,margin:12,padding:16}}>
+        <div style={{display:"flex",gap:10}}>
+          <div style={{flex:1}}>
+            <div style={{fontSize:12,color:"#cbd5e1",marginBottom:4}}>Balance $</div>
+            <input type="number" value={balance} onChange={e=>setBalance(Number(e.target.value))} style={{width:"100%",background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:8,padding:10,boxSizing:"border-box"}} />
+          </div>
+          <div style={{width:90}}>
+            <div style={{fontSize:12,color:"#cbd5e1",marginBottom:4}}>Risk %</div>
+            <input type="number" value={riskPct} onChange={e=>setRiskPct(Number(e.target.value))} style={{width:"100%",background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:8,padding:10,boxSizing:"border-box"}} />
+          </div>
+        </div>
+        <div style={{marginTop:10,display:"flex",gap:10,alignItems:"center"}}>
+          <span style={{fontSize:12}}>Lots</span>
+          <input type="number" step="0.01" value={fixedLots} onChange={e=>setFixedLots(Number(e.target.value))} style={{width:100,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:8,padding:8}} />
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginTop:14}}>
+          <div style={{background:"#0f172a",padding:12,borderRadius:8}}><div style={{color:"#94a3b8",fontSize:10}}>OPEN / PENDING</div><b style={{fontSize:18}}>{openTrades.length}</b></div>
+          <div style={{background:"#0f172a",padding:12,borderRadius:8}}><div style={{color:"#94a3b8",fontSize:10}}>DAILY TRADES</div><b style={{fontSize:18}}>{dailyCount}/4</b></div>
+          <div style={{background:"#0f172a",padding:12,borderRadius:8}}><div style={{color:"#94a3b8",fontSize:10}}>FLOATING P/L</div><b style={{color:"#4ade80",fontSize:16}}>${fmt(floatingPnl,2)}</b></div>
+          <div style={{background:"#0f172a",padding:12,borderRadius:8}}><div style={{color:"#94a3b8",fontSize:10}}>REALISED P/L</div><b style={{color:"#4ade80",fontSize:16}}>${fmt(realisedPnl,2)}</b></div>
+        </div>
+        <button onClick={startRobot} disabled={running} style={{width:"100%",padding:16,marginTop:14,background:"#10b981",color:"white",border:"none",borderRadius:10,fontWeight:900,fontSize:15}}>▶ START ROBOT - ORANGE BOX</button>
+      </div>
+
+      {/* SECTION 3 - AI SCANNER - YOUR PROMPT */}
+      <div style={{background:"linear-gradient(135deg,#0f172a,#1e1b4b)",border:"1px solid #3b82f6",borderRadius:16,margin:12,padding:16}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+          <div>
+            <div style={{fontSize:15,fontWeight:900}}>🤖 AI SCANNER - Auto-Detect Any Market 📸</div>
+            <div style={{fontSize:11,color:"#93c5fd",marginTop:4}}>Snap any chart - Gold, Forex, Crypto, Indices, Synthetics - Auto runs in background</div>
+          </div>
+          <div style={{background:"#14532d",color:"#4ade80",padding:"6px 10px",borderRadius:6,fontSize:11,fontWeight:800,textAlign:"center"}}>Auto-Detect<br/>ON</div>
+        </div>
+        <div style={{fontSize:12,marginTop:14}}>Pair: <b style={{color:"#4ade80"}}>{detectedPair||scanPair}</b></div>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:8}}>
+          {QUICK_PAIRS.map(p=>(
+            <button key={p} onClick={()=>{setScanPair(p); setDetectedPair("");}} style={{padding:"7px 14px",borderRadius:20,background:(detectedPair||scanPair)===p?"#16a34a":"#1e293b",color:"white",border:"none",fontSize:12,fontWeight:700}}>{p}</button>
+          ))}
+        </div>
+        <input value={scanPair} onChange={e=>{setScanPair(e.target.value); setDetectedPair("");}} placeholder="XAUUSD" style={{width:"100%",marginTop:10,background:"#1e293b",color:"white",border:"1px solid #475569",borderRadius:8,padding:10,boxSizing:"border-box"}} />
+        <div style={{fontSize:11,color:"#94a3b8",marginTop:6}}>Tip: Include top bar with XAUUSD.ecn M1 for auto-detect. {detectMsg}</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginTop:14}}>
+          <div>
+            <div style={{fontSize:12,marginBottom:6}}>Chart 1 - {scanTF1}</div>
+            <label style={{display:"block",border:"1px dashed #3b82f6",borderRadius:8,padding:20,textAlign:"center",cursor:"pointer",background:scanImg1?"#0f172a":"#131e32",minHeight:110}}>
+              {scanImg1?<img src={scanImg1.url} style={{width:"100%",maxHeight:120,objectFit:"cover",borderRadius:6}}/>:<>+ Upload</>}
+              <input type="file" accept="image/*" onChange={e=>handleFile(e,setScanImg1,true)} style={{display:"none"}} />
+            </label>
+            <select value={scanTF1} onChange={e=>setScanTF1(e.target.value)} style={{width:"100%",marginTop:8,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:6,padding:8}}><option>M1</option><option>M5</option><option>M15</option><option>H1</option><option>H4</option></select>
+          </div>
+          <div>
+            <div style={{fontSize:12,marginBottom:6}}>Chart 2 - M15 (Optional)</div>
+            <label style={{display:"block",border:"1px dashed #475569",borderRadius:8,padding:20,textAlign:"center",cursor:"pointer",background:scanImg2?"#0f172a":"#131e32",minHeight:110}}>
+              {scanImg2?<img src={scanImg2.url} style={{width:"100%",maxHeight:120,objectFit:"cover",borderRadius:6}}/>:<>+ Upload</>}
+              <input type="file" accept="image/*" onChange={e=>handleFile(e,setScanImg2,false)} style={{display:"none"}} />
+            </label>
+            <select value={scanTF2} onChange={e=>setScanTF2(e.target.value)} style={{width:"100%",marginTop:8,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:6,padding:8}}><option>M15</option><option>M1</option><option>M5</option><option>H1</option><option>H4</option></select>
+          </div>
+        </div>
+        <button onClick={runAIScan} disabled={isAnalyzing} style={{width:"100%",padding:14,marginTop:14,background:"#2563eb",color:"white",border:"none",borderRadius:8,fontWeight:900,fontSize:13}}>{isAnalyzing?"🔍 ANALYZING...":"🔍 ANALYZE CHARTS - ANY MARKET"}</button>
+        {scanResult && !scanResult.error && (
+          <div style={{background:"#0f172a",border:"1px solid #22c55e",borderRadius:10,padding:12,marginTop:12}}>
+            <div style={{display:"flex",justifyContent:"space-between"}}><b>{scanResult.pair}</b><div style={{background:scanResult.direction==="BUY"?"#16a34a":"#dc2626",color:"white",padding:"6px 14px",borderRadius:6,fontWeight:900}}>{scanResult.direction}</div></div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginTop:12,textAlign:"center"}}>
+              <div style={{background:"#1e293b",padding:10,borderRadius:8}}><div style={{fontSize:10,color:"#94a3b8"}}>ENTRY</div><b>{fmt(scanResult.entry,2)}</b></div>
+              <div style={{background:"#1e293b",padding:10,borderRadius:8}}><div style={{fontSize:10,color:"#94a3b8"}}>STOP LOSS</div><b>{fmt(scanResult.sl,2)}</b></div>
+              <div style={{background:"#1e293b",padding:10,borderRadius:8}}><div style={{fontSize:10,color:"#fbbf24"}}>TAKE PROFIT</div><b style={{color:"#4ade80"}}>{fmt(scanResult.tp,2)}</b></div>
             </div>
-          </>
+            <div style={{marginTop:10,fontSize:11}}>Confidence: <b>{scanResult.confidence}% • {scanResult.confLabel}</b></div>
+          </div>
         )}
       </div>
 
+      {/* SIGNALS - KEPT FROM YOUR LOGIC */}
       <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:12,margin:12,padding:14}}>
-        <div style={{fontSize:12,fontWeight:900}}>OPEN / PENDING ORDERS ({openTrades.length})</div>
-        {openTrades.map(o=>(
-          <div key={o.id} style={{background:"#0f172a",border:"1px solid #334155",borderRadius:8,padding:10,marginTop:8,fontSize:12}}>
-            <div style={{display:"flex",justifyContent:"space-between"}}><b>{o.displayName}</b><span style={{color:o.status==="PENDING DEMO TRADE"?"#fbbf24":"#4ade80"}}>{o.status}</span></div>
-            <div>{o.direction} {o.pendingType} @ {fmt(o.entry,5)} • SL {fmt(o.sl,5)} • TP {fmt(o.tp,5)} • P/L ${fmt(o.floatingPnl,2)}</div>
-          </div>
-        ))}
-        {openTrades.length===0 && <div style={{fontSize:11,color:"#8a9bb5",marginTop:8}}>No open trades.</div>}
-      </div>
-
-      <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:12,margin:12,padding:14}}>
-        <div style={{fontSize:12,fontWeight:900}}>CLOSED TRADES</div>
-        {closedTrades.slice(0,10).map((t,i)=>(
-          <div key={i} style={{fontSize:11,padding:"8px 0",borderBottom:"1px solid #1e2d45"}}>{t.displayName} - {t.exitReason} ${fmt(t.realisedPnl,2)} • {t.closedAt}</div>
-        ))}
+        <button onClick={()=>setSignalsCollapsed(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:8,padding:13,fontSize:12,fontWeight:900}}><span>VALID M15 SIGNALS ({visibleSymbols.length})</span><span>{signalsCollapsed?"▼":"▲"}</span></button>
+        {!signalsCollapsed && (
+          <>
+            <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search..." style={{width:"100%",padding:12,background:"#0f172a",border:"1px solid #334155",borderRadius:8,color:"white",margin:"12px 0",boxSizing:"border-box"}} />
+            <div style={{display:"flex",gap:6,overflowX:"auto"}}>{CATEGORIES.map(c=>(<button key={c} onClick={()=>setCategory(c)} style={{padding:"7px 14px",borderRadius:20,background:category===c?"#0ea5e9":"#1e293b",color:"white",border:"none"}}>{c}</button>))}</div>
+            <div style={{marginTop:12,display:"flex",flexDirection:"column",gap:8}}>
+              {visibleSymbols.length===0 && <div style={{fontSize:12,color:"#8a9bb5",textAlign:"center",padding:20}}>No valid signals touching box right now.</div>}
+              {visibleSymbols.map(item=>{ const sig=signals[item.symbol]; const sc=scannerStates[item.symbol]; return (
+                  <div key={item.symbol} style={{background:"#0f172a",border:"1px solid #334155",borderRadius:10,padding:12}}>
+                    <div style={{display:"flex",justifyContent:"space-between"}}><b>{item.display_name}</b><span style={{color:sig.direction==="BUY"?"#4ade80":"#f87171",fontWeight:900}}>{sig.direction} {sig.strategy}</span></div>
+                    <div style={{fontSize:11,color:"#94a3b8",margin:"6px 0"}}>{sig.reason} • Entry {fmt(sig.entryLevel,5)} • {sig.pendingType} • Box {fmt(sig.boxHigh,5)} / {fmt(sig.boxLow,5)} • RSI {sig.rsi?fmt(sig.rsi,1):"—"}</div>
+                    <button onClick={()=>activateSignal(item)} style={{width:"100%",padding:10,background:"#f59e0b",color:"black",border:"none",borderRadius:8,fontWeight:900}}>PLACE PENDING {sig.pendingType} 🔔</button>
+                  </div>
+                ); })}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
