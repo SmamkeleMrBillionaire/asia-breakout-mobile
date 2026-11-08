@@ -26,52 +26,45 @@ function sendAlert(t,b){
     } else { try{new Notification(t,{body:b});}catch(e){} }
   } else if('Notification' in window){ Notification.requestPermission().then(()=>{ try{new Notification(t,{body:b});}catch(e){} }); }
 }
-// ===== UNIVERSAL BROKER SELECTOR =====
-let BROKER = "EXNESS";
-function getBrokerSuffix(){
-  if(BROKER==="EXNESS") return "m";
-  return ""; // FXPRO, XM, JUSTMARKETS, HFM = no suffix
-}
+// ===== WORKING Vercel sendToMT4 - EXACTLY AS BEFORE BROKER UPDATE - DO NOT ADD BROKER FIELD =====
 async function sendToMT4(result, setMsg){
   try{
     let raw = result.pair.replace(".ecn","").toUpperCase().replace(/\s+/g,"");
-    if(raw.endsWith("M") && !raw.includes("BOOM") && !raw.includes("CRASH")) raw = raw.slice(0,-1);
-    let base = raw;
-    if(raw.includes("XAU")) base="XAUUSD";
-    else if(raw.includes("V75") || raw.includes("VOLATILITY75")) base="Volatility 75 Index";
-    else if(raw.includes("BTC")) base="BTCUSD";
-    else if(raw.includes("US30")) base="US30";
-    else if(raw.includes("NAS") || raw.includes("USTEC")) base="USTEC";
-    else if(raw.includes("1HZ15V")) base="1HZ15V";
-    else if(raw.includes("1HZ25V")) base="1HZ25V";
-    else if(raw.includes("1HZ90V")) base="1HZ90V";
-    else if(raw.includes("1HZ100V")) base="1HZ100V";
-    else if(raw.includes("BOOM150N")) base="BOOM150N";
-    else if(raw.includes("BOOM500")) base="BOOM500";
-    else if(raw.includes("BOOM900")) base="BOOM900";
-    else if(raw.includes("BOOM1000")) base="BOOM1000";
-    else if(raw.includes("BOOM300N")) base="BOOM300N";
-    else if(raw.includes("BOOM50")) base="BOOM50";
-    else if(raw.includes("CRASH150N")) base="CRASH150N";
-    else if(raw.includes("CRASH500")) base="CRASH500";
-    else if(raw.includes("CRASH600")) base="CRASH600";
-    else if(raw.includes("CRASH900")) base="CRASH900";
-    else if(raw.includes("CRASH1000")) base="CRASH1000";
-    else if(raw.includes("CRASH300N")) base="CRASH300N";
-    else if(raw.includes("EURUSD")) base="EURUSD";
-    else if(raw.includes("GBPUSD")) base="GBPUSD";
-    else if(raw.includes("USDJPY")) base="USDJPY";
-    else if(raw.includes("GBPJPY")) base="GBPJPY";
-    else if(raw.includes("AUDUSD")) base="AUDUSD";
-    let sym = base;
-    if(base.includes("BOOM") || base.includes("CRASH") || base.includes("1HZ") || base.includes("Volatility")) sym = base;
-    else sym = base + getBrokerSuffix();
+    if(raw.endsWith("M") && !raw.includes("BOOM") && !raw.includes("CRASH") && !raw.includes("1HZ")) raw = raw.slice(0,-1);
+    let sym = raw;
+    if(raw.includes("XAU")) sym="XAUUSDm";
+    else if(raw.includes("V75") || raw.includes("VOLATILITY75")) sym="Volatility 75 Index";
+    else if(raw.includes("BTC")) sym="BTCUSDm";
+    else if(raw.includes("US30")) sym="US30m";
+    else if(raw.includes("NAS") || raw.includes("USTEC")) sym="USTECm";
+    else if(raw.includes("1HZ15V")) sym="1HZ15V";
+    else if(raw.includes("1HZ25V")) sym="1HZ25V";
+    else if(raw.includes("1HZ90V")) sym="1HZ90V";
+    else if(raw.includes("1HZ100V")) sym="1HZ100V";
+    else if(raw.includes("BOOM150N")) sym="BOOM150N";
+    else if(raw.includes("BOOM500")) sym="BOOM500";
+    else if(raw.includes("BOOM900")) sym="BOOM900";
+    else if(raw.includes("BOOM1000")) sym="BOOM1000";
+    else if(raw.includes("BOOM300N")) sym="BOOM300N";
+    else if(raw.includes("BOOM50")) sym="BOOM50";
+    else if(raw.includes("CRASH150N")) sym="CRASH150N";
+    else if(raw.includes("CRASH500")) sym="CRASH500";
+    else if(raw.includes("CRASH600")) sym="CRASH600";
+    else if(raw.includes("CRASH900")) sym="CRASH900";
+    else if(raw.includes("CRASH1000")) sym="CRASH1000";
+    else if(raw.includes("CRASH300N")) sym="CRASH300N";
+    else if(raw.includes("EURUSD")) sym="EURUSDm";
+    else if(raw.includes("GBPUSD")) sym="GBPUSDm";
+    else if(raw.includes("USDJPY")) sym="USDJPYm";
+    else if(raw.includes("GBPJPY")) sym="GBPJPYm";
+    else if(raw.includes("AUDUSD")) sym="AUDUSDm";
+    else sym = raw + "m";
     let action = result.dir;
-    const payload={action:action, symbol:sym, entry:result.entry, sl:result.sl, tp:result.tp, broker:BROKER, time: Math.floor(Date.now()/1000)};
+    const payload={action:action, symbol:sym, entry:result.entry, sl:result.sl, tp:result.tp, time: Math.floor(Date.now()/1000)};
     const r = await fetch("/api/signal", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload)});
     const j = await r.json();
     if(r.ok && j.ok){
-      if(setMsg) setMsg("✅ SENT TO MT4 ["+BROKER+"]: "+sym+" "+action+" @ "+result.entry);
+      if(setMsg) setMsg("✅ SENT TO MT4: "+sym+" "+action+" @ "+result.entry);
       sendAlert("SENT TO MT4", sym+" "+action);
       return true;
     } else { if(setMsg) setMsg("Bridge error - retry"); return false; }
@@ -126,7 +119,6 @@ function detectRBDDBR(cs){
 }
 function App(){
  const [running,setRunning]=useState(false),[connected,setConnected]=useState(false),[connText,setConnText]=useState("EXNESS READY");
- const [broker,setBroker]=useState("EXNESS");
  const [balance,setBalance]=useState(10000),[riskPct,setRiskPct]=useState(1),[lots,setLots]=useState(0.1);
  const [progress,setProgress]=useState(0),[scanned,setScanned]=useState(0),[total,setTotal]=useState(0);
  const [msg,setMsg]=useState("Exness MT4 Ready - Linked"),[lastScan,setLastScan]=useState("Not scanned"),[clock,setClock]=useState(Math.floor(Date.now()/1000));
@@ -140,7 +132,6 @@ function App(){
  const [showScanner,setShowScanner]=useState(true);
  const [showBalance,setShowBalance]=useState(false);
  const wsRef=useRef(null), reqRef=useRef(0), pendRef=useRef(new Map()), runRef=useRef(false);
- useEffect(()=>{ BROKER=broker; setConnText(broker+" READY"); setMsg(broker+" MT4 Ready - Linked"); },[broker]);
  useEffect(()=>{ const t=setInterval(()=>setClock(Math.floor(Date.now()/1000)),1000); return ()=>clearInterval(t); },[]);
  useEffect(()=>{ if('Notification' in window && Notification.permission==='default') Notification.requestPermission(); },[]);
  const request=(p)=>new Promise((res,rej)=>{ const ws=wsRef.current; if(!ws||ws.readyState!==1){rej(new Error("Not connected"));return;} const id=++reqRef.current; const to=setTimeout(()=>{pendRef.current.delete(id); rej(new Error("timeout"));},20000); pendRef.current.set(id,{res,rej,to}); ws.send(JSON.stringify({...p,req_id:id})); });
@@ -184,10 +175,10 @@ function App(){
  };
  const connect=()=>new Promise((resolve,reject)=>{
    const ws=new WebSocket(WS_URL); wsRef.current=ws; setConnText("CONNECTING...");
-   ws.onopen=()=>{ setConnected(true); setConnText(broker+" READY"); resolve(); };
+   ws.onopen=()=>{ setConnected(true); setConnText("EXNESS READY"); resolve(); };
    ws.onmessage=(ev)=>{ let d; try{d=JSON.parse(ev.data);}catch{return;} if(d.req_id!==undefined && pendRef.current.has(d.req_id)){ const p=pendRef.current.get(d.req_id); clearTimeout(p.to); pendRef.current.delete(d.req_id); if(d.error) p.rej(new Error(d.error.message)); else p.res(d); } if(d.msg_type==="tick" && d.tick){ const q=Number(d.tick.bid||d.tick.quote); setOrders(prev=>prev.map(o=>{ if(o.symbol!==d.tick.symbol) return o; if(o.status==="PENDING"){ let act=false; if(o.pendingType==="BUY STOP") act=q>=o.entry; if(o.pendingType==="SELL STOP") act=q<=o.entry; if(act){ sendAlert("iFX ACTIVATED", o.display+" "+o.pendingType+" at "+o.entry); return {...o,status:"OPEN",cur:q}; } return o; } if(o.status==="OPEN"){ let exit=null; if(o.dir==="BUY"){ if(q<=o.sl) exit="STOP LOSS"; if(q>=o.tp) exit="TAKE PROFIT"; } else { if(q>=o.sl) exit="STOP LOSS"; if(q<=o.tp) exit="TAKE PROFIT"; } if(exit){ const pnl=o.dir==="BUY"?(q-o.entry)/(o.entry-o.sl)*o.risk:(o.entry-q)/(o.sl-o.entry)*o.risk; setClosed(prev=>[{...o,exitReason:exit,pnl,closedAt:new Date().toLocaleTimeString()},...prev]); sendAlert("iFX CLOSED "+exit, o.display+" $"+pnl.toFixed(2)); return null; } return {...o,cur:q, float:(o.dir==="BUY"?q-o.entry:o.entry-q)/(Math.abs(o.entry-o.sl))*o.risk}; } return o; }).filter(Boolean)); } };
    ws.onerror=()=>{ setConnText("FAILED"); reject(new Error("WS fail")); };
-   ws.onclose=()=>{ setConnected(false); setConnText(broker+" READY"); };
+   ws.onclose=()=>{ setConnected(false); setConnText("EXNESS READY"); };
    setTimeout(()=>{ if(ws.readyState!==1){ reject(new Error("timeout")); } },15000);
  });
  const startRobot=async()=>{
@@ -208,7 +199,7 @@ function App(){
    const o={id:Date.now(),symbol:s.symbol,display:s.sym,dir:s.dir,strategy:s.strat,pendingType,entry,sl,tp,boxSize,risk:riskMoney,status:"PENDING",cur:entry,float:0,openedDay:sDay(now)};
    setOrders(p=>[o,...p]); sendAlert("iFX PENDING PLACED", s.sym+" "+pendingType+" "+s.dir+" at "+fmtPrice(entry,s.sym));
    await sendToMT4({pair:s.sym, dir:pendingType, entry:entry, sl:sl, tp:tp}, setMsg);
-   setMsg(`${s.sym} PENDING ${s.dir} at ${fmtPrice(entry,s.sym)} - SENT TO MT4 [${broker}]`);
+   setMsg(`${s.sym} PENDING ${s.dir} at ${fmtPrice(entry,s.sym)} - SENT TO MT4`);
    try{ wsRef.current.send(JSON.stringify({ticks:s.symbol,subscribe:1})); }catch(e){}
  };
  async function detectFromImg(url,name){
@@ -316,15 +307,6 @@ function App(){
      <div style={{background:running?"#14532d":"#3a1a1a",color:running?"#4ade80":"#ff6b6b",padding:"6px 10px",borderRadius:16,fontSize:11,fontWeight:800}}>● {running?"RUNNING":"STOPPED"}</div>
    </div>
    <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:12,margin:"8px 10px",padding:"8px 10px"}}>
-     <div style={{display:"flex",gap:6,marginBottom:8}}>
-       <select value={broker} onChange={e=>setBroker(e.target.value)} style={{flex:1,background:"#0f172a",color:"white",border:"1px solid #f59e0b",borderRadius:6,padding:8,fontSize:12,fontWeight:800}}>
-         <option value="EXNESS">EXNESS - XAUUSDm</option>
-         <option value="FXPRO">FXPRO - XAUUSD</option>
-         <option value="XM">XM - XAUUSD</option>
-         <option value="JUSTMARKETS">JUSTMARKETS - XAUUSD</option>
-         <option value="HFM">HFM - XAUUSD</option>
-       </select>
-     </div>
      <button onClick={()=>setShowRobot(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",background:"transparent",color:"white",border:"none",padding:2,fontSize:12,fontWeight:900,textAlign:"left"}}><span>ROBOT CONTROL - ORANGE + RBD/DBR • {connText} • {tradingActive?"ACTIVE":"PAUSED"}</span><span>{showRobot?"▲":"▼"}</span></button>
      {showRobot && (
        <div>
@@ -381,7 +363,7 @@ function App(){
                <div style={{background:"#1e293b",padding:7,borderRadius:6}}><div style={{fontSize:9,color:"#94a3b8"}}>SL</div><b style={{fontSize:13}}>{fmtPrice(result.sl, result.pair)}</b></div>
                <div style={{background:"#1e293b",padding:7,borderRadius:6}}><div style={{fontSize:9,color:"#fbbf24"}}>TAKE PROFIT</div><b style={{color:"#4ade80",fontSize:13}}>{fmtPrice(result.tp, result.pair)}</b></div>
              </div>
-             <button onClick={()=>sendToMT4(result,setMsg)} style={{width:"100%",padding:12,marginTop:8,background:"#f59e0b",color:"black",border:"none",borderRadius:8,fontWeight:900,fontSize:13}}>🚀 SEND TO MT4 - {broker} - AUTO TRADE</button>
+             <button onClick={()=>sendToMT4(result,setMsg)} style={{width:"100%",padding:12,marginTop:8,background:"#f59e0b",color:"black",border:"none",borderRadius:8,fontWeight:900,fontSize:13}}>🚀 SEND TO MT4 - AUTO TRADE</button>
              <div style={{fontSize:11,color:"#4ade80",textAlign:"center",marginTop:6}}>{msg}</div>
            </div>
          )}
@@ -400,7 +382,7 @@ function App(){
        </div>
      ))}
    </div>
-   <div style={{textAlign:"center",fontSize:10,color:"#64748b",marginTop:6}}>UTC {new Date(clock*1000).toISOString().slice(11,19)} • Trading 07:00-21:59 • iFX BILLIONAIRE • {broker} MT4 LINKED</div>
+   <div style={{textAlign:"center",fontSize:10,color:"#64748b",marginTop:6}}>UTC {new Date(clock*1000).toISOString().slice(11,19)} • Trading 07:00-21:59 • iFX BILLIONAIRE • MT4 LINKED</div>
   </div>
  );
 }
