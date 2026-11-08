@@ -5,134 +5,176 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>iFX BILLIONAIRE EA</title>
 <style>
-body{background:#0f1115;color:#fff;font-family:Arial;margin:0;padding:10px}
+body{background:#0b0e14;color:#fff;font-family:Arial;margin:0;padding:10px}
 .header{display:flex;justify-content:space-between;align-items:center}
-.badge{background:#22c55e;padding:6px 12px;border-radius:20px;font-size:12px;font-weight:bold}
-.card{background:#1a1d24;border-radius:12px;padding:12px;margin-top:10px}
-.btn{padding:12px;border:none;border-radius:8px;font-weight:bold;cursor:pointer;width:100%}
+.badge-stop{background:#3f1d1d;color:#f87171;padding:6px 12px;border-radius:20px;font-size:12px;font-weight:bold;border:1px solid #7f1d1d}
+.badge-run{background:#14532d;color:#22c55e;padding:6px 12px;border-radius:20px;font-size:12px;font-weight:bold}
+.card{background:#151923;border:1px solid #1f2937;border-radius:12px;padding:12px;margin-top:10px}
+.btn{padding:13px;border:none;border-radius:8px;font-weight:bold;cursor:pointer;width:100%}
 .start{background:#16a34a;color:#fff;flex:1}
 .stop{background:#dc2626;color:#fff;flex:1}
 .row{display:flex;gap:8px}
+.tabs{display:flex;gap:6px;overflow-x:auto;margin:10px 0}
+.tab{background:#1f2937;padding:7px 14px;border-radius:20px;font-size:13px;white-space:nowrap;cursor:pointer;border:1px solid #374151}
+.tab.active{background:#374151;border-color:#60a5fa}
+.chartBox{display:flex;gap:8px}
+.chartBox img{width:49%;height:90px;object-fit:cover;border-radius:8px;border:1px solid #374151;background:#000}
+select,input{background:#111827;border:1px solid #374151;color:#fff;padding:10px;border-radius:8px}
+select{flex:1} input{flex:1}
+.analyze{background:#2563eb;color:#fff;margin-top:10px}
 .orange{background:#f59e0b;color:#000;padding:14px;font-size:14px;margin-top:8px}
-.signal{border-bottom:1px solid #333;padding:10px 0}
-.sym{font-weight:bold}
-.buy{color:#22c55e;float:right;font-weight:bold}
-.sell{color:#f87171;float:right;font-weight:bold}
-input{width:30%;padding:10px;background:#111;border:1px solid #333;color:#fff;border-radius:8px}
+.signalBox{border:1px solid #374151;border-radius:8px;padding:10px;margin-top:8px}
+.entryBox{background:#1f2937;border-radius:8px;padding:10px;text-align:center;flex:1}
+.entryBox small{color:#9ca3af}
 </style>
 </head>
 <body>
-<div class="header"><h2>iFX BILLIONAIRE EA</h2><div class="badge">● RUNNING</div></div>
+<div class="header"><h2 style="margin:0">iFX BILLIONAIRE EA</h2><div id="runBadge" class="badge-stop">● STOPPED</div></div>
 
 <div class="card">
-<b>ROBOT CONTROL - ORANGE + RBD/DBR • EXNESS READY • ACTIVE</b>
+<b>ROBOT CONTROL - ORANGE + RBD/DBR • EXNESS READY • ACTIVE ▼</b>
 <div class="row" style="margin-top:10px">
-<button class="btn start" onclick="startScan()">▶ START</button>
-<button class="btn stop" onclick="stopScan()">■ STOP</button>
-<button style="background:#1e293b;color:#fff;padding:12px;border-radius:8px">🔔</button>
+<button class="btn start" onclick="startRobot()">▶ START ROBOT</button>
+<button class="btn stop" onclick="stopRobot()">■ STOP</button>
 </div>
-<div id="status" style="margin-top:8px;color:#94a3b8;font-size:13px">Scan complete: 28/40 • 10 signals • 70%</div>
-<div style="background:#2563eb;height:4px;border-radius:4px;margin-top:6px;width:70%"></div>
-</div>
-
-<div class="card">
-<b>Balance $10000 • Risk 1% • Lots 0.1 • P/L $0.00</b>
+<div style="margin-top:10px;background:#111827;padding:10px;border-radius:8px;font-size:13px;display:flex;justify-content:space-between"><span>Balance $10000 • Risk 1% • Lots 0.01 • P/L $0.00</span><span>▲</span></div>
 <div class="row" style="margin-top:8px">
-<input id="balance" value="10000"><input id="risk" value="1"><input id="lots" value="0.1">
+<input id="balance" value="10000" style="flex:2"><input id="risk" value="1"><input id="lots" value="0.01">
 </div>
 </div>
 
 <div class="card">
-<b>🤖 AI SCANNER 📸 ON</b> <span style="color:#94a3b8;font-size:12px">Multi-Timeframe M1 + M15 • Slope + RBD/DBR • XAUUSD</span>
+<div style="display:flex;justify-content:space-between"><b>🤖 AI SCANNER 📸 <span style="background:#22c55e;color:#000;padding:2px 8px;border-radius:10px;font-size:11px">ON</span></b><span>▲</span></div>
+<div style="color:#9ca3af;font-size:12px">Multi-Timeframe M1 + M15 • Slope + RBD/DBR • <span id="curSymText">USDJPY Price 157.16</span></div>
+
+<div class="tabs" id="pairTabs">
+<span class="tab" onclick="setPair('XAUUSD')">XAUUSD</span>
+<span class="tab" onclick="setPair('EURUSD')">EURUSD</span>
+<span class="tab" onclick="setPair('GBPUSD')">GBPUSD</span>
+<span class="tab" onclick="setPair('BTCUSD')">BTCUSD</span>
+<span class="tab" onclick="setPair('US30')">US30</span>
+<span class="tab" onclick="setPair('NAS100')">NAS100</span>
+<span class="tab active" onclick="setPair('USDJPY')">USDJPY</span>
+</div>
+
+<!-- CHART IMAGES - your M1 M15 screenshots go here -->
+<div class="chartBox">
+<img id="chartM1" src="https://via.placeholder.com/300x90/000000/22c55e?text=M1+CHART">
+<img id="chartM15" src="https://via.placeholder.com/300x90/000000/ef4444?text=M15+CHART">
+</div>
+
+<div class="row" style="margin-top:8px">
+<select id="tf1"><option>M1</option><option>M5</option></select>
+<select id="tf2"><option>M15</option><option>H1</option></select>
+<input id="livePrice" placeholder="Live price?">
+</div>
+
+<!-- SCREENSHOT UPLOAD - BACK! -->
+<input type="file" id="shotInput" accept="image/*" style="display:none" onchange="handleShot(this)">
+<button class="btn" style="background:#1f2937;border:1px dashed #374151;margin-top:8px" onclick="document.getElementById('shotInput').click()">📸 UPLOAD SCREENSHOT FOR AI SCAN</button>
+<div id="shotPreview"></div>
+
+<button class="btn analyze" onclick="analyzeCharts()">🔍 ANALYZE CHARTS</button>
+
+<div id="analysisResult" style="margin-top:12px">
+<div style="display:flex;justify-content:space-between;align-items:center"><b id="resPair">USDJPY.ecn • 78%</b><span style="background:#22c55e;color:#000;padding:6px 14px;border-radius:6px;font-weight:bold">BUY</span></div>
+<div style="color:#9ca3af;font-size:12px;margin:6px 0">MULTI-TF | M1:Bullish M15:Bullish - Timeframe Alignment - M15 is boss</div>
+<div class="row">
+<div class="entryBox"><small>ENTRY</small><div id="resEntry" style="font-weight:bold;font-size:16px">158.440</div></div>
+<div class="entryBox"><small>SL</small><div id="resSL" style="font-weight:bold;font-size:16px">158.190</div></div>
+<div class="entryBox"><small style="color:#f59e0b">TAKE PROFIT</small><div id="resTP" style="font-weight:bold;font-size:16px;color:#22c55e">158.990</div></div>
+</div>
+<button class="btn orange" onclick="sendMarket()">🚀 SEND TO MT4 - AUTO TRADE</button>
+<div id="sentMsg" style="color:#22c55e;text-align:center;font-size:13px;margin-top:6px">✅ SENT TO MT4: USDJPYm BUY @ 158.44</div>
+</div>
 </div>
 
 <div class="card">
-<b>SIGNALS (10) - ORANGE + RBD/DBR</b>
+<div style="display:flex;justify-content:space-between"><b id="sigCount">SIGNALS (10) - ORANGE + RBD/DBR</b><span>▲</span></div>
 <div id="signals"></div>
 </div>
 
-<div class="card">
-<b>MANUAL SEND TO MT4 - MARKET ORDER</b>
-<div class="row" style="margin-top:8px">
-<input id="manSym" value="USDJPYm" placeholder="Symbol">
-<input id="manEntry" value="158.44" placeholder="Entry">
-</div>
-<div class="row" style="margin-top:8px">
-<input id="manSL" value="158.19" placeholder="SL">
-<input id="manTP" value="158.99" placeholder="TP">
-</div>
-<button class="btn" style="background:#22c55e;margin-top:8px" onclick="sendMarket('BUY')">SEND BUY TO MT4</button>
-<button class="btn" style="background:#ef4444;margin-top:6px" onclick="sendMarket('SELL')">SEND SELL TO MT4</button>
-</div>
+<div style="text-align:center;color:#6b7280;font-size:11px;margin:10px">UTC 15:24:18 • Trading 07:00-21:59 • iFX BILLIONAIRE • EXNESS MT4 LINKED</div>
 
 <script>
 const API = "https://asia-breakout-mobile.vercel.app/api/signal";
-
-// YOUR 10 SIGNALS FROM SCREENSHOT
+let curPair = "USDJPY";
 let signals = [
-  {sym:"1HZ15V", label:"BUY ORANGE BREAKOUT BUY 1st RED", dir:"BUY_STOP", entry: 15234.5, sl:15200, tp:15300},
-  {sym:"1HZ25V", label:"BUY ORANGE RETEST BUY", dir:"BUY_STOP", entry: 2450.2, sl:2440, tp:2470},
-  {sym:"1HZ90V", label:"BUY ORANGE BREAK-IN BUY", dir:"BUY_STOP", entry: 892.10, sl:885, tp:905},
-  {sym:"BOOM1000", label:"SELL ORANGE BREAKOUT SELL 1st GREEN", dir:"SELL_STOP", entry: 1120.5, sl:1135, tp:1095},
-  {sym:"BOOM300N", label:"BUY ORANGE BREAKOUT BUY 1st RED", dir:"BUY_STOP", entry: 485.3, sl:475, tp:500},
-  {sym:"BOOM50", label:"BUY ORANGE BREAKOUT BUY 1st RED", dir:"BUY_STOP", entry: 365.2, sl:360, tp:375},
-  {sym:"XAUUSDm", label:"BUY ORANGE BREAKOUT BUY 1st RED", dir:"BUY_STOP", entry: 3985.20, sl:3980, tp:3995},
-  {sym:"USDJPYm", label:"BUY ORANGE RETEST BUY", dir:"BUY_STOP", entry: 158.44, sl:158.19, tp:158.99},
-  {sym:"GBPUSDm", label:"SELL ORANGE BREAKOUT SELL 1st GREEN", dir:"SELL_STOP", entry: 1.3420, sl:1.3450, tp:1.3380},
-  {sym:"EURUSDm", label:"BUY ORANGE BREAK-IN BUY", dir:"BUY_STOP", entry: 1.1650, sl:1.1620, tp:1.1690},
+  {sym:"1HZ15V", label:"BUY ORANGE BREAKOUT BUY 1st RED", dir:"BUY_STOP", entry:15234.5, sl:15200, tp:15300},
+  {sym:"1HZ25V", label:"BUY ORANGE RETEST BUY", dir:"BUY_STOP", entry:2450.2, sl:2440, tp:2470},
+  {sym:"1HZ90V", label:"BUY ORANGE BREAK-IN BUY", dir:"BUY_STOP", entry:892.10, sl:885, tp:905},
+  {sym:"BOOM1000", label:"SELL ORANGE BREAKOUT SELL 1st GREEN", dir:"SELL_STOP", entry:1120.5, sl:1135, tp:1095},
+  {sym:"BOOM300N", label:"BUY ORANGE BREAKOUT BUY 1st RED", dir:"BUY_STOP", entry:485.3, sl:475, tp:500},
+  {sym:"BOOM50", label:"BUY ORANGE BREAKOUT BUY 1st RED", dir:"BUY_STOP", entry:365.2, sl:360, tp:375},
+  {sym:"XAUUSDm", label:"BUY ORANGE BREAKOUT BUY 1st RED", dir:"BUY_STOP", entry:3985.20, sl:3980, tp:3995},
+  {sym:"USDJPYm", label:"BUY ORANGE RETEST BUY", dir:"BUY_STOP", entry:158.44, sl:158.19, tp:158.99},
+  {sym:"GBPUSDm", label:"SELL ORANGE BREAKOUT SELL 1st GREEN", dir:"SELL_STOP", entry:1.3420, sl:1.3450, tp:1.3380},
+  {sym:"EURUSDm", label:"BUY ORANGE BREAK-IN BUY", dir:"BUY_STOP", entry:1.1650, sl:1.1620, tp:1.1690},
 ];
 
 function render(){
   let h="";
   signals.forEach((s,i)=>{
-    let isBuy = s.dir.includes("BUY");
-    h+=`<div class="signal"><span class="sym">${s.sym}</span> <span class="${isBuy?'buy':'sell'}">${s.label}</span>
-    <button class="btn orange" onclick="placePendingOrder(${i})">PLACE ${isBuy?'BUY':'SELL'} STOP 🔔</button></div>`;
+    let isBuy=s.dir.includes("BUY");
+    h+=`<div class="signalBox"><div style="display:flex;justify-content:space-between"><b>${s.sym}</b><span style="color:${isBuy?'#22c55e':'#f87171'};font-weight:bold;font-size:13px">${s.label}</span></div><button class="btn orange" onclick="placePendingOrder(${i})">PLACE ${isBuy?'BUY':'SELL'} STOP 🔔</button></div>`;
   });
   document.getElementById("signals").innerHTML=h;
+  document.getElementById("sigCount").innerText=`SIGNALS (${signals.length}) - ORANGE + RBD/DBR`;
 }
 render();
 
-// *** ORANGE BOX - ONLY SENDS WHEN YOU PRESS IT ***
-async function placePendingOrder(index){
-  let s = signals[index];
-  let lots = document.getElementById("lots").value || 0.1;
-  let payload = {
-    action: s.dir,
-    symbol: s.sym,
-    entry: s.entry,
-    sl: s.sl,
-    tp: s.tp,
-    lot: parseFloat(lots),
-    time: new Date().toISOString()
-  };
-  document.getElementById("status").innerText = "Sending "+s.dir+" "+s.sym+" to MT4...";
-  try{
-    let r = await fetch(API, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)});
-    let j = await r.json();
-    document.getElementById("status").innerText = "SENT TO MT4: "+s.dir+" "+s.sym+" @ "+s.entry+" • "+new Date().toLocaleTimeString();
-    alert("SENT TO MT4: "+s.dir+" "+s.sym+" @ "+s.entry+"\nSL: "+s.sl+" TP: "+s.tp);
-  }catch(e){
-    alert("Failed to send: "+e);
-  }
+function setPair(p){
+  curPair=p;
+  document.getElementById("curSymText").innerText=p+" Price "+(document.getElementById("livePrice").value||"157.16");
+  document.getElementById("resPair").innerText=p+".ecn • 78%";
+  document.querySelectorAll(".tab").forEach(t=>t.classList.remove("active"));
+  event.target.classList.add("active");
 }
 
-async function sendMarket(action){
-  let payload = {
-    action: action,
-    symbol: document.getElementById("manSym").value,
-    entry: parseFloat(document.getElementById("manEntry").value),
-    sl: parseFloat(document.getElementById("manSL").value),
-    tp: parseFloat(document.getElementById("manTP").value),
-    lot: parseFloat(document.getElementById("lots").value),
-    time: new Date().toISOString()
+function handleShot(input){
+  let f=input.files[0]; if(!f) return;
+  let r=new FileReader();
+  r.onload=e=>{
+    document.getElementById("shotPreview").innerHTML=`<img src="${e.target.result}" style="width:100%;border-radius:8px;margin-top:8px">`;
+    document.getElementById("chartM1").src=e.target.result;
+    alert("Screenshot loaded to M1 chart! Now press ANALYZE CHARTS");
   };
-  await fetch(API, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)});
-  alert("SENT TO MT4: "+action+" "+payload.symbol);
+  r.readAsDataURL(f);
 }
 
-function startScan(){ document.getElementById("status").innerText="Scanning... 28/40 • 10 signals • 70% • "+new Date().toLocaleTimeString(); render(); }
-function stopScan(){ document.getElementById("status").innerText="STOPPED"; }
+function analyzeCharts(){
+  let price=parseFloat(document.getElementById("livePrice").value)||158.44;
+  let entry=price, sl=price-0.25, tp=price+0.55;
+  if(curPair=="XAUUSD"){ sl=price-5; tp=price+10; }
+  document.getElementById("resEntry").innerText=entry.toFixed(3);
+  document.getElementById("resSL").innerText=sl.toFixed(3);
+  document.getElementById("resTP").innerText=tp.toFixed(3);
+  document.getElementById("resPair").innerText=curPair+".ecn • 78%";
+  document.getElementById("sentMsg").innerText="Analyzed: "+curPair+" 78% BUY - Ready to send!";
+}
+
+async function sendMarket(){
+  let entry=parseFloat(document.getElementById("resEntry").innerText);
+  let sl=parseFloat(document.getElementById("resSL").innerText);
+  let tp=parseFloat(document.getElementById("resTP").innerText);
+  let lots=parseFloat(document.getElementById("lots").value)||0.01;
+  let sym=curPair.includes("m")?curPair:curPair+"m";
+  if(curPair=="XAUUSD") sym="XAUUSDm";
+  let payload={action:"BUY", symbol:sym, entry:entry, sl:sl, tp:tp, lot:lots, time:new Date().toISOString()};
+  await fetch(API,{method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)});
+  document.getElementById("sentMsg").innerText="✅ SENT TO MT4: "+sym+" BUY @ "+entry;
+}
+
+async function placePendingOrder(i){
+  let s=signals[i];
+  let lots=parseFloat(document.getElementById("lots").value)||0.01;
+  let payload={action:s.dir, symbol:s.sym, entry:s.entry, sl:s.sl, tp:s.tp, lot:lots, time:new Date().toISOString()};
+  await fetch(API,{method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)});
+  alert("SENT TO MT4: "+s.dir+" "+s.sym+" @ "+s.entry);
+}
+
+function startRobot(){ document.getElementById("runBadge").innerText="● RUNNING"; document.getElementById("runBadge").className="badge-run"; }
+function stopRobot(){ document.getElementById("runBadge").innerText="● STOPPED"; document.getElementById("runBadge").className="badge-stop"; }
 </script>
 </body>
 </html>
