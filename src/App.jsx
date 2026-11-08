@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-// iFX BILLIONAIRE EA + AI SCANNER V11.1 AUTO-DETECT
+// iFX BILLIONAIRE EA + AI SCANNER V11.2 - ORANGE BOX CONFIRMED A,B,C
 function sendIFXAlert(title, body) {
   if (navigator.vibrate) navigator.vibrate([300,100,300,100,300]);
   try { const audio = new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg'); audio.play().catch(()=>{}); } catch(e){}
@@ -43,6 +43,8 @@ function isTradingTime(e){ const h=serverHour(e); return h>=TRADING_START_HOUR&&
 function calculateRSI(candles,idx,period=3){ if(!candles||idx<period) return null; let g=0,l=0; for(let i=1;i<=period;i++){ const ch=candles[i].close-candles[i-1].close; if(ch>0)g+=ch; if(ch<0)l+=Math.abs(ch); } let ag=g/period,al=l/period; for(let i=period+1;i<=idx;i++){ const ch=candles[i].close-candles[i-1].close; ag=(ag*(period-1)+Math.max(ch,0))/period; al=(al*(period-1)+Math.max(-ch,0))/period; } if(al===0&&ag===0) return 50; if(al===0) return 100; if(ag===0) return 0; const rs=ag/al; return 100-100/(1+rs); }
 function buildOrangeBox(candles,day){ const f=candles.filter(c=>serverDay(c.epoch)===day&&serverHour(c.epoch)===0&&[0,15,30,45].includes(serverMinute(c.epoch))).sort((a,b)=>a.epoch-b.epoch).slice(0,4); if(f.length!==4) return null; const ok=f.every((c,i)=>i===0||c.epoch-f[i-1].epoch===TIMEFRAME); if(!ok) return null; const high=Math.max(...f.map(c=>c.high)); const low=Math.min(...f.map(c=>c.low)); if(!(high>low)) return null; return {type:"ORANGE",day,high,low,size:high-low,startEpoch:f[0].epoch,createdEpoch:f[0].epoch,boxId:makeBoxId("ORANGE",day,high,low)}; }
 function makeSignal({direction,strategy,candle,orangeBox,pip,entryLevel,reason,rsi,pendingType}){ return {direction,strategy,boxType:"ORANGE",touchType:strategy,signalId:`${orangeBox.boxId}|${strategy}|${candle.epoch}`,boxId:orangeBox.boxId,orangeBoxId:orangeBox.boxId,boxHigh:orangeBox.high,boxLow:orangeBox.low,boxSize:orangeBox.size,entryLevel,pendingType,pip,candleTime:candle.epoch,candleColor:candleColor(candle),rsi,reason}; }
+
+// ===== ORANGE BOX - UPDATED TO CONFIRMED STRATEGY A,B,C =====
 function findClosedEntrySignal(candles,symbol,category,marketPip){
   const empty={direction:"NONE",reason:"Waiting",boxCount:0};
   if(!candles||candles.length<30) return {...empty,reason:"Not enough M15"};
@@ -52,17 +54,69 @@ function findClosedEntrySignal(candles,symbol,category,marketPip){
   const boxInfo={boxCount:1,boxHigh:orangeBox.high,boxLow:orangeBox.low,boxSize:orangeBox.size,boxId:orangeBox.boxId,boxDay:orangeBox.day,rsi};
   if(candle.epoch<orangeBox.createdEpoch+TIMEFRAME*4) return {...empty,...boxInfo,reason:"Box built, waiting setup"};
   if(!isTradingTime(candle.epoch)) return {...empty,...boxInfo,reason:"Paused 07-22 UTC"};
-  const color=candleColor(candle); const openAbove=candle.open>orangeBox.high; const openBelow=candle.open<orangeBox.low; const closeAbove=candle.close>orangeBox.high; const closeBelow=candle.close<orangeBox.low; const closeInside=candle.close>=orangeBox.low&&candle.close<=orangeBox.high;
-  if(openAbove&&color==="RED"&&candle.low>=orangeBox.low&&candle.low<=orangeBox.high&&closeAbove) return {...makeSignal({direction:"BUY",strategy:"ORANGE RETEST BUY",candle,orangeBox,pip,entryLevel:candle.high,pendingType:"BUY STOP",rsi,reason:"Red opened above, wicked into box and closed above."}),...boxInfo};
-  if(openBelow&&color==="GREEN"&&candle.high>=orangeBox.low&&candle.high<=orangeBox.high&&closeBelow) return {...makeSignal({direction:"SELL",strategy:"ORANGE RETEST SELL",candle,orangeBox,pip,entryLevel:candle.low,pendingType:"SELL STOP",rsi,reason:"Green opened below, wicked into box and closed below."}),...boxInfo};
-  if(openAbove&&color==="RED"&&closeInside) return {...makeSignal({direction:"SELL",strategy:"ORANGE BREAK-IN SELL",candle,orangeBox,pip,entryLevel:orangeBox.low-pip,pendingType:"SELL STOP",rsi,reason:"Red opened above and closed inside."}),...boxInfo};
-  if(openBelow&&color==="GREEN"&&closeInside) return {...makeSignal({direction:"BUY",strategy:"ORANGE BREAK-IN BUY",candle,orangeBox,pip,entryLevel:orangeBox.high+pip,pendingType:"BUY STOP",rsi,reason:"Green opened below and closed inside."}),...boxInfo};
-  for(let shift=2;shift<=10;shift++){ if(li-shift<0) break; const bC=candles[li-shift]; const bOpenInside=bC.open>=orangeBox.low&&bC.open<=orangeBox.high; const bCloseAbove=bC.close>orangeBox.high; const bCloseBelow=bC.close<orangeBox.low; if(!bOpenInside) continue;
-    if(bCloseAbove){ let redAlready=false; for(let k=shift-1;k>1;k--){ if(candleColor(candles[li-k])==="RED"){redAlready=true;break;} } if(redAlready) break; if(color==="RED") return {...makeSignal({direction:"BUY",strategy:"BREAKOUT BUY 1ST RED",candle,orangeBox,pip,entryLevel:candle.high,pendingType:"BUY STOP",rsi,reason:"Breakout upward. First RED."}),...boxInfo}; break; }
-    if(bCloseBelow){ let greenAlready=false; for(let k=shift-1;k>1;k--){ if(candleColor(candles[li-k])==="GREEN"){greenAlready=true;break;} } if(greenAlready) break; if(color==="GREEN") return {...makeSignal({direction:"SELL",strategy:"BREAKOUT SELL 1ST GREEN",candle,orangeBox,pip,entryLevel:candle.low,pendingType:"SELL STOP",rsi,reason:"Breakout downward. First GREEN."}),...boxInfo}; break; }
+  const color=candleColor(candle); 
+  const openAbove=candle.open>orangeBox.high; 
+  const openBelow=candle.open<orangeBox.low; 
+  const closeAbove=candle.close>orangeBox.high; 
+  const closeBelow=candle.close<orangeBox.low; 
+  const closeInside=candle.close>=orangeBox.low&&candle.close<=orangeBox.high;
+
+  // A) RETEST - YOUR NEW RULE - EXACT
+  // BUY: Opens ABOVE, wicks DOWN into box, closes ABOVE -> BUY STOP on HIGH of THAT candle
+  if(openAbove && candle.low<=orangeBox.high && candle.low>=orangeBox.low && closeAbove) {
+    return {...makeSignal({direction:"BUY",strategy:"ORANGE RETEST BUY",candle,orangeBox,pip,entryLevel:candle.high,pendingType:"BUY STOP",rsi,reason:"Retest: Opened above, wicked into box, closed above. Buy Stop on retest candle high."}),...boxInfo};
   }
+  // SELL: Opens BELOW, wicks UP into box, closes BELOW -> SELL STOP on LOW of THAT candle
+  if(openBelow && candle.high>=orangeBox.low && candle.high<=orangeBox.high && closeBelow) {
+    return {...makeSignal({direction:"SELL",strategy:"ORANGE RETEST SELL",candle,orangeBox,pip,entryLevel:candle.low,pendingType:"SELL STOP",rsi,reason:"Retest: Opened below, wicked into box, closed below. Sell Stop on retest candle low."}),...boxInfo};
+  }
+
+  // B) BREAK-IN - KEEP SAME
+  // SELL: Opens ABOVE and closes INSIDE -> SELL STOP at Low - 1 pip (candle low)
+  if(openAbove && closeInside) return {...makeSignal({direction:"SELL",strategy:"ORANGE BREAK-IN SELL",candle,orangeBox,pip,entryLevel:candle.low-pip,pendingType:"SELL STOP",rsi,reason:"Break-In: Opened above and closed inside."}),...boxInfo};
+  // BUY: Opens BELOW and closes INSIDE -> BUY STOP at High + 1 pip (candle high)
+  if(openBelow && closeInside) return {...makeSignal({direction:"BUY",strategy:"ORANGE BREAK-IN BUY",candle,orangeBox,pip,entryLevel:candle.high+pip,pendingType:"BUY STOP",rsi,reason:"Break-In: Opened below and closed inside."}),...boxInfo};
+
+  // C) BREAKOUT + FIRST OPPOSITE CANDLE - UPDATED EXACT
+  // Look back up to 10 candles for breakout, ignore box after breakout
+  for(let bIdx = li-1; bIdx >= Math.max(0, li-10); bIdx--){
+    const bC = candles[bIdx];
+    const bOpenInside = bC.open>=orangeBox.low && bC.open<=orangeBox.high;
+    if(!bOpenInside) continue;
+    const bCloseAbove = bC.close>orangeBox.high;
+    const bCloseBelow = bC.close<orangeBox.low;
+    if(!bCloseAbove && !bCloseBelow) continue;
+
+    // Found breakout - check if there's already an opposite trigger between breakout and current
+    if(bCloseAbove){
+      // BUY breakout: need FIRST RED after breakout, no RED in between
+      let redAlready = false;
+      for(let k=bIdx+1;k<li;k++){
+        if(candleColor(candles[k])==="RED"){ redAlready=true; break; }
+      }
+      if(redAlready) break; // already triggered, don't re-trigger
+      if(color==="RED"){
+        return {...makeSignal({direction:"BUY",strategy:"BREAKOUT BUY 1ST RED",candle,orangeBox,pip,entryLevel:candle.high,pendingType:"BUY STOP",rsi,reason:"Breakout up. First RED after breakout - Buy Stop on its high, even if far from box."}),...boxInfo};
+      }
+      break; // breakout found but current is not RED, wait for RED
+    }
+    if(bCloseBelow){
+      // SELL breakout: need FIRST GREEN after breakout, no GREEN in between
+      let greenAlready = false;
+      for(let k=bIdx+1;k<li;k++){
+        if(candleColor(candles[k])==="GREEN"){ greenAlready=true; break; }
+      }
+      if(greenAlready) break;
+      if(color==="GREEN"){
+        return {...makeSignal({direction:"SELL",strategy:"BREAKOUT SELL 1ST GREEN",candle,orangeBox,pip,entryLevel:candle.low,pendingType:"SELL STOP",rsi,reason:"Breakout down. First GREEN after breakout - Sell Stop on its low, even if far from box."}),...boxInfo};
+      }
+      break;
+    }
+  }
+
   return {...empty,...boxInfo,reason:"No valid closed M15 entry. Waiting."};
 }
+
 function getLiveScannerState({candles,liveCandle,price,orangeBox}){ if(!orangeBox||!Number.isFinite(price)) return {state:"WAITING FOR ORANGE BOX",proximity:Infinity,touching:false,breaking:false}; const current=liveCandle||candles[candles.length-1]; if(!current) return {state:"WAITING",proximity:Infinity,touching:false,breaking:false}; const touching=current.low<=orangeBox.high&&current.high>=orangeBox.low; if(touching){ const rsiCandles=liveCandle?[...candles,liveCandle]:candles; const rsi=calculateRSI(rsiCandles,rsiCandles.length-1,3); return {state:"TOUCHING ORANGE BOX",proximity:0,touching:true,breaking:false,rsi}; } const openInside=current.open>=orangeBox.low&&current.open<=orangeBox.high; const closeOutside=current.close>orangeBox.high||current.close<orangeBox.low; const breaking=openInside&&closeOutside; if(breaking) return {state:"BREAKING ORANGE BOX",proximity:0,touching:false,breaking:true}; const nearest=Math.min(Math.abs(price-orangeBox.high),Math.abs(price-orangeBox.low)); return {state:"NOT TOUCHING",proximity:nearest,touching:false,breaking:false}; }
 function getSpreadInfo(tick,price,symbol="",category="Other",marketPip=null){ const hasBid=tick?.bid!==null&&tick?.bid!==undefined&&tick?.bid!==""; const hasAsk=tick?.ask!==null&&tick?.ask!==undefined&&tick?.ask!==""; const bid=hasBid?Number(tick.bid):NaN; const ask=hasAsk?Number(tick.ask):NaN; if(Number.isFinite(bid)&&Number.isFinite(ask)&&bid>0&&ask>0&&ask>=bid){ const spread=ask-bid; const point=pointSize(price||bid); return {known:true,estimated:false,source:"LIVE BID/ASK",bid,ask,spread,points:spread/point}; } const p=Number(price); if(!Number.isFinite(p)||p<=0) return {known:false,estimated:true,source:"ESTIMATED",spread:0,points:0}; const point=pointSize(p); const pip=pipSize(symbol,category,[{close:p}],marketPip); let estimatedSpread; switch(category){ case "Forex": estimatedSpread=pip*1.5; break; case "Metals": estimatedSpread=pip*3; break; case "Crypto": estimatedSpread=Math.max(point*2,p*0.0005); break; default: estimatedSpread=point*2; break; } return {known:true,estimated:true,source:"ESTIMATED",bid:null,ask:null,spread:estimatedSpread,points:estimatedSpread/point}; }
 function alreadyExecuted(trades,signal,symbol){ return trades.some(t=>t.symbol===symbol&&t.signalId===signal.signalId); }
@@ -99,13 +153,10 @@ function analyzeImagePixels(imgElement){
 // AUTO-DETECT PAIR + TIMEFRAME FROM SCREENSHOT TEXT
 async function autoDetectFromImage(imageUrl, fileName=""){
   const searchText=(fileName+" ").toUpperCase();
-  // 1. Try filename first - fast
   for(const sym of PRIORITY_SYMBOLS){
     if(searchText.includes(sym)) return {pair:sym, source:"filename"};
   }
-  // 2. Try OCR via Tesseract if available
   try{
-    // Load tesseract dynamically only when needed
     if(!window.Tesseract){
       await new Promise((res,rej)=>{
         const s=document.createElement('script'); s.src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"; s.onload=res; s.onerror=rej; document.head.appendChild(s);
@@ -114,10 +165,8 @@ async function autoDetectFromImage(imageUrl, fileName=""){
     if(window.Tesseract){
       const result=await window.Tesseract.recognize(imageUrl,'eng',{logger:()=>{}});
       const txt=(result.data.text||"").toUpperCase().replace(/[^A-Z0-9\s\.\/]/g," ");
-      // Look for pairs
       for(const sym of PRIORITY_SYMBOLS){
         if(txt.includes(sym)) {
-          // Also detect TF
           let tf="M15";
           if(txt.includes("M1")&&!txt.includes("M15")) tf="M1";
           else if(txt.includes("M5")) tf="M5";
@@ -127,7 +176,6 @@ async function autoDetectFromImage(imageUrl, fileName=""){
           return {pair:sym, tf, source:"OCR", raw:txt.slice(0,120)};
         }
       }
-      // Detect XAU special cases like "GOLD", "XAUUSD.ecn"
       if(txt.includes("GOLD")||txt.includes("XAU")) return {pair:"XAUUSD", source:"OCR-GOLD"};
       if(txt.includes("VOLATILITY 75")||txt.includes("V75")) return {pair:"V75", source:"OCR"};
       if(txt.includes("BTC")) return {pair:"BTCUSD", source:"OCR"};
@@ -152,7 +200,6 @@ export default function App(){
   const [lastScan,setLastScan]=useState("Not scanned");
   const [clock,setClock]=useState(Math.floor(Date.now()/1000));
 
-  // AI SCANNER STATE
   const [scanImg1,setScanImg1]=useState(null); const [scanImg2,setScanImg2]=useState(null);
   const [scanPair,setScanPair]=useState("AUTO-DETECT"); const [detectedPair,setDetectedPair]=useState(""); const [autoDetectOn,setAutoDetectOn]=useState(true);
   const [scanTF1,setScanTF1]=useState("M1"); const [scanTF2,setScanTF2]=useState("M15");
@@ -177,7 +224,6 @@ export default function App(){
   const stopRobot=()=>{ runningRef.current=false; setRunning(false); rescanRequestedRef.current=false; if(reconnectTimerRef.current){clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current=null;} if(scanTimerRef.current){clearInterval(scanTimerRef.current); scanTimerRef.current=null;} const now=new Date().toLocaleTimeString(); const closedNow=[]; for(const o of ordersRef.current){ if(o.status!=="OPEN DEMO TRADE"&&o.status!=="PENDING DEMO TRADE") continue; const price=latestPricesRef.current[o.symbol]??o.currentPrice??o.entry; closedNow.push({...o,status:"CLOSED",exitPrice:price,exitReason:"ROBOT STOPPED",realisedPnl:o.status==="PENDING DEMO TRADE"?0:calculateDemoPnl(o,price),floatingPnl:0,closedAt:now}); } if(closedNow.length) updateClosedTrades(p=>[...closedNow,...p]); updateOrders([]); const ws=socketRef.current; if(ws&&ws.readyState===WebSocket.OPEN){ subscriptionsRef.current.forEach(sid=>{ if(sid&&sid!=="SUBSCRIBED"){ try{ws.send(JSON.stringify({forget:sid,req_id:++requestRef.current}));}catch{} } }); } subscriptionsRef.current.clear(); subscribingRef.current.clear(); activationLocksRef.current.clear(); setMessage(`STOPPED. ${closedNow.length} simulated trades closed.`); };
   const activateSignal=async item=>{ const signal=signals[item.symbol]; if(!signal||signal.direction==="NONE") return; const now=Math.floor(Date.now()/1000); if(!isTradingTime(now)){ setMessage("Trading paused: UTC 07:00-21:59"); return; } const lockKey=`${item.symbol}|${signal.signalId}`; if(activationLocksRef.current.has(lockKey)) return; activationLocksRef.current.add(lockKey); try{ const prev=[...ordersRef.current,...closedTradesRef.current]; const today=serverDay(now); const daily=prev.filter(t=>t.openedDay===today); const openCount=ordersRef.current.filter(t=>t.status==="OPEN DEMO TRADE"||t.status==="PENDING DEMO TRADE").length; if(daily.length>=MAX_DAILY_TRADES){ setMessage(`Daily limit ${MAX_DAILY_TRADES}`); return; } if(openCount>=MAX_OPEN_TRADES){ setMessage(`Open limit ${MAX_OPEN_TRADES}`); return; } if(alreadyExecuted(prev,signal,item.symbol)){ setMessage("This signal has already been traded"); return; } const sub=await subscribeMarket(item.symbol); if(!sub){ setMessage("Unable to subscribe to live market"); return; } const tick=latestTicksRef.current[item.symbol]; const curPrice=Number.isFinite(tick?.bid)?tick.bid:tick?.quote; if(!Number.isFinite(curPrice)||curPrice<=0){ setMessage("Waiting for a live market price"); return; } const spreadInfo=getSpreadInfo(tick,curPrice,item.symbol,item.category,item.pip); if(!spreadInfo.known){ setMessage("Unable to calculate spread."); return; } if(!spreadInfo.estimated&&spreadInfo.points>MAX_SPREAD_POINTS){ setMessage("Live spread too high"); return; } const order=makeDemoOrder(signal,item.symbol,item.category,item.display_name,balance,riskPct,sizingMode,fixedLots,spreadInfo,tick); updateOrders(p=>[order,...p]); setLastActivated(`${signal.direction} · ${signal.strategy} · ${order.pendingType}`); setMessage(`${item.display_name}: ${order.pendingType} ${signal.direction} at ${fmt(order.entry,5)} · SL ${fmt(order.sl,5)} · TP ${fmt(order.tp,5)}`); sendIFXAlert('iFX BILLIONAIRE - PENDING PLACED', `${item.display_name} ${order.pendingType} ${signal.direction} at ${fmt(order.entry,5)}`); }catch(e){ setMessage(`${item.symbol}: ${e.message}`); }finally{ activationLocksRef.current.delete(lockKey); } };
 
-  // ===== AI SCANNER + AUTO-DETECT =====
   const handleFile=async(e,setter,isFirst)=>{
     const f=e.target.files?.[0]; if(!f) return; const url=URL.createObjectURL(f); setter({file:f,url,name:f.name}); setScanResult(null);
     if(autoDetectOn){
@@ -195,7 +241,6 @@ export default function App(){
   };
   const runAIScan=async()=>{
     if(!scanImg1 && !scanImg2){ alert("Upload at least 1 chart screenshot first"); return; }
-    // Use detected pair if auto, else manual
     let finalPair=detectedPair||scanPair;
     if(finalPair==="AUTO-DETECT"||!finalPair) finalPair="XAUUSD";
     finalPair=finalPair.toUpperCase().replace(".ECN","");
