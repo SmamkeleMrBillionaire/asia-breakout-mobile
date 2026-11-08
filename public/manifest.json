@@ -1,8 +1,9 @@
 {
   "name": "iFX BILLIONAIRE EA",
   "short_name": "iFX BILLIONAIRE",
-  "description": "iFX BILLIONAIRE EA - Orange Box + AI Scanner",
+  "description": "iFX BILLIONAIRE EA - M15 Orange Box + AI Scanner",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#0a0f1a",
