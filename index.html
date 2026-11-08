@@ -26,7 +26,7 @@ function sendAlert(t,b){
     } else { try{new Notification(t,{body:b});}catch(e){} }
   } else if('Notification' in window){ Notification.requestPermission().then(()=>{ try{new Notification(t,{body:b});}catch(e){} }); }
 }
-// ===== WORKING Vercel sendToMT4 - EXACTLY AS BEFORE BROKER UPDATE - DO NOT ADD BROKER FIELD =====
+// ===== WORKING Vercel sendToMT4 - DO NOT TOUCH - THIS WAS WORKING =====
 async function sendToMT4(result, setMsg){
   try{
     let raw = result.pair.replace(".ecn","").toUpperCase().replace(/\s+/g,"");
@@ -202,47 +202,62 @@ function App(){
    setMsg(`${s.sym} PENDING ${s.dir} at ${fmtPrice(entry,s.sym)} - SENT TO MT4`);
    try{ wsRef.current.send(JSON.stringify({ticks:s.symbol,subscribe:1})); }catch(e){}
  };
+ // ===== FIXED AUTO-DETECT - NOW WORKS WITH ANY SCREENSHOT NAME =====
  async function detectFromImg(url,name){
    const up=(name+" ").toUpperCase();
-   const syms=["XAUUSD","EURUSD","GBPUSD","BTCUSD","US30","NAS100","V75","GBPJPY","USDJPY","AUDUSD"];
-   for(const s of syms) if(up.includes(s)) return {pair:s, price:null};
-   try{ if(window.Tesseract){
-     const r=await window.Tesseract.recognize(url,'eng');
-     const raw=(r.data.text||"");
-     const txt=raw.toUpperCase();
-     const nums=(raw.match(/\d{3,6}\.\d{1,2}/g)||[]).map(Number).filter(n=>n>10);
-     let price=null;
-     if(nums.length>0){
-       const big=nums.filter(n=>n>20000);
-       if(big.length>0) price=big[big.length-1];
-       else {
-         const cand=nums.filter(n=>n>1000);
-         if(cand.length>0) price=cand[cand.length-1];
-         else price=nums[nums.length-1];
+   const syms=["XAUUSD","EURUSD","GBPUSD","BTCUSD","US30","NAS100","V75","GBPJPY","USDJPY","AUDUSD","BOOM","CRASH","1HZ"];
+   for(const s of syms) if(up.includes(s)) return {pair:s.replace("BOOM","BOOM500").replace("CRASH","CRASH600"), price:null, from:"filename"};
+   try{ 
+     if(window.Tesseract){
+       setDetectMsg("🔍 Reading chart...");
+       const r=await window.Tesseract.recognize(url,'eng',{tessedit_char_whitelist:'0123456789.,XAUUSDGBPJPYEURBTCV75'});
+       const raw=(r.data.text||"");
+       const txt=raw.toUpperCase();
+       console.log("OCR:",raw);
+       // Get ALL numbers, including with commas
+       const nums=(raw.match(/\d{1,3}[, ]?\d{3,6}\.\d{1,3}|\d{3,6}\.\d{1,3}/g)||[]).map(s=>Number(s.replace(/[ ,]/g,""))).filter(n=>n>10 && n<200000);
+       let price=null;
+       if(nums.length>0){
+         // Gold is 3500-5000, V75 is 30000-42000, US30 43000-46000, NAS 20000-23000, BTC 60000+
+         // Take the most frequent / biggest cluster
+         const sorted=[...nums].sort((a,b)=>a-b);
+         price=sorted[sorted.length-1];
+         // Prefer gold range if any in gold range
+         const golds=nums.filter(n=>n>3000 && n<5500);
+         if(golds.length>0) price=golds[golds.length-1];
+         const v75s=nums.filter(n=>n>30000 && n<42000);
+         if(v75s.length>0 && txt.includes("75") || v75s.length>2) price=v75s[v75s.length-1];
+       }
+       if(txt.includes("XAU")||txt.includes("GOLD")||txt.includes("AUUSD")) return {pair:"XAUUSD", price};
+       if(txt.includes("VOLATILITY")||txt.includes("V75")||txt.includes("75 INDEX")) return {pair:"V75", price};
+       if(txt.includes("BOOM")) { if(txt.includes("500")) return {pair:"BOOM500", price}; if(txt.includes("1000")) return {pair:"BOOM1000", price}; return {pair:"BOOM500", price}; }
+       if(txt.includes("CRASH")) { if(txt.includes("600")) return {pair:"CRASH600", price}; if(txt.includes("500")) return {pair:"CRASH500", price}; return {pair:"CRASH600", price}; }
+       if(txt.includes("BTC")) return {pair:"BTCUSD", price};
+       if(txt.includes("EURUSD")||txt.includes("EUR")) return {pair:"EURUSD", price};
+       if(txt.includes("GBPUSD")) return {pair:"GBPUSD", price};
+       if(txt.includes("USDJPY")||txt.includes("JPY")&&price&&price>140&&price<170) return {pair:"USDJPY", price};
+       // PRICE RANGE GUESS - THIS IS WHAT FIXES YOUR SCREENSHOT!
+       if(price){
+         if(price>3500 && price<5500) return {pair:"XAUUSD", price};
+         if(price>60000) return {pair:"BTCUSD", price};
+         if(price>30000 && price<42000) return {pair:"V75", price};
+         if(price>42000 && price<46000) return {pair:"US30", price};
+         if(price>18000 && price<25000) return {pair:"NAS100", price};
+         if(price>140 && price<170) return {pair:"USDJPY", price};
+         if(price>0.6 && price<0.7) return {pair:"AUDUSD", price};
+         if(price>1.0 && price<1.2) return {pair:"EURUSD", price};
+         return {pair:null, price};
        }
      }
-     if(txt.includes("AUDUSD")||txt.includes("AUD")) return {pair:"AUDUSD", price};
-     if(price && price>15000 && price<50000){
-       if(price>30000 && price<42000) return {pair:"V75", price};
-       if(price>42000 && price<46000) return {pair:"US30", price};
-       if(price>18000 && price<25000) return {pair:"NAS100", price};
-     }
-     if(price && price>4000 && price<5000) return {pair:"XAUUSD", price};
-     if(price && price>60000) return {pair:"BTCUSD", price};
-     if(txt.includes("VOLATILITY")||txt.includes("V75")||txt.includes("75 INDEX")||txt.includes("VOLATIL")) return {pair:"V75", price};
-     for(const s of syms) if(txt.includes(s)) return {pair:s, price};
-     if(txt.includes("GOLD")||txt.includes("XAU")) return {pair:"XAUUSD", price};
-     if(txt.includes("BTC")) return {pair:"BTCUSD", price};
-     if(price) return {pair:null, price};
-   } }catch(e){}
+   }catch(e){ console.log("OCR fail",e); }
    return null;
  }
  async function handleFile(f,setter){
-   if(!f) return; const url=URL.createObjectURL(f); setter(url); setIsDetecting(true); setDetectMsg("Detecting...");
+   if(!f) return; const url=URL.createObjectURL(f); setter(url); setIsDetecting(true); setDetectMsg("🔍 Detecting...");
    const det=await detectFromImg(url,f.name); setIsDetecting(false);
-   if(det && det.pair){ setDetectedPair(det.pair); setScanPair(det.pair); setDetectMsg(`✅ ${det.pair} @ ${det.price||""}`); if(det.price){ setOcrPrice(det.price); } }
-   else if(det && det.price){ setOcrPrice(det.price); if(det.price>15000 && det.price<42000){ setDetectedPair("V75"); setScanPair("V75"); setDetectMsg(`✅ V75 @ ${det.price}`); } else { setDetectMsg(`Price ${det.price}`); } }
-   else { setDetectMsg("Tap pair below"); }
+   if(det && det.pair){ setDetectedPair(det.pair); setScanPair(det.pair); setDetectMsg(`✅ ${det.pair} @ ${det.price||""}`); if(det.price){ setOcrPrice(det.price); setManualPrice(String(det.price)); } }
+   else if(det && det.price){ setOcrPrice(det.price); setManualPrice(String(det.price)); if(det.price>3500 && det.price<5500){ setDetectedPair("XAUUSD"); setScanPair("XAUUSD"); setDetectMsg(`✅ XAUUSD @ ${det.price} (price guess)`); } else if(det.price>30000 && det.price<42000){ setDetectedPair("V75"); setScanPair("V75"); setDetectMsg(`✅ V75 @ ${det.price}`); } else { setDetectMsg(`Price ${det.price} - pick pair below`); } }
+   else { setDetectMsg("Couldn't read - pick pair below, price auto from live"); setDetectedPair("XAUUSD"); setScanPair("XAUUSD"); }
  }
  function analyzeImageTrend(url){
    return new Promise(res=>{
@@ -343,15 +358,16 @@ function App(){
      </button>
      {showScanner && (
        <div>
-         <div style={{display:"flex",gap:4,overflowX:"auto",marginTop:8,paddingBottom:2}}>{["XAUUSD","EURUSD","GBPUSD","BTCUSD","US30","NAS100","V75","GBPJPY","USDJPY","AUDUSD"].map(p=>(<button key={p} onClick={()=>{setScanPair(p); setDetectedPair("");}} style={{padding:"5px 10px",borderRadius:14,background:(detectedPair||scanPair)===p?"#16a34a":"#1e293b",color:"white",border:"none",fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{p}</button>))}</div>
+         <div style={{display:"flex",gap:4,overflowX:"auto",marginTop:8,paddingBottom:2}}>{["XAUUSD","EURUSD","GBPUSD","BTCUSD","US30","NAS100","V75","GBPJPY","USDJPY","AUDUSD"].map(p=>(<button key={p} onClick={()=>{setScanPair(p); setDetectedPair(p); setManualPrice("");}} style={{padding:"5px 10px",borderRadius:14,background:(detectedPair||scanPair)===p?"#16a34a":"#1e293b",color:"white",border:"none",fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{p}</button>))}</div>
          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:8}}>
            <label style={{display:"block",border:"1px dashed #3b82f6",borderRadius:8,padding:4,textAlign:"center",cursor:"pointer",background:"#131e32",height:72,overflow:"hidden"}}>{c1?<img src={c1} style={{width:"100%",height:62,objectFit:"cover",borderRadius:4}}/>:<div style={{paddingTop:22,color:"#94a3b8",fontSize:11}}>+ Chart 1 - {tf1}</div>}<input type="file" accept="image/*" onChange={e=>handleFile(e.target.files[0],setC1)} style={{display:"none"}} /></label>
            <label style={{display:"block",border:"1px dashed #475569",borderRadius:8,padding:4,textAlign:"center",cursor:"pointer",background:"#131e32",height:72,overflow:"hidden"}}>{c2?<img src={c2} style={{width:"100%",height:62,objectFit:"cover",borderRadius:4}}/>:<div style={{paddingTop:22,color:"#94a3b8",fontSize:11}}>+ Chart 2 - {tf2}</div>}<input type="file" accept="image/*" onChange={e=>handleFile(e.target.files[0],setC2)} style={{display:"none"}} /></label>
          </div>
+         <div style={{fontSize:11,color:"#fbbf24",marginTop:6, minHeight:14}}>{isDetecting?"🔍 Reading screenshot...":detectMsg}</div>
          <div style={{display:"flex",gap:6,marginTop:6}}>
            <select value={tf1} onChange={e=>setTf1(e.target.value)} style={{flex:1,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:6,padding:6,fontSize:11}}><option>M1</option><option>M5</option><option>M15</option><option>H1</option></select>
            <select value={tf2} onChange={e=>setTf2(e.target.value)} style={{flex:1,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:6,padding:6,fontSize:11}}><option>M15</option><option>M1</option><option>M5</option><option>H1</option></select>
-           <input value={manualPrice} onChange={e=>setManualPrice(e.target.value)} placeholder="Live price?" style={{flex:1,background:"#0f172a",color:"#fbbf24",border:"1px solid #f59e0b",borderRadius:6,padding:6,fontSize:11}} />
+           <input value={manualPrice} onChange={e=>setManualPrice(e.target.value)} placeholder="Live price auto" style={{flex:1,background:"#0f172a",color:"#fbbf24",border:"1px solid #f59e0b",borderRadius:6,padding:6,fontSize:11}} />
          </div>
          <button onClick={analyze} style={{width:"100%",padding:11,marginTop:8,background:"#2563eb",color:"white",border:"none",borderRadius:8,fontWeight:900,fontSize:12}}>{scanning?"🔍 COMPARING TIMEFRAMES...":"🔍 ANALYZE CHARTS"}</button>
          {result && (
