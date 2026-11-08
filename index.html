@@ -1,21 +1,32 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/png" href="/icon-192.png" />
-    <link rel="manifest" href="/manifest.json" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <meta name="theme-color" content="#0a0f1a" />
-    <meta name="mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-title" content="iFX BILLIONAIRE" />
-    <link rel="apple-touch-icon" href="/icon-192.png" />
-    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
-    <title>iFX BILLIONAIRE EA</title>
-    <style>body{margin:0;background:#0a0f1a} *{box-sizing:border-box}</style>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.jsx"></script>
-  </body>
-</html>
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #0a0f1a;
+  color: #e6edf7;
+  font-family: system-ui, -apple-system, Arial, sans-serif;
+  overscroll-behavior-y: contain;
+  -webkit-text-size-adjust: 100%;
+}
+body {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+button {
+  cursor: pointer;
+  font-family: inherit;
+}
+button:active { transform: scale(0.98); }
+input, select {
+  font-family: inherit;
+  font-size: 14px;
+  outline: none;
+}
+input:focus, select:focus {
+  border-color: #3b82f6 !important;
+}
+img { max-width: 100%; display: block; }
+::-webkit-scrollbar { height: 0; width: 0; }
