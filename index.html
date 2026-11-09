@@ -76,16 +76,15 @@ function fmtPrice(n,pair){
   if(pair.includes("JPY")) return Number(n).toFixed(3);
   return Number(n).toFixed(5);
 }
-// ===== MIN SL TABLE - FIX FOR FOREX TOO CLOSE =====
 function getMinSL(sym){
   const s=(sym||"").toUpperCase();
-  if(s.includes("JPY")) return 0.40; // GBPJPY EURJPY USDJPY = 40 pips
+  if(s.includes("JPY")) return 0.40;
   if(s.includes("US30")) return 150;
   if(s.includes("XAU")||s.includes("GOLD")) return 6.0;
   if(s.includes("BTC")) return 500;
   if(s.includes("V75")||s.includes("1HZ")||s.includes("BOOM")||s.includes("CRASH")) return 150;
   if(s.includes("NAS")||s.includes("USTEC")) return 120;
-  return 0.0025; // EURUSD GBPUSD AUDUSD EURGBP etc = 25 pips
+  return 0.0025;
 }
 function getDigits(sym){
   const s=(sym||"").toUpperCase();
@@ -210,16 +209,13 @@ function App(){
    }catch(e){ setMsg(e.message); }
  };
  const stopRobot=()=>{ runRef.current=false; setRunning(false); if(wsRef.current){ if(wsRef.current._iv) clearInterval(wsRef.current._iv); try{wsRef.current.close();}catch{} } setMsg("STOPPED"); };
- // ===== FIXED placeOrder - FOREX SL TOO CLOSE FIX =====
  const placeOrder=async (s)=>{
    const now=Math.floor(Date.now()/1000); if(!isTrading(now)){ setMsg("Paused 07:00-21:59 UTC"); return; }
    const symName = s.sym || s.symbol || "";
    const digits = getDigits(symName);
    const minSL = getMinSL(symName);
    let boxSize = Math.abs(s.boxHigh - s.boxLow);
-   // If RBD boxRange exists, use it
    if(s.baseRange && s.baseRange > boxSize) boxSize = s.baseRange;
-   // ENFORCE MIN - this is what fixes your 2.6 pip SL
    if(boxSize < minSL) boxSize = minSL;
    const norm=(v)=> Number(Number(v).toFixed(digits));
    const entry=norm(s.entry);
@@ -233,9 +229,13 @@ function App(){
    setMsg(`${s.sym} PENDING ${s.dir} at ${fmtPrice(entry,s.sym)} SL ${fmtPrice(sl,s.sym)} TP ${fmtPrice(tp,s.sym)} - SENT TO MT4`);
    try{ wsRef.current.send(JSON.stringify({ticks:s.symbol,subscribe:1})); }catch(e){}
  };
+ // ===== FIXED US30 51K DETECT - NO MORE BTC CONFUSION =====
  async function detectFromImg(url,name){
    const up=(name+" ").toUpperCase();
-   const syms=["XAUUSD","EURUSD","GBPUSD","BTCUSD","US30","NAS100","V75","GBPJPY","USDJPY","AUDUSD","BOOM","CRASH","1HZ"];
+   // PRIORITY 1: FILENAME - US30m screenshot name wins over price guess
+   if(up.includes("US30")) return {pair:"US30", price:null, from:"filename"};
+   if(up.includes("USTEC")||up.includes("NAS100")||up.includes("NAS")) return {pair:"NAS100", price:null, from:"filename"};
+   const syms=["XAUUSD","EURUSD","GBPUSD","BTCUSD","V75","GBPJPY","USDJPY","AUDUSD","BOOM","CRASH","1HZ"];
    for(const s of syms) if(up.includes(s)) return {pair:s.replace("BOOM","BOOM500").replace("CRASH","CRASH600"), price:null, from:"filename"};
    try{ 
      if(window.Tesseract){
@@ -252,7 +252,12 @@ function App(){
          if(golds.length>0) price=golds[golds.length-1];
          const v75s=nums.filter(n=>n>30000 && n<42000);
          if(v75s.length>0 && txt.includes("75") || v75s.length>2) price=v75s[v75s.length-1];
+         // US30 51k range - take numbers 40k-60k as US30
+         const us30s=nums.filter(n=>n>40000 && n<60000);
+         if(us30s.length>0 && (txt.includes("US30")||txt.includes("30M")||us30s.length>=2)) price=us30s[us30s.length-1];
        }
+       // PRIORITY 2: TEXT - US30 TEXT WINS EVEN IF PRICE IS 51K
+       if(txt.includes("US30")||txt.includes("US 30")||txt.includes("WALL STREET")||txt.includes("DJI")) return {pair:"US30", price};
        if(txt.includes("XAU")||txt.includes("GOLD")||txt.includes("AUUSD")) return {pair:"XAUUSD", price};
        if(txt.includes("VOLATILITY")||txt.includes("V75")||txt.includes("75 INDEX")) return {pair:"V75", price};
        if(txt.includes("BOOM")) { if(txt.includes("500")) return {pair:"BOOM500", price}; if(txt.includes("1000")) return {pair:"BOOM1000", price}; return {pair:"BOOM500", price}; }
@@ -263,9 +268,10 @@ function App(){
        if(txt.includes("USDJPY")||txt.includes("JPY")&&price&&price>140&&price<170) return {pair:"USDJPY", price};
        if(price){
          if(price>3500 && price<5500) return {pair:"XAUUSD", price};
-         if(price>60000) return {pair:"BTCUSD", price};
+         // FIXED RANGES 2026: US30 40k-60k, BTC 90k+
+         if(price>90000) return {pair:"BTCUSD", price};
+         if(price>40000 && price<60000) return {pair:"US30", price};
          if(price>30000 && price<42000) return {pair:"V75", price};
-         if(price>42000 && price<46000) return {pair:"US30", price};
          if(price>18000 && price<25000) return {pair:"NAS100", price};
          if(price>140 && price<170) return {pair:"USDJPY", price};
          if(price>0.6 && price<0.7) return {pair:"AUDUSD", price};
@@ -280,7 +286,7 @@ function App(){
    if(!f) return; const url=URL.createObjectURL(f); setter(url); setIsDetecting(true); setDetectMsg("🔍 Detecting...");
    const det=await detectFromImg(url,f.name); setIsDetecting(false);
    if(det && det.pair){ setDetectedPair(det.pair); setScanPair(det.pair); setDetectMsg(`✅ ${det.pair} @ ${det.price||""}`); if(det.price){ setOcrPrice(det.price); setManualPrice(String(det.price)); } }
-   else if(det && det.price){ setOcrPrice(det.price); setManualPrice(String(det.price)); if(det.price>3500 && det.price<5500){ setDetectedPair("XAUUSD"); setScanPair("XAUUSD"); setDetectMsg(`✅ XAUUSD @ ${det.price} (price guess)`); } else if(det.price>30000 && det.price<42000){ setDetectedPair("V75"); setScanPair("V75"); setDetectMsg(`✅ V75 @ ${det.price}`); } else { setDetectMsg(`Price ${det.price} - pick pair below`); } }
+   else if(det && det.price){ setOcrPrice(det.price); setManualPrice(String(det.price)); if(det.price>3500 && det.price<5500){ setDetectedPair("XAUUSD"); setScanPair("XAUUSD"); setDetectMsg(`✅ XAUUSD @ ${det.price} (price guess)`); } else if(det.price>40000 && det.price<60000){ setDetectedPair("US30"); setScanPair("US30"); setDetectMsg(`✅ US30 @ ${det.price}`); } else if(det.price>90000){ setDetectedPair("BTCUSD"); setScanPair("BTCUSD"); setDetectMsg(`✅ BTCUSD @ ${det.price}`); } else if(det.price>30000 && det.price<42000){ setDetectedPair("V75"); setScanPair("V75"); setDetectMsg(`✅ V75 @ ${det.price}`); } else { setDetectMsg(`Price ${det.price} - pick pair below`); } }
    else { setDetectMsg("Couldn't read - pick pair below, price auto from live"); setDetectedPair("XAUUSD"); setScanPair("XAUUSD"); }
  }
  function analyzeImageTrend(url){
@@ -300,12 +306,15 @@ function App(){
    });
  }
  async function getLivePrice(pair){
-   const map={ "V75":"R_75", "XAUUSD":"frxXAUUSD", "EURUSD":"frxEURUSD", "GBPUSD":"frxGBPUSD", "BTCUSD":"cryBTCUSD", "GBPJPY":"frxGBPJPY", "USDJPY":"frxUSDJPY", "US30":"OTC_AA", "NAS100":"OTC_NA", "AUDUSD":"frxAUDUSD" };
+   // US30 live via Deriv is unreliable - return null so we use OCR/manual price 51567
+   if(pair==="US30" || pair==="NAS100") return null;
+   const map={ "V75":"R_75", "XAUUSD":"frxXAUUSD", "EURUSD":"frxEURUSD", "GBPUSD":"frxGBPUSD", "BTCUSD":"cryBTCUSD", "GBPJPY":"frxGBPJPY", "USDJPY":"frxUSDJPY", "AUDUSD":"frxAUDUSD" };
    const sym=map[pair]; if(!sym) return null;
    return new Promise((res)=>{ try{ const ws=new WebSocket(WS_URL); let done=false; ws.onopen=()=>{ ws.send(JSON.stringify({ticks:sym})); }; ws.onmessage=(e)=>{ try{ const d=JSON.parse(e.data); if(d.tick && d.tick.quote && !done){ done=true; res(Number(d.tick.quote)); try{ws.close();}catch{} } }catch{} }; setTimeout(()=>{ if(!done){ res(null); try{ws.close();}catch{} } },3500); }catch(e){ res(null); } });
  }
  async function getCandlesForScanner(pair, granularity){
-   const map={ "V75":"R_75", "XAUUSD":"frxXAUUSD", "EURUSD":"frxEURUSD", "GBPUSD":"frxGBPUSD", "BTCUSD":"cryBTCUSD", "GBPJPY":"frxGBPJPY", "USDJPY":"frxUSDJPY", "US30":"OTC_AA", "NAS100":"OTC_NA", "AUDUSD":"frxAUDUSD" };
+   if(pair==="US30" || pair==="NAS100") return null;
+   const map={ "V75":"R_75", "XAUUSD":"frxXAUUSD", "EURUSD":"frxEURUSD", "GBPUSD":"frxGBPUSD", "BTCUSD":"cryBTCUSD", "GBPJPY":"frxGBPJPY", "USDJPY":"frxUSDJPY", "AUDUSD":"frxAUDUSD" };
    const sym=map[pair]; if(!sym) return null;
    return new Promise((res)=>{ try{ const ws=new WebSocket(WS_URL); ws.onopen=()=>{ ws.send(JSON.stringify({ticks_history:sym,count:30,end:"latest",style:"candles",granularity})); }; ws.onmessage=(e)=>{ try{ const d=JSON.parse(e.data); if(d.candles){ const cs=d.candles.map(c=>({epoch:+c.epoch,open:+c.open,high:+c.high,low:+c.low,close:+c.close})).sort((a,b)=>a.epoch-b.epoch); res(cs); try{ws.close();}catch{} } }catch{} }; setTimeout(()=>{ res(null); try{ws.close();}catch{} },4000); }catch(e){ res(null); } });
  }
@@ -317,13 +326,13 @@ function App(){
    let pixelDir=score>=0?"BUY":"SELL"; let tf1Dir=t1>=0?"Bullish":"Bearish"; let tf2Dir=t2>=0?"Bullish":"Bearish";
    let rbdSignal=null;
    try{ const csH1=await getCandlesForScanner(pair, 3600); if(csH1) rbdSignal=detectRBDDBR(csH1); if(!rbdSignal){ const csM15=await getCandlesForScanner(pair, 900); if(csM15) rbdSignal=detectRBDDBR(csM15); } }catch(e){}
-   const fallbackMap={ "XAUUSD":4413.83, "BTCUSD":67200, "V75":38820.86, "US30":44000, "NAS100":21000, "EURUSD":1.0850, "GBPUSD":1.2700, "USDJPY":155.50, "GBPJPY":192.50, "AUDUSD":0.65840 };
+   const fallbackMap={ "XAUUSD":4413.83, "BTCUSD":95000, "V75":38820.86, "US30":51567.4, "NAS100":24800, "EURUSD":1.0850, "GBPUSD":1.2700, "USDJPY":155.50, "GBPJPY":192.50, "AUDUSD":0.65840 };
    let base=null;
+   // PRIORITY: manual / OCR price FIRST for US30 - do NOT overwrite with wrong live price
    if(manualPrice && Number(manualPrice)>0) base=Number(manualPrice);
-   if(!base){ const live=await getLivePrice(pair); if(live && live>0) base=live; }
    if(!base && ocrPrice && ocrPrice>0) base=ocrPrice;
+   if(!base){ const live=await getLivePrice(pair); if(live && live>0) base=live; }
    if(!base) base=fallbackMap[pair]||4413.83;
-   // FIX: FOREX + US30 SL - USE MIN TABLE
    const digits = getDigits(pair);
    const minSL = getMinSL(pair);
    let bs = minSL;
