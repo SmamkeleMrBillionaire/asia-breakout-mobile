@@ -26,7 +26,6 @@ function sendAlert(t,b){
     } else { try{new Notification(t,{body:b});}catch(e){} }
   } else if('Notification' in window){ Notification.requestPermission().then(()=>{ try{new Notification(t,{body:b});}catch(e){} }); }
 }
-// ===== WORKING Vercel sendToMT4 - DO NOT TOUCH - THIS WAS WORKING =====
 async function sendToMT4(result, setMsg){
   try{
     let raw = result.pair.replace(".ecn","").toUpperCase().replace(/\s+/g,"");
@@ -76,6 +75,23 @@ function fmtPrice(n,pair){
   if(pair.includes("V75")||pair.includes("XAU")||pair.includes("US30")||pair.includes("NAS")||pair.includes("BTC")||pair.includes("BOOM")||pair.includes("CRASH")) return Number(n).toFixed(2);
   if(pair.includes("JPY")) return Number(n).toFixed(3);
   return Number(n).toFixed(5);
+}
+// ===== MIN SL TABLE - FIX FOR FOREX TOO CLOSE =====
+function getMinSL(sym){
+  const s=(sym||"").toUpperCase();
+  if(s.includes("JPY")) return 0.40; // GBPJPY EURJPY USDJPY = 40 pips
+  if(s.includes("US30")) return 150;
+  if(s.includes("XAU")||s.includes("GOLD")) return 6.0;
+  if(s.includes("BTC")) return 500;
+  if(s.includes("V75")||s.includes("1HZ")||s.includes("BOOM")||s.includes("CRASH")) return 150;
+  if(s.includes("NAS")||s.includes("USTEC")) return 120;
+  return 0.0025; // EURUSD GBPUSD AUDUSD EURGBP etc = 25 pips
+}
+function getDigits(sym){
+  const s=(sym||"").toUpperCase();
+  if(s.includes("JPY")) return 3;
+  if(s.includes("XAU")||s.includes("US30")||s.includes("V75")||s.includes("BTC")||s.includes("NAS")||s.includes("BOOM")||s.includes("CRASH")) return 2;
+  return 5;
 }
 const sDay=e=>new Date(e*1000).toISOString().slice(0,10);
 const sHour=e=>new Date(e*1000).getUTCHours();
@@ -140,11 +156,10 @@ function App(){
    setMsg("Scanning - M15 - Orange Box + RBD/DBR - ALL PAIRS...");
    try{
      const r1=await request({active_symbols:"brief"});
-     // FIX 1: SCAN ALL AVAILABLE PAIRS - REMOVED slice(0,40)
      const allSyms=(r1.active_symbols||[]).filter(s=>s.underlying_symbol);
      const forex = allSyms.filter(s=> s.market==="forex");
      const synth = allSyms.filter(s=> s.market!=="forex");
-     const list=[...forex, ...synth]; // 89+ symbols, forex first
+     const list=[...forex, ...synth];
      setTotal(list.length); setScanned(0); setProgress(0);
      let found=[]; let done=0;
      for(const item of list){
@@ -195,22 +210,29 @@ function App(){
    }catch(e){ setMsg(e.message); }
  };
  const stopRobot=()=>{ runRef.current=false; setRunning(false); if(wsRef.current){ if(wsRef.current._iv) clearInterval(wsRef.current._iv); try{wsRef.current.close();}catch{} } setMsg("STOPPED"); };
+ // ===== FIXED placeOrder - FOREX SL TOO CLOSE FIX =====
  const placeOrder=async (s)=>{
    const now=Math.floor(Date.now()/1000); if(!isTrading(now)){ setMsg("Paused 07:00-21:59 UTC"); return; }
-   // FIX 2 PART B: US30 box enforcement
-   let boxSize=s.boxHigh-s.boxLow; const entry=s.entry;
-   if(s.sym && s.sym.includes("US30") && boxSize < 100) boxSize=150;
-   if(s.sym && s.sym.includes("XAU") && boxSize < 3) boxSize=5;
-   const sl=s.dir==="BUY"?entry-boxSize:entry+boxSize; const tp=s.dir==="BUY"?entry+boxSize*2.2:entry-boxSize*2.2;
+   const symName = s.sym || s.symbol || "";
+   const digits = getDigits(symName);
+   const minSL = getMinSL(symName);
+   let boxSize = Math.abs(s.boxHigh - s.boxLow);
+   // If RBD boxRange exists, use it
+   if(s.baseRange && s.baseRange > boxSize) boxSize = s.baseRange;
+   // ENFORCE MIN - this is what fixes your 2.6 pip SL
+   if(boxSize < minSL) boxSize = minSL;
+   const norm=(v)=> Number(Number(v).toFixed(digits));
+   const entry=norm(s.entry);
+   const sl=norm(s.dir==="BUY"?entry-boxSize:entry+boxSize);
+   const tp=norm(s.dir==="BUY"?entry+boxSize*2.2:entry-boxSize*2.2);
    const riskMoney=balance*(riskPct/100);
    const pendingType=s.dir==="BUY"?"BUY STOP":"SELL STOP";
    const o={id:Date.now(),symbol:s.symbol,display:s.sym,dir:s.dir,strategy:s.strat,pendingType,entry,sl,tp,boxSize,risk:riskMoney,status:"PENDING",cur:entry,float:0,openedDay:sDay(now)};
    setOrders(p=>[o,...p]); sendAlert("iFX PENDING PLACED", s.sym+" "+pendingType+" "+s.dir+" at "+fmtPrice(entry,s.sym));
    await sendToMT4({pair:s.sym, dir:pendingType, entry:entry, sl:sl, tp:tp}, setMsg);
-   setMsg(`${s.sym} PENDING ${s.dir} at ${fmtPrice(entry,s.sym)} - SENT TO MT4`);
+   setMsg(`${s.sym} PENDING ${s.dir} at ${fmtPrice(entry,s.sym)} SL ${fmtPrice(sl,s.sym)} TP ${fmtPrice(tp,s.sym)} - SENT TO MT4`);
    try{ wsRef.current.send(JSON.stringify({ticks:s.symbol,subscribe:1})); }catch(e){}
  };
- // ===== FIXED AUTO-DETECT - NOW WORKS WITH ANY SCREENSHOT NAME =====
  async function detectFromImg(url,name){
    const up=(name+" ").toUpperCase();
    const syms=["XAUUSD","EURUSD","GBPUSD","BTCUSD","US30","NAS100","V75","GBPJPY","USDJPY","AUDUSD","BOOM","CRASH","1HZ"];
@@ -221,7 +243,6 @@ function App(){
        const r=await window.Tesseract.recognize(url,'eng',{tessedit_char_whitelist:'0123456789.,XAUUSDGBPJPYEURBTCV75'});
        const raw=(r.data.text||"");
        const txt=raw.toUpperCase();
-       console.log("OCR:",raw);
        const nums=(raw.match(/\d{1,3}[, ]?\d{3,6}\.\d{1,3}|\d{3,6}\.\d{1,3}/g)||[]).map(s=>Number(s.replace(/[ ,]/g,""))).filter(n=>n>10 && n<200000);
        let price=null;
        if(nums.length>0){
@@ -302,22 +323,17 @@ function App(){
    if(!base){ const live=await getLivePrice(pair); if(live && live>0) base=live; }
    if(!base && ocrPrice && ocrPrice>0) base=ocrPrice;
    if(!base) base=fallbackMap[pair]||4413.83;
-   // FIX 2: US30 SL/TP INVALID FIX
-   let bs=0.0015; let digits=5;
-   if(pair.includes("XAU")) { bs=5.0; digits=2; }
-   else if(pair.includes("BTC")) { bs=500; digits=2; }
-   else if(pair.includes("V75")) { bs=150; digits=2; }
-   else if(pair.includes("US30")) { bs=150; digits=2; }
-   else if(pair.includes("NAS")) { bs=120; digits=2; }
-   else if(pair.includes("JPY")) { bs=0.35; digits=3; }
-   else if(pair.includes("AUD")) { bs=0.0020; digits=5; }
-   else if(pair.includes("EUR")||pair.includes("GBP")) { bs=0.0020; digits=5; }
+   // FIX: FOREX + US30 SL - USE MIN TABLE
+   const digits = getDigits(pair);
+   const minSL = getMinSL(pair);
+   let bs = minSL;
    const norm=(v)=> Number(Number(v).toFixed(digits));
    if(rbdSignal){
-     const entry=norm(base); const boxSize=norm(rbdSignal.baseRange || bs);
+     const entry=norm(base);
+     let boxSize = Math.abs(rbdSignal.baseRange || bs);
+     if(boxSize < minSL) boxSize = minSL;
      let sl=norm(rbdSignal.dir==="BUY"?entry-boxSize:entry+boxSize);
      let tp=norm(rbdSignal.dir==="BUY"?entry+boxSize*2.2:entry-boxSize*2.2);
-     if(pair.includes("US30") && Math.abs(entry-sl) < 100){ sl=norm(rbdSignal.dir==="BUY"? entry-120 : entry+120); tp=norm(rbdSignal.dir==="BUY"? entry+264 : entry-264); }
      setResult({pair:pair+".ecn",dir:rbdSignal.dir,entry,sl,tp,conf:88, livePrice:base, strat:rbdSignal.strat+" | "+tf1+" "+tf1Dir+" / "+tf2+" "+tf2Dir, detail:"Multi-Timeframe - "+rbdSignal.detail});
      setScanning(false); sendAlert(`iFX ${rbdSignal.strat} ${pair}`,`Entry ${fmtPrice(entry,pair)} TP ${fmtPrice(tp,pair)}`); return;
    }
@@ -326,7 +342,6 @@ function App(){
    const entry=norm(base);
    let sl=norm(dir==="BUY"?entry-bs:entry+bs);
    let tp=norm(dir==="BUY"?entry+bs*2.2:entry-bs*2.2);
-   if(pair.includes("US30") && Math.abs(entry-sl) < 100){ sl=norm(dir==="BUY"? entry-120 : entry+120); tp=norm(dir==="BUY"? entry+264 : entry-264); }
    setResult({pair:pair+".ecn",dir,entry,sl,tp,conf, livePrice:base, strat:"MULTI-TF | "+tf1+":"+tf1Dir+" "+tf2+":"+tf2Dir, detail:"Timeframe Alignment - M15 is boss"});
    setScanning(false); sendAlert(`iFX AI ${dir} ${pair}`,`Entry ${fmtPrice(entry,pair)} TP ${fmtPrice(tp,pair)} ${conf}%`);
  }
