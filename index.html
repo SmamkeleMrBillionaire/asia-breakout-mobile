@@ -11,7 +11,11 @@
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
-<style>*{box-sizing:border-box}html,body{margin:0;padding:0;background:#0a0f1a;color:#e6edf7;font-family:system-ui,Arial}button{cursor:pointer}button:active{transform:scale(.98)}input,select{outline:none}</style>
+<style>*{box-sizing:border-box}html,body{margin:0;padding:0;background:#0a0f1a;color:#e6edf7;font-family:system-ui,Arial}button{cursor:pointer}button:active{transform:scale(.98)}input,select{outline:none}
+.lion-frame{margin:8px 10px;border:1px solid #d4af37;border-radius:14px;overflow:hidden;box-shadow:0 0 20px rgba(212,175,55,.4);background:#0a1428}
+.lion-frame img{width:100%;display:block;height:190px;object-fit:cover;object-position:top}
+.gold-btn{background:linear-gradient(180deg,#f5d67a,#d4af37)!important;color:#000!important;border:1px solid #ffe9a3!important}
+</style>
 </head><body><div id="root"></div>
 <script type="text/babel">
 const {useState,useEffect,useRef}=React;
@@ -59,7 +63,6 @@ async function sendToMT4(result, setMsg){
     else if(raw.includes("GBPJPY")) sym="GBPJPYm";
     else if(raw.includes("AUDUSD")) sym="AUDUSDm";
     else sym = raw + "m";
-    // ANTI-SPAM: same symbol+entry within 60s = block
     const spamKey = sym+"_"+result.entry+"_"+result.dir;
     const nowSec = Math.floor(Date.now()/1000);
     if(lastSentMap[spamKey] && (nowSec - lastSentMap[spamKey] < 60)){ if(setMsg) setMsg("Blocked duplicate - already sent "+sym); return false; }
@@ -224,10 +227,8 @@ function App(){
  const stopRobot=()=>{ runRef.current=false; setRunning(false); if(wsRef.current){ if(wsRef.current._iv) clearInterval(wsRef.current._iv); try{wsRef.current.close();}catch{} } setMsg("STOPPED"); };
  const placeOrder=async (s)=>{
    const now=Math.floor(Date.now()/1000); if(!isTrading(now)){ setMsg("Paused 07:00-21:59 UTC"); return; }
-   // ANTI-SPAM: 1 open trade per symbol
    const alreadyOpen = orders.some(o => (o.display===s.sym || o.symbol===s.symbol) && (o.status==="PENDING"||o.status==="OPEN"));
    if(alreadyOpen){ setMsg(`Already have ${s.sym} open - blocked duplicate`); return; }
-   // ANTI-SPAM: same box already taken
    const key = s.boxKey || (s.sym+"_"+s.boxHigh+"_"+s.boxLow);
    if(sentBoxesRef.current.has(key)){ setMsg("Same Orange Box already traded"); return; }
    sentBoxesRef.current.add(key);
@@ -373,25 +374,26 @@ function App(){
  return (
   <div style={{maxWidth:480,margin:"0 auto",minHeight:"100vh",background:"#0a0f1a",paddingBottom:10}}>
    <div style={{padding:"8px 12px",display:"flex",justifyContent:"space-between",alignItems:"center",borderBottom:"1px solid #1e2d45"}}>
-     <div style={{fontSize:20,fontWeight:900,lineHeight:1}}>iFX BILLIONAIRE EA</div>
+     <div style={{fontSize:20,fontWeight:900,lineHeight:1,color:"#d4af37"}}>iFX BILLIONAIRE EA</div>
      <div style={{background:running?"#14532d":"#3a1a1a",color:running?"#4ade80":"#ff6b6b",padding:"6px 10px",borderRadius:16,fontSize:11,fontWeight:800}}>● {running?"RUNNING":"STOPPED"}</div>
    </div>
-   <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:12,margin:"8px 10px",padding:"8px 10px"}}>
-     <button onClick={()=>setShowRobot(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",background:"transparent",color:"white",border:"none",padding:2,fontSize:12,fontWeight:900,textAlign:"left"}}><span>ROBOT CONTROL - ORANGE + RBD/DBR • {connText} • {tradingActive?"ACTIVE":"PAUSED"}</span><span>{showRobot?"▲":"▼"}</span></button>
+   <div className="lion-frame"><img src="/lion-king.png" alt="King Lion" /></div>
+   <div style={{background:"#131e32",border:"1px solid #d4af37",borderRadius:12,margin:"8px 10px",padding:"8px 10px"}}>
+     <button onClick={()=>setShowRobot(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",background:"transparent",color:"white",border:"none",padding:2,fontSize:12,fontWeight:900,textAlign:"left"}}><span>ROBOT CONTROL • {connText} • {tradingActive?"ACTIVE":"PAUSED"}</span><span>{showRobot?"▲":"▼"}</span></button>
      {showRobot && (
        <div>
          <div style={{display:"flex",gap:8,marginTop:8}}>
-           <button onClick={startRobot} disabled={running} style={{flex:1,padding:11,border:"none",borderRadius:8,fontWeight:900,fontSize:13,background:"#10b981",color:"white",opacity:running?0.5:1}}>▶ START</button>
+           <button onClick={startRobot} disabled={running} className="gold-btn" style={{flex:1,padding:11,border:"none",borderRadius:8,fontWeight:900,fontSize:13,opacity:running?0.5:1}}>▶ START</button>
            <button onClick={stopRobot} style={{flex:1,padding:11,border:"none",borderRadius:8,fontWeight:900,fontSize:13,background:"#dc2626",color:"white"}}>■ STOP</button>
            <button onClick={()=>{ Notification.requestPermission(); sendAlert('TEST','Buzz test!'); }} style={{padding:"11px 10px",background:"#0ea5e9",color:"white",border:"none",borderRadius:8,fontWeight:800,fontSize:11}}>🔔</button>
          </div>
          <div style={{fontSize:11,color:"#8a9bb5",marginTop:6}}>{msg} • {scanned}/{total} • {progress}% • {lastScan}</div>
-         <div style={{height:4,background:"#1e2d45",borderRadius:3,margin:"6px 0"}}><div style={{height:"100%",background:"#3b82f6",width:`${progress}%`}} /></div>
+         <div style={{height:4,background:"#1e2d45",borderRadius:3,margin:"6px 0"}}><div style={{height:"100%",background:"#d4af37",width:`${progress}%`}} /></div>
        </div>
      )}
      {!showRobot && (
        <div style={{display:"flex",gap:8,marginTop:8}}>
-         <button onClick={startRobot} disabled={running} style={{flex:1,padding:10,border:"none",borderRadius:8,fontWeight:900,fontSize:13,background:"#10b981",color:"white",opacity:running?0.5:1}}>▶ START ROBOT</button>
+         <button onClick={startRobot} disabled={running} className="gold-btn" style={{flex:1,padding:10,border:"none",borderRadius:8,fontWeight:900,fontSize:13,opacity:running?0.5:1}}>▶ START ROBOT</button>
          <button onClick={stopRobot} style={{flex:1,padding:10,border:"none",borderRadius:8,fontWeight:900,fontSize:13,background:"#dc2626",color:"white"}}>■ STOP</button>
        </div>
      )}
@@ -406,16 +408,16 @@ function App(){
        </div>
      )}
    </div>
-   <div style={{background:"linear-gradient(135deg,#0f172a,#1e1b4b)",border:"1px solid #3b82f6",borderRadius:12,margin:"8px 10px",padding:"10px"}}>
+   <div style={{background:"linear-gradient(135deg,#0f172a,#1e1b4b)",border:"1px solid #d4af37",borderRadius:12,margin:"8px 10px",padding:"10px"}}>
      <button onClick={()=>setShowScanner(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",background:"transparent",color:"white",border:"none",padding:0,textAlign:"left"}}>
-       <div><div style={{fontSize:14,fontWeight:900}}>🤖 AI SCANNER 📸 <span style={{fontSize:10,color:"#4ade80",background:"#14532d",padding:"2px 6px",borderRadius:4,marginLeft:4}}>ON</span></div><div style={{fontSize:10,color:"#93c5fd",marginTop:2}}>Multi-Timeframe M1 + M15 • Slope + RBD/DBR • {detectedPair||scanPair} {detectMsg}</div></div>
+       <div><div style={{fontSize:14,fontWeight:900}}>🤖 AI SCANNER 📸 <span style={{fontSize:10,color:"#4ade80",background:"#14532d",padding:"2px 6px",borderRadius:4,marginLeft:4}}>ON</span></div><div style={{fontSize:10,color:"#93c5fd",marginTop:2}}>Multi-Timeframe M1 + M15 • {detectedPair||scanPair} {detectMsg}</div></div>
        <span style={{fontSize:14}}>{showScanner?"▲":"▼"}</span>
      </button>
      {showScanner && (
        <div>
-         <div style={{display:"flex",gap:4,overflowX:"auto",marginTop:8,paddingBottom:2}}>{["XAUUSD","EURUSD","GBPUSD","BTCUSD","US30","NAS100","V75","GBPJPY","USDJPY","AUDUSD"].map(p=>(<button key={p} onClick={()=>{setScanPair(p); setDetectedPair(p); setManualPrice("");}} style={{padding:"5px 10px",borderRadius:14,background:(detectedPair||scanPair)===p?"#16a34a":"#1e293b",color:"white",border:"none",fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{p}</button>))}</div>
+         <div style={{display:"flex",gap:4,overflowX:"auto",marginTop:8,paddingBottom:2}}>{["XAUUSD","EURUSD","GBPUSD","BTCUSD","US30","NAS100","V75","GBPJPY","USDJPY","AUDUSD"].map(p=>(<button key={p} onClick={()=>{setScanPair(p); setDetectedPair(p); setManualPrice("");}} style={{padding:"5px 10px",borderRadius:14,background:(detectedPair||scanPair)===p?"#d4af37":"#1e293b",color:(detectedPair||scanPair)===p?"black":"white",border:"none",fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{p}</button>))}</div>
          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:8}}>
-           <label style={{display:"block",border:"1px dashed #3b82f6",borderRadius:8,padding:4,textAlign:"center",cursor:"pointer",background:"#131e32",height:72,overflow:"hidden"}}>{c1?<img src={c1} style={{width:"100%",height:62,objectFit:"cover",borderRadius:4}}/>:<div style={{paddingTop:22,color:"#94a3b8",fontSize:11}}>+ Chart 1 - {tf1}</div>}<input type="file" accept="image/*" onChange={e=>handleFile(e.target.files[0],setC1)} style={{display:"none"}} /></label>
+           <label style={{display:"block",border:"1px dashed #d4af37",borderRadius:8,padding:4,textAlign:"center",cursor:"pointer",background:"#131e32",height:72,overflow:"hidden"}}>{c1?<img src={c1} style={{width:"100%",height:62,objectFit:"cover",borderRadius:4}}/>:<div style={{paddingTop:22,color:"#94a3b8",fontSize:11}}>+ Chart 1 - {tf1}</div>}<input type="file" accept="image/*" onChange={e=>handleFile(e.target.files[0],setC1)} style={{display:"none"}} /></label>
            <label style={{display:"block",border:"1px dashed #475569",borderRadius:8,padding:4,textAlign:"center",cursor:"pointer",background:"#131e32",height:72,overflow:"hidden"}}>{c2?<img src={c2} style={{width:"100%",height:62,objectFit:"cover",borderRadius:4}}/>:<div style={{paddingTop:22,color:"#94a3b8",fontSize:11}}>+ Chart 2 - {tf2}</div>}<input type="file" accept="image/*" onChange={e=>handleFile(e.target.files[0],setC2)} style={{display:"none"}} /></label>
          </div>
          <div style={{fontSize:11,color:"#fbbf24",marginTop:6, minHeight:14}}>{isDetecting?"🔍 Reading screenshot...":detectMsg}</div>
@@ -424,7 +426,7 @@ function App(){
            <select value={tf2} onChange={e=>setTf2(e.target.value)} style={{flex:1,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:6,padding:6,fontSize:11}}><option>M15</option><option>M1</option><option>M5</option><option>H1</option></select>
            <input value={manualPrice} onChange={e=>setManualPrice(e.target.value)} placeholder="Live price auto" style={{flex:1,background:"#0f172a",color:"#fbbf24",border:"1px solid #f59e0b",borderRadius:6,padding:6,fontSize:11}} />
          </div>
-         <button onClick={analyze} style={{width:"100%",padding:11,marginTop:8,background:"#2563eb",color:"white",border:"none",borderRadius:8,fontWeight:900,fontSize:12}}>{scanning?"🔍 COMPARING TIMEFRAMES...":"🔍 ANALYZE CHARTS"}</button>
+         <button onClick={analyze} className="gold-btn" style={{width:"100%",padding:11,marginTop:8,border:"none",borderRadius:8,fontWeight:900,fontSize:12}}>{scanning?"🔍 COMPARING TIMEFRAMES...":"🔍 ANALYZE CHARTS"}</button>
          {result && (
            <div style={{background:"#0f172a",border:"1px solid #22c55e",borderRadius:8,padding:8,marginTop:8}}>
              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><b style={{fontSize:13}}>{result.pair} • {result.conf}%</b><div style={{background:result.dir==="BUY"?"#16a34a":"#dc2626",color:"white",padding:"5px 14px",borderRadius:6,fontWeight:900,fontSize:13}}>{result.dir}</div></div>
@@ -445,7 +447,7 @@ function App(){
      )}
    </div>
    <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:10,margin:"0 10px",padding:"8px 10px"}}>
-     <button onClick={()=>setShowSignals(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:6,padding:8,fontSize:11,fontWeight:900}}><span>SIGNALS ({signals.length}) - ORANGE + RBD/DBR</span><span>{showSignals?"▲":"▼"}</span></button>
+     <button onClick={()=>setShowSignals(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:6,padding:8,fontSize:11,fontWeight:900}}><span>SIGNALS ({signals.length})</span><span>{showSignals?"▲":"▼"}</span></button>
      {showSignals && signals.map((s,i)=>(
        <div key={i} style={{background:"#0f172a",border:"1px solid #334155",borderRadius:8,padding:8,marginTop:6}}>
          <div style={{display:"flex",justifyContent:"space-between",fontSize:12}}><b>{s.sym}</b><span style={{color:s.dir==="BUY"?"#4ade80":"#f87171",fontWeight:900}}>{s.dir} {s.strat}</span></div>
