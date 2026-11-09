@@ -26,6 +26,7 @@ function sendAlert(t,b){
     } else { try{new Notification(t,{body:b});}catch(e){} }
   } else if('Notification' in window){ Notification.requestPermission().then(()=>{ try{new Notification(t,{body:b});}catch(e){} }); }
 }
+let lastSentMap={};
 async function sendToMT4(result, setMsg){
   try{
     let raw = result.pair.replace(".ecn","").toUpperCase().replace(/\s+/g,"");
@@ -58,6 +59,11 @@ async function sendToMT4(result, setMsg){
     else if(raw.includes("GBPJPY")) sym="GBPJPYm";
     else if(raw.includes("AUDUSD")) sym="AUDUSDm";
     else sym = raw + "m";
+    // ANTI-SPAM: same symbol+entry within 60s = block
+    const spamKey = sym+"_"+result.entry+"_"+result.dir;
+    const nowSec = Math.floor(Date.now()/1000);
+    if(lastSentMap[spamKey] && (nowSec - lastSentMap[spamKey] < 60)){ if(setMsg) setMsg("Blocked duplicate - already sent "+sym); return false; }
+    lastSentMap[spamKey]=nowSec;
     let action = result.dir;
     const payload={action:action, symbol:sym, entry:result.entry, sl:result.sl, tp:result.tp, time: Math.floor(Date.now()/1000)};
     const r = await fetch("/api/signal", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload)});
@@ -149,6 +155,7 @@ function App(){
  const [showScanner,setShowScanner]=useState(true);
  const [showBalance,setShowBalance]=useState(false);
  const wsRef=useRef(null), reqRef=useRef(0), pendRef=useRef(new Map()), runRef=useRef(false);
+ const sentBoxesRef=useRef(new Set());
  useEffect(()=>{ const t=setInterval(()=>setClock(Math.floor(Date.now()/1000)),1000); return ()=>clearInterval(t); },[]);
  useEffect(()=>{ if('Notification' in window && Notification.permission==='default') Notification.requestPermission(); },[]);
  const request=(p)=>new Promise((res,rej)=>{ const ws=wsRef.current; if(!ws||ws.readyState!==1){rej(new Error("Not connected"));return;} const id=++reqRef.current; const to=setTimeout(()=>{pendRef.current.delete(id); rej(new Error("timeout"));},20000); pendRef.current.set(id,{res,rej,to}); ws.send(JSON.stringify({...p,req_id:id})); });
@@ -186,7 +193,11 @@ function App(){
          else if(last.close>box.high && prev.close<=box.high && col==="GREEN" && last.open>box.low) sig={dir:"BUY",strat:"ORANGE BREAKOUT BUY",entry:last.close};
          else if(last.close<box.low && prev.close>=box.low && col==="RED" && last.open<box.high) sig={dir:"SELL",strat:"ORANGE BREAKOUT SELL",entry:last.close};
          if(!sig){ const rbd = detectRBDDBR(closedCs); if(rbd) sig={dir:rbd.dir, strat:rbd.strat, entry:rbd.entry}; }
-         if(sig) found.push({sym: item.display_name||sym, symbol:sym, ...sig, boxHigh:box.high, boxLow:box.low, rsi});
+         if(sig){
+           const boxKey = sym+"_"+box.high+"_"+box.low+"_"+today;
+           if(sentBoxesRef.current.has(boxKey)) continue;
+           found.push({sym: item.display_name||sym, symbol:sym, ...sig, boxHigh:box.high, boxLow:box.low, rsi, boxKey});
+         }
        }catch(e){}
        done++; setScanned(done); setProgress(Math.round(done/list.length*100));
      }
@@ -213,6 +224,13 @@ function App(){
  const stopRobot=()=>{ runRef.current=false; setRunning(false); if(wsRef.current){ if(wsRef.current._iv) clearInterval(wsRef.current._iv); try{wsRef.current.close();}catch{} } setMsg("STOPPED"); };
  const placeOrder=async (s)=>{
    const now=Math.floor(Date.now()/1000); if(!isTrading(now)){ setMsg("Paused 07:00-21:59 UTC"); return; }
+   // ANTI-SPAM: 1 open trade per symbol
+   const alreadyOpen = orders.some(o => (o.display===s.sym || o.symbol===s.symbol) && (o.status==="PENDING"||o.status==="OPEN"));
+   if(alreadyOpen){ setMsg(`Already have ${s.sym} open - blocked duplicate`); return; }
+   // ANTI-SPAM: same box already taken
+   const key = s.boxKey || (s.sym+"_"+s.boxHigh+"_"+s.boxLow);
+   if(sentBoxesRef.current.has(key)){ setMsg("Same Orange Box already traded"); return; }
+   sentBoxesRef.current.add(key);
    const symName = s.sym || s.symbol || "";
    const digits = getDigits(symName);
    const minSL = getMinSL(symName);
