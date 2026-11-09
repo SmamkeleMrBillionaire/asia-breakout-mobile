@@ -72,24 +72,26 @@ async function sendToMT4(result, setMsg){
 const fmt=(n,d=5)=>Number.isFinite(Number(n))?Number(n).toFixed(d):"—";
 function fmtPrice(n,pair){
   if(!Number.isFinite(Number(n))) return "—";
-  if(pair.includes("V75")||pair.includes("XAU")||pair.includes("US30")||pair.includes("NAS")||pair.includes("BTC")||pair.includes("BOOM")||pair.includes("CRASH")) return Number(n).toFixed(2);
+  if(pair.includes("US30")) return Number(n).toFixed(1);
+  if(pair.includes("V75")||pair.includes("XAU")||pair.includes("NAS")||pair.includes("BTC")||pair.includes("BOOM")||pair.includes("CRASH")) return Number(n).toFixed(2);
   if(pair.includes("JPY")) return Number(n).toFixed(3);
   return Number(n).toFixed(5);
 }
 function getMinSL(sym){
   const s=(sym||"").toUpperCase();
   if(s.includes("JPY")) return 0.40;
-  if(s.includes("US30")) return 150;
+  if(s.includes("US30")) return 250;
   if(s.includes("XAU")||s.includes("GOLD")) return 6.0;
   if(s.includes("BTC")) return 500;
   if(s.includes("V75")||s.includes("1HZ")||s.includes("BOOM")||s.includes("CRASH")) return 150;
-  if(s.includes("NAS")||s.includes("USTEC")) return 120;
+  if(s.includes("NAS")||s.includes("USTEC")) return 200;
   return 0.0025;
 }
 function getDigits(sym){
   const s=(sym||"").toUpperCase();
   if(s.includes("JPY")) return 3;
-  if(s.includes("XAU")||s.includes("US30")||s.includes("V75")||s.includes("BTC")||s.includes("NAS")||s.includes("BOOM")||s.includes("CRASH")) return 2;
+  if(s.includes("US30")) return 1;
+  if(s.includes("XAU")||s.includes("V75")||s.includes("BTC")||s.includes("NAS")||s.includes("BOOM")||s.includes("CRASH")) return 2;
   return 5;
 }
 const sDay=e=>new Date(e*1000).toISOString().slice(0,10);
@@ -229,10 +231,8 @@ function App(){
    setMsg(`${s.sym} PENDING ${s.dir} at ${fmtPrice(entry,s.sym)} SL ${fmtPrice(sl,s.sym)} TP ${fmtPrice(tp,s.sym)} - SENT TO MT4`);
    try{ wsRef.current.send(JSON.stringify({ticks:s.symbol,subscribe:1})); }catch(e){}
  };
- // ===== FIXED US30 51K DETECT - NO MORE BTC CONFUSION =====
  async function detectFromImg(url,name){
    const up=(name+" ").toUpperCase();
-   // PRIORITY 1: FILENAME - US30m screenshot name wins over price guess
    if(up.includes("US30")) return {pair:"US30", price:null, from:"filename"};
    if(up.includes("USTEC")||up.includes("NAS100")||up.includes("NAS")) return {pair:"NAS100", price:null, from:"filename"};
    const syms=["XAUUSD","EURUSD","GBPUSD","BTCUSD","V75","GBPJPY","USDJPY","AUDUSD","BOOM","CRASH","1HZ"];
@@ -252,11 +252,9 @@ function App(){
          if(golds.length>0) price=golds[golds.length-1];
          const v75s=nums.filter(n=>n>30000 && n<42000);
          if(v75s.length>0 && txt.includes("75") || v75s.length>2) price=v75s[v75s.length-1];
-         // US30 51k range - take numbers 40k-60k as US30
          const us30s=nums.filter(n=>n>40000 && n<60000);
          if(us30s.length>0 && (txt.includes("US30")||txt.includes("30M")||us30s.length>=2)) price=us30s[us30s.length-1];
        }
-       // PRIORITY 2: TEXT - US30 TEXT WINS EVEN IF PRICE IS 51K
        if(txt.includes("US30")||txt.includes("US 30")||txt.includes("WALL STREET")||txt.includes("DJI")) return {pair:"US30", price};
        if(txt.includes("XAU")||txt.includes("GOLD")||txt.includes("AUUSD")) return {pair:"XAUUSD", price};
        if(txt.includes("VOLATILITY")||txt.includes("V75")||txt.includes("75 INDEX")) return {pair:"V75", price};
@@ -268,7 +266,6 @@ function App(){
        if(txt.includes("USDJPY")||txt.includes("JPY")&&price&&price>140&&price<170) return {pair:"USDJPY", price};
        if(price){
          if(price>3500 && price<5500) return {pair:"XAUUSD", price};
-         // FIXED RANGES 2026: US30 40k-60k, BTC 90k+
          if(price>90000) return {pair:"BTCUSD", price};
          if(price>40000 && price<60000) return {pair:"US30", price};
          if(price>30000 && price<42000) return {pair:"V75", price};
@@ -306,7 +303,6 @@ function App(){
    });
  }
  async function getLivePrice(pair){
-   // US30 live via Deriv is unreliable - return null so we use OCR/manual price 51567
    if(pair==="US30" || pair==="NAS100") return null;
    const map={ "V75":"R_75", "XAUUSD":"frxXAUUSD", "EURUSD":"frxEURUSD", "GBPUSD":"frxGBPUSD", "BTCUSD":"cryBTCUSD", "GBPJPY":"frxGBPJPY", "USDJPY":"frxUSDJPY", "AUDUSD":"frxAUDUSD" };
    const sym=map[pair]; if(!sym) return null;
@@ -328,7 +324,6 @@ function App(){
    try{ const csH1=await getCandlesForScanner(pair, 3600); if(csH1) rbdSignal=detectRBDDBR(csH1); if(!rbdSignal){ const csM15=await getCandlesForScanner(pair, 900); if(csM15) rbdSignal=detectRBDDBR(csM15); } }catch(e){}
    const fallbackMap={ "XAUUSD":4413.83, "BTCUSD":95000, "V75":38820.86, "US30":51567.4, "NAS100":24800, "EURUSD":1.0850, "GBPUSD":1.2700, "USDJPY":155.50, "GBPJPY":192.50, "AUDUSD":0.65840 };
    let base=null;
-   // PRIORITY: manual / OCR price FIRST for US30 - do NOT overwrite with wrong live price
    if(manualPrice && Number(manualPrice)>0) base=Number(manualPrice);
    if(!base && ocrPrice && ocrPrice>0) base=ocrPrice;
    if(!base){ const live=await getLivePrice(pair); if(live && live>0) base=live; }
