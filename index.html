@@ -22,14 +22,10 @@
 <script type="text/babel">
 const {useState,useEffect,useRef}=React;
 const WS_URL="wss://api.derivws.com/trading/v1/options/ws/public";
-
-// ===== SMAMKELE MR BILLIONAIRE LOGIN - Login stays King / Billionaire123 behind scenes =====
 const AUTH_USER = "King";
 const AUTH_PASS = "Billionaire123";
 const DISPLAY_NAME = "Smamkele Mr Billionaire";
 const KING_ACCOUNT = "71826432";
-// =============================================
-
 if('serviceWorker' in navigator){ navigator.serviceWorker.register('/sw.js').catch(()=>{}); }
 function sendAlert(t,b){
   if(navigator.vibrate) navigator.vibrate([400,100,400,100,400]);
@@ -47,6 +43,12 @@ async function sendToMT4(result, setMsg){
     if(raw.endsWith("M") && !raw.includes("BOOM") && !raw.includes("CRASH") && !raw.includes("1HZ")) raw = raw.slice(0,-1);
     let sym = raw;
     if(raw.includes("XAU")) sym="XAUUSDm";
+    else if(raw.includes("EURUSD")) sym="EURUSDm";
+    else if(raw.includes("GBPUSD")) sym="GBPUSDm";
+    else if(raw.includes("USDJPY")) sym="USDJPYm";
+    else if(raw.includes("USDCAD")) sym="USDCADm";
+    else if(raw.includes("EURJPY")) sym="EURJPYm";
+    else if(raw.includes("NZDUSD")) sym="NZDUSDm";
     else if(raw.includes("V75") || raw.includes("VOLATILITY75")) sym="Volatility 75 Index";
     else if(raw.includes("BTC")) sym="BTCUSDm";
     else if(raw.includes("US30")) sym="US30m";
@@ -67,12 +69,22 @@ async function sendToMT4(result, setMsg){
     else if(raw.includes("CRASH900")) sym="CRASH900";
     else if(raw.includes("CRASH1000")) sym="CRASH1000";
     else if(raw.includes("CRASH300N")) sym="CRASH300N";
-    else if(raw.includes("EURUSD")) sym="EURUSDm";
-    else if(raw.includes("GBPUSD")) sym="GBPUSDm";
-    else if(raw.includes("USDJPY")) sym="USDJPYm";
     else if(raw.includes("GBPJPY")) sym="GBPJPYm";
     else if(raw.includes("AUDUSD")) sym="AUDUSDm";
     else sym = raw + "m";
+    // === NEWS MARKET / CLOSE ALL ===
+    if(result.dir==="MARKET_BUY" || result.dir==="MARKET_SELL"){
+      const payload={action:result.dir, symbol:sym, entry:0, sl:0, tp:0, time: Math.floor(Date.now()/1000), isNews:true};
+      const r = await fetch("/api/signal", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload)});
+      const j = await r.json();
+      if(r.ok && j.ok){ if(setMsg) setMsg("✅ NEWS MARKET SENT: "+sym+" "+result.dir); sendAlert("NEWS TRADE", sym+" "+result.dir); return true; }
+      if(setMsg) setMsg("Bridge error - retry news"); return false;
+    }
+    if(result.dir==="CLOSE_ALL"){
+      const r = await fetch("/api/signal", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({action:"CLOSE_ALL", symbol:"ALL", time: Math.floor(Date.now()/1000)})});
+      if(setMsg) setMsg("✅ CLOSE ALL SENT TO MT4");
+      return true;
+    }
     const spamKey = sym+"_"+result.entry+"_"+result.dir;
     const nowSec = Math.floor(Date.now()/1000);
     if(lastSentMap[spamKey] && (nowSec - lastSentMap[spamKey] < 60)){ if(setMsg) setMsg("Blocked duplicate - already sent "+sym); return false; }
@@ -169,13 +181,87 @@ function App(){
  const [showRobot,setShowRobot]=useState(false);
  const [showScanner,setShowScanner]=useState(true);
  const [showBalance,setShowBalance]=useState(false);
- // SMAMKELE MR BILLIONAIRE LICENSE MANAGER STATE - CLEAN, NO SERVER DETAILS
  const [licenseList,setLicenseList]=useState([{account:"71826432", expiry:"2099.12.31", status:"SMAMKELE MR BILLIONAIRE 👑"}]);
  const [newLicAcc,setNewLicAcc]=useState(""),[newLicExp,setNewLicExp]=useState("2027.12.31"),[showLic,setShowLic]=useState(false),[licCheckMsg,setLicCheckMsg]=useState("");
+ // ===== TRADE NEWS STATE - ADDED ====
+ const [newsPair,setNewsPair]=useState("XAUUSD");
+ const [newsRunning,setNewsRunning]=useState(false);
+ const [newsEvents,setNewsEvents]=useState([]);
+ const [newsMsg,setNewsMsg]=useState("Pick a pair and press START - Red Flag only");
+ const [nextNews,setNextNews]=useState(null);
+ const [newsCountdown,setNewsCountdown]=useState("");
+ const [newsTradedKeys,setNewsTradedKeys]=useState(new Set());
+ const newsRunningRef=useRef(false);
+ const newsPairRef=useRef("XAUUSD");
  const wsRef=useRef(null), reqRef=useRef(0), pendRef=useRef(new Map()), runRef=useRef(false);
  const sentBoxesRef=useRef(new Set());
  useEffect(()=>{ const t=setInterval(()=>setClock(Math.floor(Date.now()/1000)),1000); return ()=>clearInterval(t); },[]);
  useEffect(()=>{ if('Notification' in window && Notification.permission==='default') Notification.requestPermission(); },[]);
+ // NEWS FETCH - ForexFactory via proxy
+ const fetchNews = async () => {
+   try{
+     const proxy = "https://api.allorigins.win/get?url=" + encodeURIComponent("https://nfs.faireconomy.media/ff_calendar_thisweek.xml");
+     const r = await fetch(proxy);
+     const j = await r.json();
+     const xmlText = j.contents;
+     const parser = new DOMParser();
+     const xml = parser.parseFromString(xmlText, "text/xml");
+     const evs = Array.from(xml.getElementsByTagName("event"));
+     const parsed = evs.map(ev=>{
+       const get = (tag)=>{ const el=ev.getElementsByTagName(tag)[0]; return el?el.textContent:""; };
+       return { title:get("title"), country:get("country"), date:get("date"), time:get("time"), impact:get("impact"), forecast:get("forecast"), previous:get("previous") };
+     }).filter(e=>e.impact==="High");
+     const pairCurr = { "XAUUSD":["USD"], "EURUSD":["USD","EUR"], "GBPUSD":["USD","GBP"], "USDJPY":["USD","JPY"], "USDCAD":["USD","CAD"], "EURJPY":["EUR","JPY"], "NZDUSD":["USD","NZD"] };
+     const allowed = pairCurr[newsPairRef.current]||["USD"];
+     const filtered = parsed.filter(e=>allowed.includes(e.country));
+     setNewsEvents(filtered);
+     const now = new Date();
+     for(let e of filtered){
+       try{
+         const dt = new Date(e.date + " " + e.time + " EST");
+         const ts = dt.getTime();
+         if(ts > now.getTime() - 60000){
+           const num = (s)=>{ if(!s) return null; const m=s.replace(/[^0-9.\-]/g,""); const v=parseFloat(m); return isNaN(v)?null:v; };
+           const f=num(e.forecast); const p=num(e.previous);
+           let bias="NO TRADE";
+           if(f!==null && p!==null){ if(f>p) bias="BUY BIAS ↑"; else if(f<p) bias="SELL BIAS ↓"; else bias="EQUAL - SKIP"; }
+           setNextNews({...e, ts, forecastNum:f, prevNum:p, bias});
+           break;
+         }
+       }catch(err){}
+     }
+   }catch(e){ setNewsMsg("News feed loading - check connection"); }
+ };
+ useEffect(()=>{ fetchNews(); const iv=setInterval(fetchNews, 60000); return ()=>clearInterval(iv); },[]);
+ useEffect(()=>{ newsPairRef.current = newsPair; fetchNews(); },[newsPair]);
+ useEffect(()=>{
+   const iv=setInterval(async()=>{
+     if(!newsRunningRef.current || !nextNews) return;
+     const nowMs = Date.now();
+     const diffMs = nextNews.ts - nowMs;
+     const diffSec = Math.floor(diffMs/1000);
+     if(diffSec>0){
+       const m=Math.floor(diffSec/60); const s=diffSec%60;
+       setNewsCountdown(`Next: ${nextNews.country} ${nextNews.title} in ${m}:${s.toString().padStart(2,"0")} - Prev ${nextNews.previous} Fore ${nextNews.forecast} - ${nextNews.bias}`);
+     }
+     if(diffSec===60 || diffSec===59 || diffSec===58){
+       const key = nextNews.title+"_"+nextNews.date+"_"+nextNews.time;
+       if(newsTradedKeys.has(key)) return;
+       const newSet = new Set(newsTradedKeys); newSet.add(key); setNewsTradedKeys(newSet);
+       if(nextNews.forecastNum===null || nextNews.prevNum===null){ setNewsMsg("No forecast/previous - skipping"); return; }
+       if(nextNews.forecastNum > nextNews.prevNum){
+         setNewsMsg(`🔥 NEWS BUY: ${nextNews.title} Fore ${nextNews.forecast} > Prev ${nextNews.previous} - BUY MARKET ${newsPairRef.current}`);
+         await sendToMT4({pair:newsPairRef.current+".ecn", dir:"MARKET_BUY"}, setNewsMsg);
+       } else if(nextNews.forecastNum < nextNews.prevNum){
+         setNewsMsg(`🔥 NEWS SELL: ${nextNews.title} Fore ${nextNews.forecast} < Prev ${nextNews.previous} - SELL MARKET ${newsPairRef.current}`);
+         await sendToMT4({pair:newsPairRef.current+".ecn", dir:"MARKET_SELL"}, setNewsMsg);
+       } else { setNewsMsg("Forecast = Previous - NO TRADE"); }
+     }
+   },1000);
+   return ()=>clearInterval(iv);
+ },[nextNews, newsTradedKeys]);
+ const startNews = async () => { newsRunningRef.current=true; setNewsRunning(true); await fetchNews(); setNewsMsg("NEWS ARMED - Waiting for 1 min before Red News - "+newsPair); sendAlert("NEWS ARMED", "Red flag trading ON for "+newsPair); };
+ const stopNews = async () => { newsRunningRef.current=false; setNewsRunning(false); setNewsMsg("NEWS STOPPED - Closing all positions..."); await sendToMT4({pair:"XAUUSD", dir:"CLOSE_ALL"}, setNewsMsg); setNewsCountdown(""); sendAlert("NEWS STOPPED", "All positions closed"); };
  const request=(p)=>new Promise((res,rej)=>{ const ws=wsRef.current; if(!ws||ws.readyState!==1){rej(new Error("Not connected"));return;} const id=++reqRef.current; const to=setTimeout(()=>{pendRef.current.delete(id); rej(new Error("timeout"));},20000); pendRef.current.set(id,{res,rej,to}); ws.send(JSON.stringify({...p,req_id:id})); });
  const scanAll=async()=>{
    const ws=wsRef.current; if(!ws) return;
@@ -338,7 +424,7 @@ function App(){
  }
  async function getLivePrice(pair){
    if(pair==="US30" || pair==="NAS100") return null;
-   const map={ "V75":"R_75", "XAUUSD":"frxXAUUSD", "EURUSD":"frxEURUSD", "GBPUSD":"frxGBPUSD", "BTCUSD":"cryBTCUSD", "GBPJPY":"frxGBPJPY", "USDJPY":"frxUSDJPY", "AUDUSD":"frxAUDUSD" };
+   const map={ "V75":"R_75", "XAUUSD":"frxXAUUSD", "EURUSD":"frxEURUSD", "GBPUSD":"frxGBPUSD", "BTCUSD":"cryBTCUSD", "GBPJPY":"frxGBPJPY", "USDJPY":"frxUSDJPY", "AUDUSD":"frxAUDUSD", "USDCAD":"frxUSDCAD", "EURJPY":"frxEURJPY", "NZDUSD":"frxNZDUSD" };
    const sym=map[pair]; if(!sym) return null;
    return new Promise((res)=>{ try{ const ws=new WebSocket(WS_URL); let done=false; ws.onopen=()=>{ ws.send(JSON.stringify({ticks:sym})); }; ws.onmessage=(e)=>{ try{ const d=JSON.parse(e.data); if(d.tick && d.tick.quote && !done){ done=true; res(Number(d.tick.quote)); try{ws.close();}catch{} } }catch{} }; setTimeout(()=>{ if(!done){ res(null); try{ws.close();}catch{} } },3500); }catch(e){ res(null); } });
  }
@@ -395,7 +481,6 @@ function App(){
    }
  };
  const doLogout=()=>{ localStorage.removeItem('ifx_auth'); setAuthed(false); setLoginUser(""); setLoginPass(""); };
- // LICENSE CHECK - HIDDEN DETAILS, CLEAN FOR CLIENTS
  const checkLicenseServer = async (acc) => {
    try{
      const r = await fetch(`/api/license?account=${acc}`);
@@ -466,6 +551,24 @@ function App(){
        </div>
      )}
    </div>
+   <div style={{background:"linear-gradient(135deg,#3f0a0a,#1e1b4b)",border:"2px solid #ef4444",borderRadius:12,margin:"8px 10px",padding:"10px"}}>
+     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+       <div style={{fontSize:14,fontWeight:900}}>📰 TRADE NEWS - RED FLAG <span style={{fontSize:10,color:"#fff",background:"#ef4444",padding:"2px 6px",borderRadius:4,marginLeft:4}}>{newsRunning?"ARMED":"OFF"}</span></div>
+       <div style={{fontSize:10,color:"#fca5a5"}}>1 MIN BEFORE • MARKET • NO TP/SL</div>
+     </div>
+     <div style={{fontSize:10,color:"#fecaca",marginTop:4}}>Forecast &gt; Previous = BUY • Forecast &lt; Previous = SELL • Major pairs only</div>
+     <div style={{display:"flex",gap:4,overflowX:"auto",marginTop:8,paddingBottom:2}}>{["XAUUSD","EURUSD","GBPUSD","USDJPY","USDCAD","EURJPY","NZDUSD"].map(p=>(<button key={p} onClick={()=>{setNewsPair(p);}} style={{padding:"6px 10px",borderRadius:14,background:newsPair===p?"#ef4444":"#1e293b",color:"white",border:newsPair===p?"1px solid #fca5a5":"none",fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{p==="XAUUSD"?"GOLD":p}</button>))}</div>
+     <div style={{background:"#0f172a",border:"1px solid #7f1d1d",borderRadius:8,padding:8,marginTop:8, fontSize:11}}>
+       <div style={{color:"#fbbf24"}}>{newsCountdown || "Fetching red news..."}</div>
+       <div style={{color:"#e6edf7",marginTop:4}}>{newsMsg}</div>
+       {nextNews && <div style={{color:"#94a3b8",marginTop:4,fontSize:10}}>{nextNews.country} {nextNews.title} • Prev {nextNews.previous} • Fore {nextNews.forecast} • {nextNews.date} {nextNews.time}</div>}
+     </div>
+     <div style={{display:"flex",gap:8,marginTop:8}}>
+       <button onClick={startNews} disabled={newsRunning} style={{flex:1,padding:12,border:"none",borderRadius:8,fontWeight:900,fontSize:13,background:"#22c55e",color:"white",opacity:newsRunning?0.5:1}}>▶ START TRADE NEWS</button>
+       <button onClick={stopNews} style={{flex:1,padding:12,border:"none",borderRadius:8,fontWeight:900,fontSize:13,background:"#dc2626",color:"white"}}>■ STOP + CLOSE ALL</button>
+     </div>
+     <div style={{fontSize:10,color:"#fca5a5",marginTop:6, textAlign:"center"}}>Pair: {newsPair} • Will take MARKET order 60 sec before news. STOP closes all.</div>
+   </div>
    <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:12,margin:"0 10px",padding:"7px 10px"}}>
      <button onClick={()=>setShowBalance(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",background:"transparent",color:"white",border:"none",padding:0,fontSize:11,fontWeight:800}}><span>Balance ${balance} • Risk {riskPct}% • Lots {lots} • P/L ${fmt(floating+realised,2)}</span><span>{showBalance?"▲":"▼"}</span></button>
      {showBalance && (
@@ -523,7 +626,6 @@ function App(){
        </div>
      ))}
    </div>
-
    <div style={{background:"#131e32",border:"1px solid #d4af37",borderRadius:12,margin:"8px 10px",padding:"10px"}}>
      <button onClick={()=>setShowLic(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",background:"transparent",color:"#FFD700",border:"none",padding:0,fontSize:12,fontWeight:900,textAlign:"left"}}><span>👑 {DISPLAY_NAME.toUpperCase()} LICENSE CONTROL</span><span>{showLic?"▲":"▼"}</span></button>
      {showLic && (
@@ -553,7 +655,6 @@ function App(){
        </div>
      )}
    </div>
-
    <div style={{textAlign:"center",fontSize:10,color:"#64748b",marginTop:6}}>UTC {new Date(clock*1000).toISOString().slice(11,19)} • Trading 07:00-21:59 • iFX BILLIONAIRE • MT4 LINKED • Logged as {DISPLAY_NAME}</div>
    <div style={{textAlign:"center",fontSize:9,letterSpacing:"2px",color:"#FFD700",fontWeight:800,marginTop:4,textTransform:"uppercase"}}>Creating More Bread Winners 👑</div>
   </div>
