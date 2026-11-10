@@ -72,7 +72,6 @@ async function sendToMT4(result, setMsg){
     else if(raw.includes("GBPJPY")) sym="GBPJPYm";
     else if(raw.includes("AUDUSD")) sym="AUDUSDm";
     else sym = raw + "m";
-    // === NEWS MARKET / CLOSE ALL ===
     if(result.dir==="MARKET_BUY" || result.dir==="MARKET_SELL"){
       const payload={action:result.dir, symbol:sym, entry:0, sl:0, tp:0, time: Math.floor(Date.now()/1000), isNews:true};
       const r = await fetch("/api/signal", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload)});
@@ -183,11 +182,10 @@ function App(){
  const [showBalance,setShowBalance]=useState(false);
  const [licenseList,setLicenseList]=useState([{account:"71826432", expiry:"2099.12.31", status:"SMAMKELE MR BILLIONAIRE 👑"}]);
  const [newLicAcc,setNewLicAcc]=useState(""),[newLicExp,setNewLicExp]=useState("2027.12.31"),[showLic,setShowLic]=useState(false),[licCheckMsg,setLicCheckMsg]=useState("");
- // ===== TRADE NEWS STATE - ADDED ====
  const [newsPair,setNewsPair]=useState("XAUUSD");
  const [newsRunning,setNewsRunning]=useState(false);
  const [newsEvents,setNewsEvents]=useState([]);
- const [newsMsg,setNewsMsg]=useState("Pick a pair and press START - Red Flag only");
+ const [newsMsg,setNewsMsg]=useState("Pick a pair and press START");
  const [nextNews,setNextNews]=useState(null);
  const [newsCountdown,setNewsCountdown]=useState("");
  const [newsTradedKeys,setNewsTradedKeys]=useState(new Set());
@@ -197,7 +195,6 @@ function App(){
  const sentBoxesRef=useRef(new Set());
  useEffect(()=>{ const t=setInterval(()=>setClock(Math.floor(Date.now()/1000)),1000); return ()=>clearInterval(t); },[]);
  useEffect(()=>{ if('Notification' in window && Notification.permission==='default') Notification.requestPermission(); },[]);
- // NEWS FETCH - ForexFactory via proxy
  const fetchNews = async () => {
    try{
      const proxy = "https://api.allorigins.win/get?url=" + encodeURIComponent("https://nfs.faireconomy.media/ff_calendar_thisweek.xml");
@@ -224,7 +221,7 @@ function App(){
            const num = (s)=>{ if(!s) return null; const m=s.replace(/[^0-9.\-]/g,""); const v=parseFloat(m); return isNaN(v)?null:v; };
            const f=num(e.forecast); const p=num(e.previous);
            let bias="NO TRADE";
-           if(f!==null && p!==null){ if(f>p) bias="BUY BIAS ↑"; else if(f<p) bias="SELL BIAS ↓"; else bias="EQUAL - SKIP"; }
+           if(f!==null && p!==null){ if(f>p) bias="BUY"; else if(f<p) bias="SELL"; else bias="SKIP"; }
            setNextNews({...e, ts, forecastNum:f, prevNum:p, bias});
            break;
          }
@@ -242,25 +239,25 @@ function App(){
      const diffSec = Math.floor(diffMs/1000);
      if(diffSec>0){
        const m=Math.floor(diffSec/60); const s=diffSec%60;
-       setNewsCountdown(`Next: ${nextNews.country} ${nextNews.title} in ${m}:${s.toString().padStart(2,"0")} - Prev ${nextNews.previous} Fore ${nextNews.forecast} - ${nextNews.bias}`);
+       setNewsCountdown(`Next: ${nextNews.country} ${nextNews.title} in ${m}:${s.toString().padStart(2,"0")}`);
      }
      if(diffSec===60 || diffSec===59 || diffSec===58){
        const key = nextNews.title+"_"+nextNews.date+"_"+nextNews.time;
        if(newsTradedKeys.has(key)) return;
        const newSet = new Set(newsTradedKeys); newSet.add(key); setNewsTradedKeys(newSet);
-       if(nextNews.forecastNum===null || nextNews.prevNum===null){ setNewsMsg("No forecast/previous - skipping"); return; }
+       if(nextNews.forecastNum===null || nextNews.prevNum===null){ setNewsMsg("No data - skipping"); return; }
        if(nextNews.forecastNum > nextNews.prevNum){
-         setNewsMsg(`🔥 NEWS BUY: ${nextNews.title} Fore ${nextNews.forecast} > Prev ${nextNews.previous} - BUY MARKET ${newsPairRef.current}`);
+         setNewsMsg(`🔥 NEWS BUY: ${nextNews.title} - BUY MARKET ${newsPairRef.current}`);
          await sendToMT4({pair:newsPairRef.current+".ecn", dir:"MARKET_BUY"}, setNewsMsg);
        } else if(nextNews.forecastNum < nextNews.prevNum){
-         setNewsMsg(`🔥 NEWS SELL: ${nextNews.title} Fore ${nextNews.forecast} < Prev ${nextNews.previous} - SELL MARKET ${newsPairRef.current}`);
+         setNewsMsg(`🔥 NEWS SELL: ${nextNews.title} - SELL MARKET ${newsPairRef.current}`);
          await sendToMT4({pair:newsPairRef.current+".ecn", dir:"MARKET_SELL"}, setNewsMsg);
-       } else { setNewsMsg("Forecast = Previous - NO TRADE"); }
+       } else { setNewsMsg("No trade - equal"); }
      }
    },1000);
    return ()=>clearInterval(iv);
  },[nextNews, newsTradedKeys]);
- const startNews = async () => { newsRunningRef.current=true; setNewsRunning(true); await fetchNews(); setNewsMsg("NEWS ARMED - Waiting for 1 min before Red News - "+newsPair); sendAlert("NEWS ARMED", "Red flag trading ON for "+newsPair); };
+ const startNews = async () => { newsRunningRef.current=true; setNewsRunning(true); await fetchNews(); setNewsMsg("NEWS ARMED - Waiting for 1 min before news - "+newsPair); sendAlert("NEWS ARMED", "Trading ON for "+newsPair); };
  const stopNews = async () => { newsRunningRef.current=false; setNewsRunning(false); setNewsMsg("NEWS STOPPED - Closing all positions..."); await sendToMT4({pair:"XAUUSD", dir:"CLOSE_ALL"}, setNewsMsg); setNewsCountdown(""); sendAlert("NEWS STOPPED", "All positions closed"); };
  const request=(p)=>new Promise((res,rej)=>{ const ws=wsRef.current; if(!ws||ws.readyState!==1){rej(new Error("Not connected"));return;} const id=++reqRef.current; const to=setTimeout(()=>{pendRef.current.delete(id); rej(new Error("timeout"));},20000); pendRef.current.set(id,{res,rej,to}); ws.send(JSON.stringify({...p,req_id:id})); });
  const scanAll=async()=>{
@@ -551,23 +548,21 @@ function App(){
        </div>
      )}
    </div>
-   <div style={{background:"linear-gradient(135deg,#3f0a0a,#1e1b4b)",border:"2px solid #ef4444",borderRadius:12,margin:"8px 10px",padding:"10px"}}>
+   <div style={{background:"linear-gradient(135deg,#0a1e3f,#0f172a)",border:"2px solid #0ea5e9",borderRadius:12,margin:"8px 10px",padding:"10px",boxShadow:"0 0 18px rgba(14,165,233,.35)"}}>
      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-       <div style={{fontSize:14,fontWeight:900}}>📰 TRADE NEWS - RED FLAG <span style={{fontSize:10,color:"#fff",background:"#ef4444",padding:"2px 6px",borderRadius:4,marginLeft:4}}>{newsRunning?"ARMED":"OFF"}</span></div>
-       <div style={{fontSize:10,color:"#fca5a5"}}>1 MIN BEFORE • MARKET • NO TP/SL</div>
+       <div style={{fontSize:14,fontWeight:900}}>📰 TRADE NEWS <span style={{fontSize:10,color:"#fff",background:"#0ea5e9",padding:"2px 6px",borderRadius:4,marginLeft:4}}>{newsRunning?"ARMED":"OFF"}</span></div>
+       <div style={{fontSize:10,color:"#7dd3fc"}}>1 MIN BEFORE • MARKET • NO TP/SL</div>
      </div>
-     <div style={{fontSize:10,color:"#fecaca",marginTop:4}}>Forecast &gt; Previous = BUY • Forecast &lt; Previous = SELL • Major pairs only</div>
-     <div style={{display:"flex",gap:4,overflowX:"auto",marginTop:8,paddingBottom:2}}>{["XAUUSD","EURUSD","GBPUSD","USDJPY","USDCAD","EURJPY","NZDUSD"].map(p=>(<button key={p} onClick={()=>{setNewsPair(p);}} style={{padding:"6px 10px",borderRadius:14,background:newsPair===p?"#ef4444":"#1e293b",color:"white",border:newsPair===p?"1px solid #fca5a5":"none",fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{p==="XAUUSD"?"GOLD":p}</button>))}</div>
-     <div style={{background:"#0f172a",border:"1px solid #7f1d1d",borderRadius:8,padding:8,marginTop:8, fontSize:11}}>
-       <div style={{color:"#fbbf24"}}>{newsCountdown || "Fetching red news..."}</div>
+     <div style={{display:"flex",gap:4,overflowX:"auto",marginTop:8,paddingBottom:2}}>{["XAUUSD","EURUSD","GBPUSD","USDJPY","USDCAD","EURJPY","NZDUSD"].map(p=>(<button key={p} onClick={()=>{setNewsPair(p);}} style={{padding:"6px 10px",borderRadius:14,background:newsPair===p?"#0ea5e9":"#1e293b",color:"white",border:newsPair===p?"1px solid #bae6fd":"none",fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{p==="XAUUSD"?"GOLD":p}</button>))}</div>
+     <div style={{background:"#0f172a",border:"1px solid #0ea5e9",borderRadius:8,padding:8,marginTop:8, fontSize:11}}>
+       <div style={{color:"#fbbf24"}}>{newsCountdown || "Fetching news..."}</div>
        <div style={{color:"#e6edf7",marginTop:4}}>{newsMsg}</div>
-       {nextNews && <div style={{color:"#94a3b8",marginTop:4,fontSize:10}}>{nextNews.country} {nextNews.title} • Prev {nextNews.previous} • Fore {nextNews.forecast} • {nextNews.date} {nextNews.time}</div>}
      </div>
      <div style={{display:"flex",gap:8,marginTop:8}}>
        <button onClick={startNews} disabled={newsRunning} style={{flex:1,padding:12,border:"none",borderRadius:8,fontWeight:900,fontSize:13,background:"#22c55e",color:"white",opacity:newsRunning?0.5:1}}>▶ START TRADE NEWS</button>
        <button onClick={stopNews} style={{flex:1,padding:12,border:"none",borderRadius:8,fontWeight:900,fontSize:13,background:"#dc2626",color:"white"}}>■ STOP + CLOSE ALL</button>
      </div>
-     <div style={{fontSize:10,color:"#fca5a5",marginTop:6, textAlign:"center"}}>Pair: {newsPair} • Will take MARKET order 60 sec before news. STOP closes all.</div>
+     <div style={{fontSize:10,color:"#7dd3fc",marginTop:6, textAlign:"center"}}>Pair: {newsPair} • Will take MARKET order 60 sec before news. STOP closes all.</div>
    </div>
    <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:12,margin:"0 10px",padding:"7px 10px"}}>
      <button onClick={()=>setShowBalance(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",background:"transparent",color:"white",border:"none",padding:0,fontSize:11,fontWeight:800}}><span>Balance ${balance} • Risk {riskPct}% • Lots {lots} • P/L ${fmt(floating+realised,2)}</span><span>{showBalance?"▲":"▼"}</span></button>
