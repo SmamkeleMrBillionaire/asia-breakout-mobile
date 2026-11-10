@@ -180,6 +180,7 @@ function App(){
  const [showRobot,setShowRobot]=useState(false);
  const [showScanner,setShowScanner]=useState(true);
  const [showBalance,setShowBalance]=useState(false);
+ const [showNews,setShowNews]=useState(true);
  const [licenseList,setLicenseList]=useState([{account:"71826432", expiry:"2099.12.31", status:"SMAMKELE MR BILLIONAIRE 👑"}]);
  const [newLicAcc,setNewLicAcc]=useState(""),[newLicExp,setNewLicExp]=useState("2027.12.31"),[showLic,setShowLic]=useState(false),[licCheckMsg,setLicCheckMsg]=useState("");
  const [newsPair,setNewsPair]=useState("XAUUSD");
@@ -195,12 +196,32 @@ function App(){
  const sentBoxesRef=useRef(new Set());
  useEffect(()=>{ const t=setInterval(()=>setClock(Math.floor(Date.now()/1000)),1000); return ()=>clearInterval(t); },[]);
  useEffect(()=>{ if('Notification' in window && Notification.permission==='default') Notification.requestPermission(); },[]);
+ // NEWS FETCH - 3 PROXIES FIX FOR CHECK CONNECTION
  const fetchNews = async () => {
+   const target = "https://nfs.faireconomy.media/ff_calendar_thisweek.xml";
+   const proxies = [
+     "https://api.allorigins.win/raw?url=" + encodeURIComponent(target),
+     "https://api.allorigins.win/get?url=" + encodeURIComponent(target),
+     "https://api.codetabs.com/v1/proxy?quest=" + encodeURIComponent(target),
+     "https://corsproxy.io/?url=" + encodeURIComponent(target)
+   ];
+   let xmlText = null;
+   for(let url of proxies){
+     try{
+       const r = await fetch(url);
+       if(!r.ok) continue;
+       const isGet = url.includes("/get?url=");
+       if(isGet){
+         const j = await r.json();
+         if(j.contents && j.contents.includes("<event")){ xmlText = j.contents; break; }
+       } else {
+         const t = await r.text();
+         if(t && t.includes("<event")){ xmlText = t; break; }
+       }
+     }catch(e){}
+   }
+   if(!xmlText){ setNewsMsg("Feed busy - retrying in 60s, keep START on"); return; }
    try{
-     const proxy = "https://api.allorigins.win/get?url=" + encodeURIComponent("https://nfs.faireconomy.media/ff_calendar_thisweek.xml");
-     const r = await fetch(proxy);
-     const j = await r.json();
-     const xmlText = j.contents;
      const parser = new DOMParser();
      const xml = parser.parseFromString(xmlText, "text/xml");
      const evs = Array.from(xml.getElementsByTagName("event"));
@@ -220,14 +241,14 @@ function App(){
          if(ts > now.getTime() - 60000){
            const num = (s)=>{ if(!s) return null; const m=s.replace(/[^0-9.\-]/g,""); const v=parseFloat(m); return isNaN(v)?null:v; };
            const f=num(e.forecast); const p=num(e.previous);
-           let bias="NO TRADE";
-           if(f!==null && p!==null){ if(f>p) bias="BUY"; else if(f<p) bias="SELL"; else bias="SKIP"; }
-           setNextNews({...e, ts, forecastNum:f, prevNum:p, bias});
+           setNextNews({...e, ts, forecastNum:f, prevNum:p, bias:""});
            break;
          }
        }catch(err){}
      }
-   }catch(e){ setNewsMsg("News feed loading - check connection"); }
+     if(filtered.length>0) setNewsMsg("News loaded - "+filtered.length+" for "+newsPairRef.current);
+     else setNewsMsg("No high impact left today for "+newsPairRef.current);
+   }catch(e){ setNewsMsg("Feed busy - retrying..."); }
  };
  useEffect(()=>{ fetchNews(); const iv=setInterval(fetchNews, 60000); return ()=>clearInterval(iv); },[]);
  useEffect(()=>{ newsPairRef.current = newsPair; fetchNews(); },[newsPair]);
@@ -549,20 +570,34 @@ function App(){
      )}
    </div>
    <div style={{background:"linear-gradient(135deg,#0a1e3f,#0f172a)",border:"2px solid #0ea5e9",borderRadius:12,margin:"8px 10px",padding:"10px",boxShadow:"0 0 18px rgba(14,165,233,.35)"}}>
-     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-       <div style={{fontSize:14,fontWeight:900}}>📰 TRADE NEWS <span style={{fontSize:10,color:"#fff",background:"#0ea5e9",padding:"2px 6px",borderRadius:4,marginLeft:4}}>{newsRunning?"ARMED":"OFF"}</span></div>
-       <div style={{fontSize:10,color:"#7dd3fc"}}>1 MIN BEFORE • MARKET • NO TP/SL</div>
-     </div>
-     <div style={{display:"flex",gap:4,overflowX:"auto",marginTop:8,paddingBottom:2}}>{["XAUUSD","EURUSD","GBPUSD","USDJPY","USDCAD","EURJPY","NZDUSD"].map(p=>(<button key={p} onClick={()=>{setNewsPair(p);}} style={{padding:"6px 10px",borderRadius:14,background:newsPair===p?"#0ea5e9":"#1e293b",color:"white",border:newsPair===p?"1px solid #bae6fd":"none",fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{p==="XAUUSD"?"GOLD":p}</button>))}</div>
-     <div style={{background:"#0f172a",border:"1px solid #0ea5e9",borderRadius:8,padding:8,marginTop:8, fontSize:11}}>
-       <div style={{color:"#fbbf24"}}>{newsCountdown || "Fetching news..."}</div>
-       <div style={{color:"#e6edf7",marginTop:4}}>{newsMsg}</div>
-     </div>
-     <div style={{display:"flex",gap:8,marginTop:8}}>
-       <button onClick={startNews} disabled={newsRunning} style={{flex:1,padding:12,border:"none",borderRadius:8,fontWeight:900,fontSize:13,background:"#22c55e",color:"white",opacity:newsRunning?0.5:1}}>▶ START TRADE NEWS</button>
-       <button onClick={stopNews} style={{flex:1,padding:12,border:"none",borderRadius:8,fontWeight:900,fontSize:13,background:"#dc2626",color:"white"}}>■ STOP + CLOSE ALL</button>
-     </div>
-     <div style={{fontSize:10,color:"#7dd3fc",marginTop:6, textAlign:"center"}}>Pair: {newsPair} • Will take MARKET order 60 sec before news. STOP closes all.</div>
+     <button onClick={()=>setShowNews(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",alignItems:"center",background:"transparent",color:"white",border:"none",padding:0,textAlign:"left"}}>
+       <div style={{display:"flex",alignItems:"center",gap:6}}>
+         <span style={{fontSize:14,fontWeight:900}}>📰 TRADE NEWS</span>
+         <span style={{fontSize:10,color:"#fff",background:"#0ea5e9",padding:"2px 6px",borderRadius:4}}>{newsRunning?"ARMED":"OFF"}</span>
+         {!showNews && newsCountdown && <span style={{fontSize:10,color:"#fbbf24",marginLeft:4}}>{newsCountdown}</span>}
+       </div>
+       <span style={{display:"flex",gap:8,alignItems:"center"}}><span style={{fontSize:9,color:"#7dd3fc"}}>1 MIN BEFORE • MARKET</span><span>{showNews?"▲":"▼"}</span></span>
+     </button>
+     {showNews && (
+       <div>
+         <div style={{display:"flex",gap:4,overflowX:"auto",marginTop:8,paddingBottom:2}}>{["XAUUSD","EURUSD","GBPUSD","USDJPY","USDCAD","EURJPY","NZDUSD"].map(p=>(<button key={p} onClick={()=>{setNewsPair(p);}} style={{padding:"6px 10px",borderRadius:14,background:newsPair===p?"#0ea5e9":"#1e293b",color:"white",border:newsPair===p?"1px solid #bae6fd":"none",fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{p==="XAUUSD"?"GOLD":p}</button>))}</div>
+         <div style={{background:"#0f172a",border:"1px solid #0ea5e9",borderRadius:8,padding:8,marginTop:8, fontSize:11}}>
+           <div style={{color:"#fbbf24"}}>{newsCountdown || "Fetching news..."}</div>
+           <div style={{color:"#e6edf7",marginTop:4}}>{newsMsg}</div>
+         </div>
+         <div style={{display:"flex",gap:8,marginTop:8}}>
+           <button onClick={startNews} disabled={newsRunning} style={{flex:1,padding:12,border:"none",borderRadius:8,fontWeight:900,fontSize:13,background:"#22c55e",color:"white",opacity:newsRunning?0.5:1}}>▶ START TRADE NEWS</button>
+           <button onClick={stopNews} style={{flex:1,padding:12,border:"none",borderRadius:8,fontWeight:900,fontSize:13,background:"#dc2626",color:"white"}}>■ STOP + CLOSE ALL</button>
+         </div>
+         <div style={{fontSize:10,color:"#7dd3fc",marginTop:6, textAlign:"center"}}>Pair: {newsPair} • MARKET 60 sec before news. STOP closes all.</div>
+       </div>
+     )}
+     {!showNews && (
+       <div style={{display:"flex",gap:8,marginTop:8}}>
+         <button onClick={startNews} disabled={newsRunning} style={{flex:1,padding:10,border:"none",borderRadius:8,fontWeight:900,fontSize:12,background:"#22c55e",color:"white",opacity:newsRunning?0.5:1}}>▶ START NEWS</button>
+         <button onClick={stopNews} style={{flex:1,padding:10,border:"none",borderRadius:8,fontWeight:900,fontSize:12,background:"#dc2626",color:"white"}}>■ STOP</button>
+       </div>
+     )}
    </div>
    <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:12,margin:"0 10px",padding:"7px 10px"}}>
      <button onClick={()=>setShowBalance(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",background:"transparent",color:"white",border:"none",padding:0,fontSize:11,fontWeight:800}}><span>Balance ${balance} • Risk {riskPct}% • Lots {lots} • P/L ${fmt(floating+realised,2)}</span><span>{showBalance?"▲":"▼"}</span></button>
