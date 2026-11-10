@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0">
-<title>iFX BILLIONAIRE EA</title>
+<title>iFX BILLIONAIRE EA - Creating More Bread Winners</title>
 <link rel="manifest" href="/manifest.json" />
 <meta name="theme-color" content="#0a0f1a" />
 <meta name="mobile-web-app-capable" content="yes" />
@@ -400,7 +400,8 @@ function App(){
          <img src="/lion-king.png" style={{width:"100%",display:"block",height:230,objectFit:"cover",objectPosition:"top"}} />
        </div>
        <div style={{fontSize:26,fontWeight:900,color:"#d4af37",letterSpacing:1,marginTop:14,textAlign:"center"}}>iFX BILLIONAIRE EA</div>
-       <div style={{fontSize:11,color:"#8a9bb5",marginTop:2}}>King Access Only 👑</div>
+       <div style={{fontSize:11,fontWeight:800,letterSpacing:"2.5px",color:"#FFD700",marginTop:4,textAlign:"center",textTransform:"uppercase"}}>Creating More Bread Winners</div>
+       <div style={{fontSize:11,color:"#8a9bb5",marginTop:4}}>King Access Only 👑</div>
 
        <div className={shakeIt?"shake":""} style={{width:"100%",background:"#131e32",border:"1px solid #d4af37",borderRadius:14,padding:18,marginTop:18}}>
          <div style={{textAlign:"center",fontSize:13,color:"#e6edf7",fontWeight:700}}>Welcome Back King</div>
@@ -417,7 +418,7 @@ function App(){
          </div>
          {loginErr && <div style={{color:"#f87171",fontSize:12,textAlign:"center",marginTop:10,fontWeight:700}}>{loginErr}</div>}
          <button onClick={doLogin} className="gold-btn" style={{width:"100%",padding:14,marginTop:18,border:"none",borderRadius:8,fontWeight:900,fontSize:16}}>LOGIN</button>
-         <div style={{textAlign:"center",fontSize:10,color:"#64748b",marginTop:12}}>Protected by King Security • iFX BILLIONAIRE</div>
+         <div style={{textAlign:"center",fontSize:10,color:"#64748b",marginTop:12}}>Protected by King Security • iFX BILLIONAIRE • Creating More Bread Winners</div>
        </div>
      </div>
    );
@@ -426,7 +427,10 @@ function App(){
  return (
   <div style={{maxWidth:480,margin:"0 auto",minHeight:"100vh",background:"#0a0f1a",paddingBottom:10}}>
    <div style={{padding:"8px 12px",display:"flex",justifyContent:"space-between",alignItems:"center",borderBottom:"1px solid #1e2d45"}}>
-     <div style={{fontSize:20,fontWeight:900,lineHeight:1,color:"#d4af37"}}>iFX BILLIONAIRE EA</div>
+     <div>
+       <div style={{fontSize:20,fontWeight:900,lineHeight:1,color:"#d4af37"}}>iFX BILLIONAIRE EA</div>
+       <div style={{fontSize:9,fontWeight:800,letterSpacing:"2.2px",color:"#FFD700",marginTop:3,textTransform:"uppercase"}}>Creating More Bread Winners</div>
+     </div>
      <div style={{display:"flex",gap:6,alignItems:"center"}}>
        <div style={{background:running?"#14532d":"#3a1a1a",color:running?"#4ade80":"#ff6b6b",padding:"6px 10px",borderRadius:16,fontSize:11,fontWeight:800}}>● {running?"RUNNING":"STOPPED"}</div>
        <button onClick={doLogout} style={{background:"#1e293b",color:"white",border:"1px solid #334155",padding:"6px 8px",borderRadius:8,fontSize:11,fontWeight:800}}>🔒 OUT</button>
@@ -511,6 +515,7 @@ function App(){
      ))}
    </div>
    <div style={{textAlign:"center",fontSize:10,color:"#64748b",marginTop:6}}>UTC {new Date(clock*1000).toISOString().slice(11,19)} • Trading 07:00-21:59 • iFX BILLIONAIRE • MT4 LINKED • Logged as {AUTH_USER}</div>
+   <div style={{textAlign:"center",fontSize:9,letterSpacing:"2px",color:"#FFD700",fontWeight:800,marginTop:4,textTransform:"uppercase"}}>Creating More Bread Winners 👑</div>
   </div>
  );
 }
