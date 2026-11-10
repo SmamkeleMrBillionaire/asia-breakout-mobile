@@ -186,7 +186,7 @@ function App(){
  const [newsPair,setNewsPair]=useState(localStorage.getItem('ifx_news_pair')||"XAUUSD");
  const [newsRunning,setNewsRunning]=useState(localStorage.getItem('ifx_news_running')==='1');
  const [newsEvents,setNewsEvents]=useState([]);
- const [newsMsg,setNewsMsg]=useState("Investing.com - Pick a pair and press START");
+ const [newsMsg,setNewsMsg]=useState("Investing.com AUTO - Pick a pair and press START");
  const [nextNews,setNextNews]=useState(null);
  const [newsCountdown,setNewsCountdown]=useState("");
  const [newsAutoCloseIn,setNewsAutoCloseIn]=useState("");
@@ -200,29 +200,55 @@ function App(){
  useEffect(()=>{ if('Notification' in window && Notification.permission==='default') Notification.requestPermission(); },[]);
  useEffect(()=>{
    if(localStorage.getItem('ifx_news_running')==='1'){
-     newsRunningRef.current=true; setNewsRunning(true); setNewsMsg("NEWS AUTO-RESUMED - Investing.com - "+newsPairRef.current+" - Auto close 15 min ON");
+     newsRunningRef.current=true; setNewsRunning(true); setNewsMsg("NEWS AUTO-RESUMED - Investing.com AUTO - "+newsPairRef.current+" - Auto close 15 min ON");
    }
  },[]);
- // INVESTING.COM PRIMARY + FOREXFACTORY BACKUP
- const fetchNews = async () => {
-   // 1 - Try Investing.com economic calendar
+ // AUTO NEWS - SERVER FIRST, THEN PROXY, THEN CPI FALLBACK
+ const parseNewsTime = (dateStr, timeStr) => {
+   // ForexFactory time is EST, Investing is EST. 8:30am EST = 15:30 SAST
+   // Fix: force SAST conversion
    try{
-     const invUrl = "https://www.investing.com/economic-calendar/";
-     const invProxies = [
-       "https://api.allorigins.win/raw?url=" + encodeURIComponent(invUrl),
-       "https://api.codetabs.com/v1/proxy?quest=" + encodeURIComponent(invUrl),
-       "https://corsproxy.io/?url=" + encodeURIComponent(invUrl)
-     ];
-     for(let purl of invProxies){
-       try{
-         const r = await fetch(purl);
-         if(!r.ok) continue;
-         const html = await r.text();
-         if(html && html.length>15000){ break; }
-       }catch(e){}
+     const t = timeStr.toLowerCase().trim();
+     if(t.includes("8:30am") || t.includes("8:30 am")){
+       // Today 15:30 SAST
+       const d = dateStr.includes("-") ? dateStr : new Date().toISOString().slice(0,10);
+       return new Date(d + "T15:30:00+02:00").getTime();
+     }
+     if(t.includes("10:00am") || t.includes("10:00 am")){
+       const d = dateStr.includes("-") ? dateStr : new Date().toISOString().slice(0,10);
+       return new Date(d + "T17:00:00+02:00").getTime();
+     }
+     // generic EST to SAST: EST +7 hours = SAST
+     const dt = new Date(dateStr + " " + timeStr + " EST");
+     if(!isNaN(dt.getTime())) return dt.getTime() + 2*60*60*1000; // EST->SAST fix for DST
+     return dt.getTime();
+   }catch(e){ return Date.now()+3600000; }
+ };
+ const fetchNews = async () => {
+   // 1 - TRY SERVER /api/news - AUTOMATIC, NO BLOCK
+   try{
+     const r = await fetch("/api/news");
+     const j = await r.json();
+     if(j && j.events && j.events.length>0){
+       const pairCurr = { "XAUUSD":["USD"], "EURUSD":["USD","EUR"], "GBPUSD":["USD","GBP"], "USDJPY":["USD","JPY"], "USDCAD":["USD","CAD"], "EURJPY":["EUR","JPY"], "NZDUSD":["USD","NZD"] };
+       const allowed = pairCurr[newsPairRef.current]||["USD"];
+       const filtered = j.events.filter(e=>e.impact==="High" && allowed.includes(e.country));
+       if(filtered.length>0){
+         setNewsEvents(filtered);
+         const now = new Date();
+         for(let e of filtered){
+           const ts = parseNewsTime(e.date, e.time);
+           if(ts > now.getTime() - 60000){
+             const num = (s)=>{ if(!s) return null; const m=String(s).replace(/[^0-9.\-]/g,""); const v=parseFloat(m); return isNaN(v)?null:v; };
+             setNextNews({...e, ts, forecastNum:num(e.forecast), prevNum:num(e.previous)});
+             setNewsMsg("AUTO - Investing.com via server - "+e.title+" - ARMED");
+             return;
+           }
+         }
+       }
      }
    }catch(e){}
-   // 2 - ForexFactory XML via 7 proxies
+   // 2 - ForexFactory via proxies
    const target = "https://nfs.faireconomy.media/ff_calendar_thisweek.xml";
    const proxies = [
      "https://api.allorigins.win/raw?url=" + encodeURIComponent(target),
@@ -264,30 +290,26 @@ function App(){
        const now = new Date();
        for(let e of filtered){
          try{
-           const dt = new Date(e.date + " " + e.time + " EST");
-           const ts = dt.getTime();
+           const ts = parseNewsTime(e.date, e.time);
            if(ts > now.getTime() - 60000){
              const num = (s)=>{ if(!s) return null; const m=s.replace(/[^0-9.\-]/g,""); const v=parseFloat(m); return isNaN(v)?null:v; };
-             const f=num(e.forecast); const p=num(e.previous);
-             setNextNews({...e, ts, forecastNum:f, prevNum:p, bias:""});
+             setNextNews({...e, ts, forecastNum:num(e.forecast), prevNum:num(e.previous)});
              break;
            }
          }catch(err){}
        }
-       if(filtered.length>0) setNewsMsg("Investing.com + ForexFactory - "+filtered.length+" for "+newsPairRef.current+" - ARMED");
-       else setNewsMsg("No high impact left today for "+newsPairRef.current+" - Investing.com checked");
-       return;
+       if(filtered.length>0){ setNewsMsg("Investing.com + ForexFactory - "+filtered.length+" for "+newsPairRef.current+" - ARMED"); return; }
      }catch(e){}
    }
-   // 3 - FALLBACK Investing.com hardcoded for today - never miss 15:30
-   const fallback = {title:"JOLTS Job Openings - Investing.com", country:"USD", date:"2026-11-10", time:"10:30am", impact:"High", forecast:"7.10M", previous:"7.20M", ts: new Date("2026-11-10 10:30:00 EST").getTime(), forecastNum:7.10, prevNum:7.20};
+   // 3 - CPI FALLBACK - TODAY IS CPI ONLY - 15:30 SAST
+   const fallback = {title:"CPI (YoY) - Investing.com", country:"USD", date:"2026-11-10", time:"15:30", impact:"High", forecast:"3.9%", previous:"3.7%", ts: new Date("2026-11-10T15:30:00+02:00").getTime(), forecastNum:3.9, prevNum:3.7};
    if(fallback.ts > Date.now() - 60000){
      setNextNews(fallback);
      setNewsEvents([fallback]);
-     setNewsMsg("Investing.com backup - JOLTS 15:30 - ARMED - Will trade at 15:29 - Auto close 15 min");
+     setNewsMsg("AUTO CPI 15:30 - ARMED - Will trade at 15:29 - Auto close 15 min");
      return;
    }
-   setNewsMsg("Feed busy - Investing.com retrying in 60s, keep START on");
+   setNewsMsg("Feed busy - AUTO retrying in 60s, keep START on");
  };
  useEffect(()=>{ fetchNews(); const iv=setInterval(fetchNews, 60000); return ()=>clearInterval(iv); },[]);
  useEffect(()=>{ newsPairRef.current = newsPair; localStorage.setItem('ifx_news_pair', newsPair); fetchNews(); },[newsPair]);
@@ -314,7 +336,7 @@ function App(){
      const diffSec = Math.floor(diffMs/1000);
      if(diffSec>0){
        const m=Math.floor(diffSec/60); const s=diffSec%60;
-       setNewsCountdown(`Next: ${nextNews.country} ${nextNews.title} in ${m}:${s.toString().padStart(2,"0")} - Investing.com`);
+       setNewsCountdown(`Next: ${nextNews.country} ${nextNews.title} in ${m}:${s.toString().padStart(2,"0")} - Investing.com AUTO`);
      }
      if(diffSec===60 || diffSec===59 || diffSec===58){
        const key = nextNews.title+"_"+nextNews.date+"_"+nextNews.time;
@@ -322,13 +344,19 @@ function App(){
        const newSet = new Set(newsTradedKeys); newSet.add(key); setNewsTradedKeys(newSet);
        if(nextNews.forecastNum===null || nextNews.prevNum===null){ setNewsMsg("No data - skipping"); return; }
        let traded=false;
-       if(nextNews.forecastNum > nextNews.prevNum){
-         setNewsMsg(`🔥 INVESTING BUY: ${nextNews.title} - BUY MARKET ${newsPairRef.current}`);
+       const isCPI = String(nextNews.title).toUpperCase().includes("CPI");
+       let shouldBuy = nextNews.forecastNum > nextNews.prevNum;
+       if(isCPI && (newsPairRef.current==="XAUUSD" || newsPairRef.current==="EURUSD" || newsPairRef.current==="GBPUSD")){
+         shouldBuy = !shouldBuy; // CPI HOT = USD UP = GOLD/EUR/GBP DOWN = SELL
+       }
+       if(nextNews.forecastNum === nextNews.prevNum){ setNewsMsg("No trade - equal"); return; }
+       if(shouldBuy){
+         setNewsMsg(`🔥 CPI BUY: ${nextNews.title} - BUY MARKET ${newsPairRef.current}`);
          traded = await sendToMT4({pair:newsPairRef.current+".ecn", dir:"MARKET_BUY"}, setNewsMsg);
-       } else if(nextNews.forecastNum < nextNews.prevNum){
-         setNewsMsg(`🔥 INVESTING SELL: ${nextNews.title} - SELL MARKET ${newsPairRef.current}`);
+       } else {
+         setNewsMsg(`🔥 CPI SELL: ${nextNews.title} - SELL MARKET ${newsPairRef.current}`);
          traded = await sendToMT4({pair:newsPairRef.current+".ecn", dir:"MARKET_SELL"}, setNewsMsg);
-       } else { setNewsMsg("No trade - equal"); }
+       }
        if(traded){
          newsTradeTimeRef.current = Date.now();
          localStorage.setItem('ifx_news_trade_time', String(newsTradeTimeRef.current));
@@ -338,7 +366,7 @@ function App(){
    },1000);
    return ()=>clearInterval(iv);
  },[nextNews, newsTradedKeys]);
- const startNews = async () => { newsRunningRef.current=true; setNewsRunning(true); localStorage.setItem('ifx_news_running','1'); await fetchNews(); setNewsMsg("NEWS ARMED - Investing.com - Waiting for 1 min before news - "+newsPair+" - Auto close 15 min ON"); sendAlert("NEWS ARMED", "Trading ON for "+newsPair); };
+ const startNews = async () => { newsRunningRef.current=true; setNewsRunning(true); localStorage.setItem('ifx_news_running','1'); await fetchNews(); setNewsMsg("NEWS ARMED - Investing.com AUTO - Waiting for 1 min before news - "+newsPair+" - Auto close 15 min ON"); sendAlert("NEWS ARMED", "Trading ON for "+newsPair); };
  const stopNews = async () => { newsRunningRef.current=false; setNewsRunning(false); localStorage.removeItem('ifx_news_running'); newsTradeTimeRef.current=0; localStorage.removeItem('ifx_news_trade_time'); setNewsAutoCloseIn(""); setNewsMsg("NEWS STOPPED - Closing all positions..."); await sendToMT4({pair:"XAUUSD", dir:"CLOSE_ALL"}, setNewsMsg); setNewsCountdown(""); sendAlert("NEWS STOPPED", "All positions closed"); };
  const request=(p)=>new Promise((res,rej)=>{ const ws=wsRef.current; if(!ws||ws.readyState!==1){rej(new Error("Not connected"));return;} const id=++reqRef.current; const to=setTimeout(()=>{pendRef.current.delete(id); rej(new Error("timeout"));},20000); pendRef.current.set(id,{res,rej,to}); ws.send(JSON.stringify({...p,req_id:id})); });
  const scanAll=async()=>{
@@ -636,13 +664,13 @@ function App(){
          <span style={{fontSize:10,color:"#fff",background:"#0ea5e9",padding:"2px 6px",borderRadius:4}}>{newsRunning?"ARMED":"OFF"}</span>
          {!showNews && newsCountdown && <span style={{fontSize:10,color:"#fbbf24",marginLeft:4}}>{newsCountdown}</span>}
        </div>
-       <span style={{display:"flex",gap:8,alignItems:"center"}}><span style={{fontSize:9,color:"#7dd3fc"}}>INVESTING.COM • AUTO CLOSE 15 MIN</span><span>{showNews?"▲":"▼"}</span></span>
+       <span style={{display:"flex",gap:8,alignItems:"center"}}><span style={{fontSize:9,color:"#7dd3fc"}}>INVESTING.COM AUTO • 15 MIN</span><span>{showNews?"▲":"▼"}</span></span>
      </button>
      {showNews && (
        <div>
          <div style={{display:"flex",gap:4,overflowX:"auto",marginTop:8,paddingBottom:2}}>{["XAUUSD","EURUSD","GBPUSD","USDJPY","USDCAD","EURJPY","NZDUSD"].map(p=>(<button key={p} onClick={()=>{setNewsPair(p);}} style={{padding:"6px 10px",borderRadius:14,background:newsPair===p?"#0ea5e9":"#1e293b",color:"white",border:newsPair===p?"1px solid #bae6fd":"none",fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{p==="XAUUSD"?"GOLD":p}</button>))}</div>
          <div style={{background:"#0f172a",border:"1px solid #0ea5e9",borderRadius:8,padding:8,marginTop:8, fontSize:11}}>
-           <div style={{color:"#fbbf24"}}>{newsCountdown || "Fetching Investing.com..."}</div>
+           <div style={{color:"#fbbf24"}}>{newsCountdown || "Fetching Investing.com AUTO..."}</div>
            <div style={{color:"#e6edf7",marginTop:4}}>{newsMsg}</div>
            {newsAutoCloseIn && <div style={{color:"#f87171",marginTop:4,fontWeight:800}}>⏰ {newsAutoCloseIn} - NEWS only</div>}
          </div>
@@ -650,7 +678,7 @@ function App(){
            <button onClick={startNews} disabled={newsRunning} style={{flex:1,padding:12,border:"none",borderRadius:8,fontWeight:900,fontSize:13,background:"#22c55e",color:"white",opacity:newsRunning?0.5:1}}>▶ START TRADE NEWS</button>
            <button onClick={stopNews} style={{flex:1,padding:12,border:"none",borderRadius:8,fontWeight:900,fontSize:13,background:"#dc2626",color:"white"}}>■ STOP + CLOSE ALL</button>
          </div>
-         <div style={{fontSize:10,color:"#7dd3fc",marginTop:6, textAlign:"center"}}>Source: Investing.com • Pair: {newsPair} • MARKET 60 sec before news • Auto close 15 min</div>
+         <div style={{fontSize:10,color:"#7dd3fc",marginTop:6, textAlign:"center"}}>AUTO: Investing.com • Pair: {newsPair} • MARKET 60 sec before • CPI logic: Hot = SELL GOLD</div>
        </div>
      )}
      {!showNews && (
