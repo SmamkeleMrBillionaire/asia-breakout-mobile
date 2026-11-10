@@ -183,20 +183,26 @@ function App(){
  const [showNews,setShowNews]=useState(true);
  const [licenseList,setLicenseList]=useState([{account:"71826432", expiry:"2099.12.31", status:"SMAMKELE MR BILLIONAIRE 👑"}]);
  const [newLicAcc,setNewLicAcc]=useState(""),[newLicExp,setNewLicExp]=useState("2027.12.31"),[showLic,setShowLic]=useState(false),[licCheckMsg,setLicCheckMsg]=useState("");
- const [newsPair,setNewsPair]=useState("XAUUSD");
- const [newsRunning,setNewsRunning]=useState(false);
+ const [newsPair,setNewsPair]=useState(localStorage.getItem('ifx_news_pair')||"XAUUSD");
+ const [newsRunning,setNewsRunning]=useState(localStorage.getItem('ifx_news_running')==='1');
  const [newsEvents,setNewsEvents]=useState([]);
  const [newsMsg,setNewsMsg]=useState("Pick a pair and press START");
  const [nextNews,setNextNews]=useState(null);
  const [newsCountdown,setNewsCountdown]=useState("");
+ const [newsAutoCloseIn,setNewsAutoCloseIn]=useState("");
  const [newsTradedKeys,setNewsTradedKeys]=useState(new Set());
- const newsRunningRef=useRef(false);
- const newsPairRef=useRef("XAUUSD");
+ const newsRunningRef=useRef(localStorage.getItem('ifx_news_running')==='1');
+ const newsPairRef=useRef(localStorage.getItem('ifx_news_pair')||"XAUUSD");
+ const newsTradeTimeRef=useRef(Number(localStorage.getItem('ifx_news_trade_time')||0));
  const wsRef=useRef(null), reqRef=useRef(0), pendRef=useRef(new Map()), runRef=useRef(false);
  const sentBoxesRef=useRef(new Set());
  useEffect(()=>{ const t=setInterval(()=>setClock(Math.floor(Date.now()/1000)),1000); return ()=>clearInterval(t); },[]);
  useEffect(()=>{ if('Notification' in window && Notification.permission==='default') Notification.requestPermission(); },[]);
- // NEWS FETCH - 3 PROXIES FIX FOR CHECK CONNECTION
+ useEffect(()=>{
+   if(localStorage.getItem('ifx_news_running')==='1'){
+     newsRunningRef.current=true; setNewsRunning(true); setNewsMsg("NEWS AUTO-RESUMED - Waiting for news - "+newsPairRef.current+" - Auto close 15 min ON");
+   }
+ },[]);
  const fetchNews = async () => {
    const target = "https://nfs.faireconomy.media/ff_calendar_thisweek.xml";
    const proxies = [
@@ -251,9 +257,24 @@ function App(){
    }catch(e){ setNewsMsg("Feed busy - retrying..."); }
  };
  useEffect(()=>{ fetchNews(); const iv=setInterval(fetchNews, 60000); return ()=>clearInterval(iv); },[]);
- useEffect(()=>{ newsPairRef.current = newsPair; fetchNews(); },[newsPair]);
+ useEffect(()=>{ newsPairRef.current = newsPair; localStorage.setItem('ifx_news_pair', newsPair); fetchNews(); },[newsPair]);
  useEffect(()=>{
    const iv=setInterval(async()=>{
+     if(newsTradeTimeRef.current>0){
+       const elapsed = Date.now() - newsTradeTimeRef.current;
+       const remain = 15*60*1000 - elapsed;
+       if(remain<=0){
+         newsTradeTimeRef.current=0; localStorage.removeItem('ifx_news_trade_time');
+         setNewsAutoCloseIn("");
+         setNewsMsg("⏰ AUTO CLOSED after 15 min - NEWS trade only");
+         await sendToMT4({pair:"XAUUSD", dir:"CLOSE_ALL"}, setNewsMsg);
+         sendAlert("NEWS AUTO CLOSED", "15 min done - closed");
+         setNewsMsg("✅ NEWS AUTO CLOSED after 15 min - Ready for next news");
+       } else {
+         const m=Math.floor(remain/60000); const s=Math.floor((remain%60000)/1000);
+         setNewsAutoCloseIn(`Auto close NEWS in ${m}:${s.toString().padStart(2,"0")}`);
+       }
+     }
      if(!newsRunningRef.current || !nextNews) return;
      const nowMs = Date.now();
      const diffMs = nextNews.ts - nowMs;
@@ -267,19 +288,25 @@ function App(){
        if(newsTradedKeys.has(key)) return;
        const newSet = new Set(newsTradedKeys); newSet.add(key); setNewsTradedKeys(newSet);
        if(nextNews.forecastNum===null || nextNews.prevNum===null){ setNewsMsg("No data - skipping"); return; }
+       let traded=false;
        if(nextNews.forecastNum > nextNews.prevNum){
          setNewsMsg(`🔥 NEWS BUY: ${nextNews.title} - BUY MARKET ${newsPairRef.current}`);
-         await sendToMT4({pair:newsPairRef.current+".ecn", dir:"MARKET_BUY"}, setNewsMsg);
+         traded = await sendToMT4({pair:newsPairRef.current+".ecn", dir:"MARKET_BUY"}, setNewsMsg);
        } else if(nextNews.forecastNum < nextNews.prevNum){
          setNewsMsg(`🔥 NEWS SELL: ${nextNews.title} - SELL MARKET ${newsPairRef.current}`);
-         await sendToMT4({pair:newsPairRef.current+".ecn", dir:"MARKET_SELL"}, setNewsMsg);
+         traded = await sendToMT4({pair:newsPairRef.current+".ecn", dir:"MARKET_SELL"}, setNewsMsg);
        } else { setNewsMsg("No trade - equal"); }
+       if(traded){
+         newsTradeTimeRef.current = Date.now();
+         localStorage.setItem('ifx_news_trade_time', String(newsTradeTimeRef.current));
+         setNewsMsg(`🔥 NEWS TRADE OPEN - Auto close in 15:00`);
+       }
      }
    },1000);
    return ()=>clearInterval(iv);
  },[nextNews, newsTradedKeys]);
- const startNews = async () => { newsRunningRef.current=true; setNewsRunning(true); await fetchNews(); setNewsMsg("NEWS ARMED - Waiting for 1 min before news - "+newsPair); sendAlert("NEWS ARMED", "Trading ON for "+newsPair); };
- const stopNews = async () => { newsRunningRef.current=false; setNewsRunning(false); setNewsMsg("NEWS STOPPED - Closing all positions..."); await sendToMT4({pair:"XAUUSD", dir:"CLOSE_ALL"}, setNewsMsg); setNewsCountdown(""); sendAlert("NEWS STOPPED", "All positions closed"); };
+ const startNews = async () => { newsRunningRef.current=true; setNewsRunning(true); localStorage.setItem('ifx_news_running','1'); await fetchNews(); setNewsMsg("NEWS ARMED - Waiting for 1 min before news - "+newsPair+" - Auto close 15 min ON"); sendAlert("NEWS ARMED", "Trading ON for "+newsPair); };
+ const stopNews = async () => { newsRunningRef.current=false; setNewsRunning(false); localStorage.removeItem('ifx_news_running'); newsTradeTimeRef.current=0; localStorage.removeItem('ifx_news_trade_time'); setNewsAutoCloseIn(""); setNewsMsg("NEWS STOPPED - Closing all positions..."); await sendToMT4({pair:"XAUUSD", dir:"CLOSE_ALL"}, setNewsMsg); setNewsCountdown(""); sendAlert("NEWS STOPPED", "All positions closed"); };
  const request=(p)=>new Promise((res,rej)=>{ const ws=wsRef.current; if(!ws||ws.readyState!==1){rej(new Error("Not connected"));return;} const id=++reqRef.current; const to=setTimeout(()=>{pendRef.current.delete(id); rej(new Error("timeout"));},20000); pendRef.current.set(id,{res,rej,to}); ws.send(JSON.stringify({...p,req_id:id})); });
  const scanAll=async()=>{
    const ws=wsRef.current; if(!ws) return;
@@ -576,7 +603,7 @@ function App(){
          <span style={{fontSize:10,color:"#fff",background:"#0ea5e9",padding:"2px 6px",borderRadius:4}}>{newsRunning?"ARMED":"OFF"}</span>
          {!showNews && newsCountdown && <span style={{fontSize:10,color:"#fbbf24",marginLeft:4}}>{newsCountdown}</span>}
        </div>
-       <span style={{display:"flex",gap:8,alignItems:"center"}}><span style={{fontSize:9,color:"#7dd3fc"}}>1 MIN BEFORE • MARKET</span><span>{showNews?"▲":"▼"}</span></span>
+       <span style={{display:"flex",gap:8,alignItems:"center"}}><span style={{fontSize:9,color:"#7dd3fc"}}>AUTO CLOSE 15 MIN</span><span>{showNews?"▲":"▼"}</span></span>
      </button>
      {showNews && (
        <div>
@@ -584,12 +611,13 @@ function App(){
          <div style={{background:"#0f172a",border:"1px solid #0ea5e9",borderRadius:8,padding:8,marginTop:8, fontSize:11}}>
            <div style={{color:"#fbbf24"}}>{newsCountdown || "Fetching news..."}</div>
            <div style={{color:"#e6edf7",marginTop:4}}>{newsMsg}</div>
+           {newsAutoCloseIn && <div style={{color:"#f87171",marginTop:4,fontWeight:800}}>⏰ {newsAutoCloseIn} - NEWS only</div>}
          </div>
          <div style={{display:"flex",gap:8,marginTop:8}}>
            <button onClick={startNews} disabled={newsRunning} style={{flex:1,padding:12,border:"none",borderRadius:8,fontWeight:900,fontSize:13,background:"#22c55e",color:"white",opacity:newsRunning?0.5:1}}>▶ START TRADE NEWS</button>
            <button onClick={stopNews} style={{flex:1,padding:12,border:"none",borderRadius:8,fontWeight:900,fontSize:13,background:"#dc2626",color:"white"}}>■ STOP + CLOSE ALL</button>
          </div>
-         <div style={{fontSize:10,color:"#7dd3fc",marginTop:6, textAlign:"center"}}>Pair: {newsPair} • MARKET 60 sec before news. STOP closes all.</div>
+         <div style={{fontSize:10,color:"#7dd3fc",marginTop:6, textAlign:"center"}}>Pair: {newsPair} • MARKET 60 sec before news • Auto close NEWS after 15 min • STOP closes all</div>
        </div>
      )}
      {!showNews && (
