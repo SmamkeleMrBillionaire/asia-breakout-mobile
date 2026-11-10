@@ -22,148 +22,39 @@
 <script type="text/babel">
 const {useState,useEffect,useRef}=React;
 const WS_URL="wss://api.derivws.com/trading/v1/options/ws/public";
-const AUTH_USER = "King";
-const AUTH_PASS = "Billionaire123";
-const DISPLAY_NAME = "Smamkele Mr Billionaire";
-const KING_ACCOUNT = "71826432";
-if('serviceWorker' in navigator){ navigator.serviceWorker.register('/sw.js').catch(()=>{}); }
-function sendAlert(t,b){
-  if(navigator.vibrate) navigator.vibrate([400,100,400,100,400]);
-  try{const a=new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg'); a.play().catch(()=>{});}catch(e){}
-  if('Notification' in window && Notification.permission==='granted'){
-    if(navigator.serviceWorker && navigator.serviceWorker.ready){
-      navigator.serviceWorker.ready.then(reg=>{ reg.showNotification(t,{body:b,icon:'/icon-192.png',vibrate:[400,100,400]}); }).catch(()=>{ try{new Notification(t,{body:b});}catch(e){} });
-    } else { try{new Notification(t,{body:b});}catch(e){} }
-  } else if('Notification' in window){ Notification.requestPermission().then(()=>{ try{new Notification(t,{body:b});}catch(e){} }); }
-}
+const AUTH_USER="King";const AUTH_PASS="Billionaire123";const DISPLAY_NAME="Smamkele Mr Billionaire";const KING_ACCOUNT="71826432";
+if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{});}
+function sendAlert(t,b){if(navigator.vibrate) navigator.vibrate([400,100,400,100,400]);try{const a=new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg');a.play().catch(()=>{});}catch(e){}if('Notification' in window && Notification.permission==='granted'){if(navigator.serviceWorker && navigator.serviceWorker.ready){navigator.serviceWorker.ready.then(reg=>{reg.showNotification(t,{body:b,icon:'/icon-192.png',vibrate:[400,100,400]});}).catch(()=>{try{new Notification(t,{body:b});}catch(e){}});}else{try{new Notification(t,{body:b});}catch(e){}}}else if('Notification' in window){Notification.requestPermission().then(()=>{try{new Notification(t,{body:b});}catch(e){}});}}
 let lastSentMap={};
-async function sendToMT4(result, setMsg){
-  try{
-    let raw = result.pair.replace(".ecn","").toUpperCase().replace(/\s+/g,"");
-    if(raw.endsWith("M") && !raw.includes("BOOM") && !raw.includes("CRASH") && !raw.includes("1HZ")) raw = raw.slice(0,-1);
-    let sym = raw;
-    if(raw.includes("XAU")) sym="XAUUSDm";
-    else if(raw.includes("EURUSD")) sym="EURUSDm";
-    else if(raw.includes("GBPUSD")) sym="GBPUSDm";
-    else if(raw.includes("USDJPY")) sym="USDJPYm";
-    else if(raw.includes("USDCAD")) sym="USDCADm";
-    else if(raw.includes("EURJPY")) sym="EURJPYm";
-    else if(raw.includes("NZDUSD")) sym="NZDUSDm";
-    else if(raw.includes("V75") || raw.includes("VOLATILITY75")) sym="Volatility 75 Index";
-    else if(raw.includes("BTC")) sym="BTCUSDm";
-    else if(raw.includes("US30")) sym="US30m";
-    else if(raw.includes("NAS") || raw.includes("USTEC")) sym="USTECm";
-    else if(raw.includes("1HZ15V")) sym="1HZ15V";
-    else if(raw.includes("1HZ25V")) sym="1HZ25V";
-    else if(raw.includes("1HZ90V")) sym="1HZ90V";
-    else if(raw.includes("1HZ100V")) sym="1HZ100V";
-    else if(raw.includes("BOOM150N")) sym="BOOM150N";
-    else if(raw.includes("BOOM500")) sym="BOOM500";
-    else if(raw.includes("BOOM900")) sym="BOOM900";
-    else if(raw.includes("BOOM1000")) sym="BOOM1000";
-    else if(raw.includes("BOOM300N")) sym="BOOM300N";
-    else if(raw.includes("BOOM50")) sym="BOOM50";
-    else if(raw.includes("CRASH150N")) sym="CRASH150N";
-    else if(raw.includes("CRASH500")) sym="CRASH500";
-    else if(raw.includes("CRASH600")) sym="CRASH600";
-    else if(raw.includes("CRASH900")) sym="CRASH900";
-    else if(raw.includes("CRASH1000")) sym="CRASH1000";
-    else if(raw.includes("CRASH300N")) sym="CRASH300N";
-    else if(raw.includes("GBPJPY")) sym="GBPJPYm";
-    else if(raw.includes("AUDUSD")) sym="AUDUSDm";
-    else sym = raw + "m";
-    if(result.dir==="MARKET_BUY" || result.dir==="MARKET_SELL"){
-      const payload={action:result.dir, symbol:sym, entry:0, sl:0, tp:0, time: Math.floor(Date.now()/1000), isNews:true};
-      const r = await fetch("/api/signal", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload)});
-      const j = await r.json();
-      if(r.ok && j.ok){ if(setMsg) setMsg("✅ NEWS MARKET SENT: "+sym+" "+result.dir); sendAlert("NEWS TRADE", sym+" "+result.dir); return true; }
-      if(setMsg) setMsg("Bridge error - retry news"); return false;
-    }
-    if(result.dir==="CLOSE_ALL"){
-      const r = await fetch("/api/signal", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({action:"CLOSE_ALL", symbol:"ALL", time: Math.floor(Date.now()/1000)})});
-      if(setMsg) setMsg("✅ CLOSE ALL SENT TO MT4");
-      return true;
-    }
-    const spamKey = sym+"_"+result.entry+"_"+result.dir;
-    const nowSec = Math.floor(Date.now()/1000);
-    if(lastSentMap[spamKey] && (nowSec - lastSentMap[spamKey] < 60)){ if(setMsg) setMsg("Blocked duplicate - already sent "+sym); return false; }
-    lastSentMap[spamKey]=nowSec;
-    let action = result.dir;
-    const payload={action:action, symbol:sym, entry:result.entry, sl:result.sl, tp:result.tp, time: Math.floor(Date.now()/1000)};
-    const r = await fetch("/api/signal", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload)});
-    const j = await r.json();
-    if(r.ok && j.ok){
-      if(setMsg) setMsg("✅ SENT TO MT4: "+sym+" "+action+" @ "+result.entry);
-      sendAlert("SENT TO MT4", sym+" "+action);
-      return true;
-    } else { if(setMsg) setMsg("Bridge error - retry"); return false; }
-  }catch(e){ if(setMsg) setMsg("Bridge error: "+e.message); return false; }
+async function sendToMT4(result,setMsg){
+ try{
+  let raw=result.pair.replace(".ecn","").toUpperCase().replace(/\s+/g,"");
+  if(raw.endsWith("M") && !raw.includes("BOOM") && !raw.includes("CRASH") && !raw.includes("1HZ")) raw=raw.slice(0,-1);
+  let sym=raw;
+  if(raw.includes("XAU")) sym="XAUUSDm";else if(raw.includes("EURUSD")) sym="EURUSDm";else if(raw.includes("GBPUSD")) sym="GBPUSDm";else if(raw.includes("USDJPY")) sym="USDJPYm";else if(raw.includes("USDCAD")) sym="USDCADm";else if(raw.includes("EURJPY")) sym="EURJPYm";else if(raw.includes("NZDUSD")) sym="NZDUSDm";else if(raw.includes("V75")||raw.includes("VOLATILITY75")) sym="Volatility 75 Index";else if(raw.includes("BTC")) sym="BTCUSDm";else if(raw.includes("US30")) sym="US30m";else if(raw.includes("NAS")||raw.includes("USTEC")) sym="USTECm";else if(raw.includes("1HZ15V")) sym="1HZ15V";else if(raw.includes("1HZ25V")) sym="1HZ25V";else if(raw.includes("1HZ90V")) sym="1HZ90V";else if(raw.includes("1HZ100V")) sym="1HZ100V";else if(raw.includes("BOOM150N")) sym="BOOM150N";else if(raw.includes("BOOM500")) sym="BOOM500";else if(raw.includes("BOOM900")) sym="BOOM900";else if(raw.includes("BOOM1000")) sym="BOOM1000";else if(raw.includes("BOOM300N")) sym="BOOM300N";else if(raw.includes("BOOM50")) sym="BOOM50";else if(raw.includes("CRASH150N")) sym="CRASH150N";else if(raw.includes("CRASH500")) sym="CRASH500";else if(raw.includes("CRASH600")) sym="CRASH600";else if(raw.includes("CRASH900")) sym="CRASH900";else if(raw.includes("CRASH1000")) sym="CRASH1000";else if(raw.includes("CRASH300N")) sym="CRASH300N";else if(raw.includes("GBPJPY")) sym="GBPJPYm";else if(raw.includes("AUDUSD")) sym="AUDUSDm";else sym=raw+"m";
+  if(result.dir==="MARKET_BUY"||result.dir==="MARKET_SELL"){
+   const payload={action:result.dir,symbol:sym,entry:0,sl:0,tp:0,time:Math.floor(Date.now()/1000),isNews:true};
+   for(let attempt=0;attempt<3;attempt++){try{const r=await fetch("/api/signal",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});const j=await r.json();if(r.ok&&j.ok){if(setMsg)setMsg("✅ NEWS MARKET SENT: "+sym+" "+result.dir);sendAlert("NEWS TRADE",sym+" "+result.dir);return true;}}catch(e){await new Promise(r=>setTimeout(r,1000));}}
+   if(setMsg)setMsg("Bridge error - retry news");return false;
+  }
+  if(result.dir==="CLOSE_ALL"){const r=await fetch("/api/signal",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"CLOSE_ALL",symbol:"ALL",time:Math.floor(Date.now()/1000)})});if(setMsg)setMsg("✅ CLOSE ALL SENT TO MT4");return true;}
+  const spamKey=sym+"_"+result.entry+"_"+result.dir;const nowSec=Math.floor(Date.now()/1000);
+  if(lastSentMap[spamKey]&&(nowSec-lastSentMap[spamKey]<60)){if(setMsg)setMsg("Blocked duplicate - already sent "+sym);return false;}
+  lastSentMap[spamKey]=nowSec;
+  let action=result.dir;const payload={action:action,symbol:sym,entry:result.entry,sl:result.sl,tp:result.tp,time:Math.floor(Date.now()/1000)};
+  const r=await fetch("/api/signal",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});const j=await r.json();
+  if(r.ok&&j.ok){if(setMsg)setMsg("✅ SENT TO MT4: "+sym+" "+action+" @ "+result.entry);sendAlert("SENT TO MT4",sym+" "+action);return true;}else{if(setMsg)setMsg("Bridge error - retry");return false;}
+ }catch(e){if(setMsg)setMsg("Bridge error: "+e.message);return false;}
 }
 const fmt=(n,d=5)=>Number.isFinite(Number(n))?Number(n).toFixed(d):"—";
-function fmtPrice(n,pair){
-  if(!Number.isFinite(Number(n))) return "—";
-  if(pair.includes("US30")) return Number(n).toFixed(1);
-  if(pair.includes("V75")||pair.includes("XAU")||pair.includes("NAS")||pair.includes("BTC")||pair.includes("BOOM")||pair.includes("CRASH")) return Number(n).toFixed(2);
-  if(pair.includes("JPY")) return Number(n).toFixed(3);
-  return Number(n).toFixed(5);
-}
-function getMinSL(sym){
-  const s=(sym||"").toUpperCase();
-  if(s.includes("JPY")) return 0.40;
-  if(s.includes("US30")) return 250;
-  if(s.includes("XAU")||s.includes("GOLD")) return 6.0;
-  if(s.includes("BTC")) return 500;
-  if(s.includes("V75")||s.includes("1HZ")||s.includes("BOOM")||s.includes("CRASH")) return 150;
-  if(s.includes("NAS")||s.includes("USTEC")) return 200;
-  return 0.0025;
-}
-function getDigits(sym){
-  const s=(sym||"").toUpperCase();
-  if(s.includes("JPY")) return 3;
-  if(s.includes("US30")) return 1;
-  if(s.includes("XAU")||s.includes("V75")||s.includes("BTC")||s.includes("NAS")||s.includes("BOOM")||s.includes("CRASH")) return 2;
-  return 5;
-}
-const sDay=e=>new Date(e*1000).toISOString().slice(0,10);
-const sHour=e=>new Date(e*1000).getUTCHours();
-const sMin=e=>new Date(e*1000).getUTCMinutes();
-const cColor=c=>c.close>c.open?"GREEN":c.close<c.open?"RED":"NEUTRAL";
-function calcRSI(cs,idx,p=3){ if(!cs||idx<p) return 50; let g=0,l=0; for(let i=1;i<=p;i++){const ch=cs[i].close-cs[i-1].close; if(ch>0)g+=ch; if(ch<0)l+=Math.abs(ch);} let ag=g/p,al=l/p; for(let i=p+1;i<=idx;i++){const ch=cs[i].close-cs[i-1].close; ag=(ag*(p-1)+Math.max(ch,0))/p; al=(al*(p-1)+Math.max(-ch,0))/p;} if(al===0) return ag===0?50:100; if(ag===0) return 0; return 100-100/(1+ag/al); }
-function buildBox(cs,day){ const f=cs.filter(c=>sDay(c.epoch)===day&&sHour(c.epoch)===0&&[0,15,30,45].includes(sMin(c.epoch))).sort((a,b)=>a.epoch-b.epoch).slice(0,4); if(f.length!==4) return null; const h=Math.max(...f.map(c=>c.high)), l=Math.min(...f.map(c=>c.low)); if(!(h>l)) return null; return {day,high:h,low:l,size:h-l,id:day+"-"+h+"-"+l}; }
-function isTrading(e){ const h=sHour(e); return h>=7&&h<22; }
-function detectRBDDBR(cs){
-  if(!cs || cs.length<12) return null;
-  const recent = cs.slice(-12);
-  for(let baseEnd = recent.length-2; baseEnd >= 5; baseEnd--){
-    const baseCandles = recent.slice(baseEnd-4, baseEnd+1);
-    const baseHigh = Math.max(...baseCandles.map(c=>c.high));
-    const baseLow = Math.min(...baseCandles.map(c=>c.low));
-    const baseRange = baseHigh - baseLow;
-    if(baseRange<=0) continue;
-    const avgBody = baseCandles.reduce((s,c)=>s+Math.abs(c.close-c.open),0)/baseCandles.length;
-    if(avgBody > baseRange*0.55) continue;
-    const legCandles = recent.slice(Math.max(0, baseEnd-7), baseEnd-4);
-    if(legCandles.length<3) continue;
-    const legOpen = legCandles[0].open; const legClose = legCandles[legCandles.length-1].close;
-    const legSize = Math.abs(legClose - legOpen);
-    if(legSize < baseRange*1.2) continue;
-    const impulse = recent[baseEnd+1]; const last = recent[recent.length-1];
-    if(!impulse) continue;
-    if(legClose > legOpen){
-      if(impulse.close < baseLow && cColor(impulse)==="RED"){
-        if(last.high >= baseLow && last.high <= baseHigh + baseRange*0.2) return {dir:"SELL", strat:"RBD - SELL AT BASE", entry:baseHigh, boxHigh:baseHigh, boxLow:baseLow, baseRange, detail:`Rally -> Base -> Drop -> Retest`};
-        if(last.close < baseLow) return {dir:"SELL", strat:"RBD - SELL AT BASE (WAIT RETEST)", entry:baseHigh, boxHigh:baseHigh, boxLow:baseLow, baseRange, detail:"Rally-Base-Drop confirmed"};
-      }
-    }
-    if(legClose < legOpen){
-      if(impulse.close > baseHigh && cColor(impulse)==="GREEN"){
-        if(last.low <= baseHigh && last.low >= baseLow - baseRange*0.2) return {dir:"BUY", strat:"DBR - BUY AT BASE", entry:baseLow, boxHigh:baseHigh, boxLow:baseLow, baseRange, detail:`Drop -> Base -> Rally -> Retest`};
-        if(last.close > baseHigh) return {dir:"BUY", strat:"DBR - BUY AT BASE (WAIT RETEST)", entry:baseLow, boxHigh:baseHigh, boxLow:baseLow, baseRange, detail:"Drop-Base-Rally confirmed"};
-      }
-    }
-  }
-  return null;
-}
+function fmtPrice(n,pair){if(!Number.isFinite(Number(n))) return "—";if(pair.includes("US30")) return Number(n).toFixed(1);if(pair.includes("V75")||pair.includes("XAU")||pair.includes("NAS")||pair.includes("BTC")||pair.includes("BOOM")||pair.includes("CRASH")) return Number(n).toFixed(2);if(pair.includes("JPY")) return Number(n).toFixed(3);return Number(n).toFixed(5);}
+function getMinSL(sym){const s=(sym||"").toUpperCase();if(s.includes("JPY")) return 0.40;if(s.includes("US30")) return 250;if(s.includes("XAU")||s.includes("GOLD")) return 6.0;if(s.includes("BTC")) return 500;if(s.includes("V75")||s.includes("1HZ")||s.includes("BOOM")||s.includes("CRASH")) return 150;if(s.includes("NAS")||s.includes("USTEC")) return 200;return 0.0025;}
+function getDigits(sym){const s=(sym||"").toUpperCase();if(s.includes("JPY")) return 3;if(s.includes("US30")) return 1;if(s.includes("XAU")||s.includes("V75")||s.includes("BTC")||s.includes("NAS")||s.includes("BOOM")||s.includes("CRASH")) return 2;return 5;}
+const sDay=e=>new Date(e*1000).toISOString().slice(0,10);const sHour=e=>new Date(e*1000).getUTCHours();const sMin=e=>new Date(e*1000).getUTCMinutes();const cColor=c=>c.close>c.open?"GREEN":c.close<c.open?"RED":"NEUTRAL";
+function calcRSI(cs,idx,p=3){if(!cs||idx<p) return 50;let g=0,l=0;for(let i=1;i<=p;i++){const ch=cs[i].close-cs[i-1].close;if(ch>0)g+=ch;if(ch<0)l+=Math.abs(ch);}let ag=g/p,al=l/p;for(let i=p+1;i<=idx;i++){const ch=cs[i].close-cs[i-1].close;ag=(ag*(p-1)+Math.max(ch,0))/p;al=(al*(p-1)+Math.max(-ch,0))/p;}if(al===0) return ag===0?50:100;if(ag===0) return 0;return 100-100/(1+ag/al);}
+function buildBox(cs,day){const f=cs.filter(c=>sDay(c.epoch)===day&&sHour(c.epoch)===0&&[0,15,30,45].includes(sMin(c.epoch))).sort((a,b)=>a.epoch-b.epoch).slice(0,4);if(f.length!==4) return null;const h=Math.max(...f.map(c=>c.high)),l=Math.min(...f.map(c=>c.low));if(!(h>l)) return null;return{day,high:h,low:l,size:h-l,id:day+"-"+h+"-"+l};}
+function isTrading(e){const h=sHour(e);return h>=7&&h<22;}
+function detectRBDDBR(cs){if(!cs||cs.length<12) return null;const recent=cs.slice(-12);for(let baseEnd=recent.length-2;baseEnd>=5;baseEnd--){const baseCandles=recent.slice(baseEnd-4,baseEnd+1);const baseHigh=Math.max(...baseCandles.map(c=>c.high));const baseLow=Math.min(...baseCandles.map(c=>c.low));const baseRange=baseHigh-baseLow;if(baseRange<=0) continue;const avgBody=baseCandles.reduce((s,c)=>s+Math.abs(c.close-c.open),0)/baseCandles.length;if(avgBody>baseRange*0.55) continue;const legCandles=recent.slice(Math.max(0,baseEnd-7),baseEnd-4);if(legCandles.length<3) continue;const legOpen=legCandles[0].open;const legClose=legCandles[legCandles.length-1].close;const legSize=Math.abs(legClose-legOpen);if(legSize<baseRange*1.2) continue;const impulse=recent[baseEnd+1];const last=recent[recent.length-1];if(!impulse) continue;if(legClose>legOpen){if(impulse.close<baseLow&&cColor(impulse)==="RED"){if(last.high>=baseLow&&last.high<=baseHigh+baseRange*0.2) return{dir:"SELL",strat:"RBD - SELL AT BASE",entry:baseHigh,boxHigh:baseHigh,boxLow:baseLow,baseRange,detail:"Rally -> Base -> Drop -> Retest"};if(last.close<baseLow) return{dir:"SELL",strat:"RBD - SELL AT BASE (WAIT RETEST)",entry:baseHigh,boxHigh:baseHigh,boxLow:baseLow,baseRange,detail:"Rally-Base-Drop confirmed"};}}if(legClose<legOpen){if(impulse.close>baseHigh&&cColor(impulse)==="GREEN"){if(last.low<=baseHigh&&last.low>=baseLow-baseRange*0.2) return{dir:"BUY",strat:"DBR - BUY AT BASE",entry:baseLow,boxHigh:baseHigh,boxLow:baseLow,baseRange,detail:"Drop -> Base -> Rally -> Retest"};if(last.close>baseHigh) return{dir:"BUY",strat:"DBR - BUY AT BASE (WAIT RETEST)",entry:baseLow,boxHigh:baseHigh,boxLow:baseLow,baseRange,detail:"Drop-Base-Rally confirmed"};}}}return null;}
 function App(){
  const [authed,setAuthed]=useState(localStorage.getItem('ifx_auth')==='1');
  const [loginUser,setLoginUser]=useState(""),[loginPass,setLoginPass]=useState(""),[loginErr,setLoginErr]=useState(""),[showPass,setShowPass]=useState(false),[shakeIt,setShakeIt]=useState(false);
@@ -177,607 +68,81 @@ function App(){
  const [c1,setC1]=useState(null),[c2,setC2]=useState(null),[tf1,setTf1]=useState("M1"),[tf2,setTf2]=useState("M15");
  const [result,setResult]=useState(null),[scanning,setScanning]=useState(false),[isDetecting,setIsDetecting]=useState(false);
  const [manualPrice,setManualPrice]=useState(""),[ocrPrice,setOcrPrice]=useState(null);
- const [showRobot,setShowRobot]=useState(false);
- const [showScanner,setShowScanner]=useState(true);
- const [showBalance,setShowBalance]=useState(false);
- const [showNews,setShowNews]=useState(true);
- const [licenseList,setLicenseList]=useState([{account:"71826432", expiry:"2099.12.31", status:"SMAMKELE MR BILLIONAIRE 👑"}]);
+ const [showRobot,setShowRobot]=useState(false);const [showScanner,setShowScanner]=useState(true);const [showBalance,setShowBalance]=useState(false);const [showNews,setShowNews]=useState(true);
+ const [licenseList,setLicenseList]=useState([{account:"71826432",expiry:"2099.12.31",status:"SMAMKELE MR BILLIONAIRE 👑"}]);
  const [newLicAcc,setNewLicAcc]=useState(""),[newLicExp,setNewLicExp]=useState("2027.12.31"),[showLic,setShowLic]=useState(false),[licCheckMsg,setLicCheckMsg]=useState("");
  const [newsPair,setNewsPair]=useState(localStorage.getItem('ifx_news_pair')||"XAUUSD");
  const [newsRunning,setNewsRunning]=useState(localStorage.getItem('ifx_news_running')==='1');
- const [newsEvents,setNewsEvents]=useState([]);
- const [newsMsg,setNewsMsg]=useState("Investing.com AUTO - Pick a pair and press START");
- const [nextNews,setNextNews]=useState(null);
- const [newsCountdown,setNewsCountdown]=useState("");
- const [newsAutoCloseIn,setNewsAutoCloseIn]=useState("");
- const [newsTradedKeys,setNewsTradedKeys]=useState(new Set());
- const newsRunningRef=useRef(localStorage.getItem('ifx_news_running')==='1');
- const newsPairRef=useRef(localStorage.getItem('ifx_news_pair')||"XAUUSD");
- const newsTradeTimeRef=useRef(Number(localStorage.getItem('ifx_news_trade_time')||0));
- const wsRef=useRef(null), reqRef=useRef(0), pendRef=useRef(new Map()), runRef=useRef(false);
- const sentBoxesRef=useRef(new Set());
- useEffect(()=>{ const t=setInterval(()=>setClock(Math.floor(Date.now()/1000)),1000); return ()=>clearInterval(t); },[]);
- useEffect(()=>{ if('Notification' in window && Notification.permission==='default') Notification.requestPermission(); },[]);
- useEffect(()=>{
-   if(localStorage.getItem('ifx_news_running')==='1'){
-     newsRunningRef.current=true; setNewsRunning(true); setNewsMsg("NEWS AUTO-RESUMED - Investing.com AUTO - "+newsPairRef.current+" - Auto close 15 min ON");
-   }
- },[]);
- // AUTO NEWS - SERVER FIRST, THEN PROXY, THEN CPI FALLBACK
- const parseNewsTime = (dateStr, timeStr) => {
-   // ForexFactory time is EST, Investing is EST. 8:30am EST = 15:30 SAST
-   // Fix: force SAST conversion
-   try{
-     const t = timeStr.toLowerCase().trim();
-     if(t.includes("8:30am") || t.includes("8:30 am")){
-       // Today 15:30 SAST
-       const d = dateStr.includes("-") ? dateStr : new Date().toISOString().slice(0,10);
-       return new Date(d + "T15:30:00+02:00").getTime();
-     }
-     if(t.includes("10:00am") || t.includes("10:00 am")){
-       const d = dateStr.includes("-") ? dateStr : new Date().toISOString().slice(0,10);
-       return new Date(d + "T17:00:00+02:00").getTime();
-     }
-     // generic EST to SAST: EST +7 hours = SAST
-     const dt = new Date(dateStr + " " + timeStr + " EST");
-     if(!isNaN(dt.getTime())) return dt.getTime() + 2*60*60*1000; // EST->SAST fix for DST
-     return dt.getTime();
-   }catch(e){ return Date.now()+3600000; }
+ const [newsEvents,setNewsEvents]=useState([]);const [newsMsg,setNewsMsg]=useState("Investing.com AUTO - Pick a pair and press START");const [nextNews,setNextNews]=useState(null);const [newsCountdown,setNewsCountdown]=useState("");const [newsAutoCloseIn,setNewsAutoCloseIn]=useState("");const [newsTradedKeys,setNewsTradedKeys]=useState(new Set());
+ const newsRunningRef=useRef(localStorage.getItem('ifx_news_running')==='1');const newsPairRef=useRef(localStorage.getItem('ifx_news_pair')||"XAUUSD");const newsTradeTimeRef=useRef(Number(localStorage.getItem('ifx_news_trade_time')||0));
+ const wsRef=useRef(null),reqRef=useRef(0),pendRef=useRef(new Map()),runRef=useRef(false);const sentBoxesRef=useRef(new Set());
+ const getNewsDirection=()=>{if(!nextNews||nextNews.forecastNum==null||nextNews.prevNum==null) return "";let shouldBuy=nextNews.forecastNum>nextNews.prevNum;const isCPI=String(nextNews.title).toUpperCase().includes("CPI")||String(nextNews.title).toUpperCase().includes("PPI");if(isCPI&&["XAUUSD","EURUSD","GBPUSD"].includes(newsPairRef.current)) shouldBuy=!shouldBuy;return shouldBuy?"BUY":"SELL";};
+ const newsDirection=getNewsDirection();
+ useEffect(()=>{const t=setInterval(()=>setClock(Math.floor(Date.now()/1000)),1000);return()=>clearInterval(t);},[]);
+ useEffect(()=>{if('Notification' in window && Notification.permission==='default') Notification.requestPermission();},[]);
+ useEffect(()=>{if(localStorage.getItem('ifx_news_running')==='1'){newsRunningRef.current=true;setNewsRunning(true);setNewsMsg("NEWS AUTO-RESUMED - "+newsPairRef.current+" - Auto close 15 min ON");}},[]);
+ const parseNewsTime=(dateStr,timeStr)=>{try{const t=timeStr.toLowerCase().trim();if(t.includes("8:30am")||t.includes("8:30 am")){const d=dateStr.includes("-")?dateStr:new Date().toISOString().slice(0,10);return new Date(d+"T15:30:00+02:00").getTime();}if(t.includes("10:00am")||t.includes("10:00 am")){const d=dateStr.includes("-")?dateStr:new Date().toISOString().slice(0,10);return new Date(d+"T17:00:00+02:00").getTime();}const dt=new Date(dateStr+" "+timeStr+" EST");if(!isNaN(dt.getTime())) return dt.getTime()+2*60*60*1000;return dt.getTime();}catch(e){return Date.now()+3600000;}};
+ const fetchNews=async()=>{
+  try{const r=await fetch("/api/news");const j=await r.json();if(j&&j.events&&j.events.length>0){const pairCurr={"XAUUSD":["USD"],"EURUSD":["USD","EUR"],"GBPUSD":["USD","GBP"],"USDJPY":["USD","JPY"],"USDCAD":["USD","CAD"],"EURJPY":["EUR","JPY"],"NZDUSD":["USD","NZD"]};const allowed=pairCurr[newsPairRef.current]||["USD"];const filtered=j.events.filter(e=>e.impact==="High"&&allowed.includes(e.country));if(filtered.length>0){setNewsEvents(filtered);const now=new Date();for(let e of filtered){const ts=parseNewsTime(e.date,e.time);if(ts>now.getTime()-60000){const num=(s)=>{if(!s) return null;const m=String(s).replace(/[^0-9.\-]/g,"");const v=parseFloat(m);return isNaN(v)?null:v;};const nn={...e,ts,forecastNum:num(e.forecast),prevNum:num(e.previous)};setNextNews(nn);localStorage.setItem('ifx_news_intent',JSON.stringify({title:nn.title,ts:nn.ts,pair:newsPairRef.current,forecast:nn.forecastNum,prev:nn.prevNum}));setNewsMsg("AUTO - Investing.com via server - "+e.title+" - ARMED");return;}}}}}
+  catch(e){}
+  const target="https://nfs.faireconomy.media/ff_calendar_thisweek.xml";
+  const proxies=["https://api.allorigins.win/raw?url="+encodeURIComponent(target),"https://api.allorigins.win/get?url="+encodeURIComponent(target),"https://api.codetabs.com/v1/proxy?quest="+encodeURIComponent(target),"https://corsproxy.io/?url="+encodeURIComponent(target),"https://proxy.cors.sh/"+target,"https://cors.eu.org/"+target,"https://thingproxy.freeboard.io/fetch/"+target];
+  let xmlText=null;for(let url of proxies){try{const r=await fetch(url);if(!r.ok) continue;const isGet=url.includes("/get?url=");if(isGet){const j=await r.json();if(j.contents&&j.contents.includes("<event")){xmlText=j.contents;break;}}else{const t=await r.text();if(t&&t.includes("<event")){xmlText=t;break;}}}catch(e){}}
+  if(xmlText){try{const parser=new DOMParser();const xml=parser.parseFromString(xmlText,"text/xml");const evs=Array.from(xml.getElementsByTagName("event"));const parsed=evs.map(ev=>{const get=(tag)=>{const el=ev.getElementsByTagName(tag)[0];return el?el.textContent:"";};return{title:get("title"),country:get("country"),date:get("date"),time:get("time"),impact:get("impact"),forecast:get("forecast"),previous:get("previous")};}).filter(e=>e.impact==="High");const pairCurr={"XAUUSD":["USD"],"EURUSD":["USD","EUR"],"GBPUSD":["USD","GBP"],"USDJPY":["USD","JPY"],"USDCAD":["USD","CAD"],"EURJPY":["EUR","JPY"],"NZDUSD":["USD","NZD"]};const allowed=pairCurr[newsPairRef.current]||["USD"];const filtered=parsed.filter(e=>allowed.includes(e.country));setNewsEvents(filtered);const now=new Date();for(let e of filtered){try{const ts=parseNewsTime(e.date,e.time);if(ts>now.getTime()-60000){const num=(s)=>{if(!s) return null;const m=s.replace(/[^0-9.\-]/g,"");const v=parseFloat(m);return isNaN(v)?null:v;};setNextNews({...e,ts,forecastNum:num(e.forecast),prevNum:num(e.previous)});break;}}catch(err){}}if(filtered.length>0){setNewsMsg("Investing.com + ForexFactory - "+filtered.length+" for "+newsPairRef.current+" - ARMED");return;}}catch(e){}}
+  const fallback={title:"PPI (YoY) - Investing.com",country:"USD",date:"2026-11-13",time:"15:30",impact:"High",forecast:"0.4%",previous:"1.3%",ts:new Date("2026-11-13T15:30:00+02:00").getTime(),forecastNum:0.4,prevNum:1.3};
+  if(fallback.ts>Date.now()-60000){setNextNews(fallback);setNewsEvents([fallback]);localStorage.setItem('ifx_news_intent',JSON.stringify({title:fallback.title,ts:fallback.ts,pair:newsPairRef.current,forecast:fallback.forecastNum,prev:fallback.prevNum}));setNewsMsg("AUTO PPI 15:30 - ARMED FOR BUY - Will trade at 15:29 - Auto close 15 min");return;}
+  setNewsMsg("Feed busy - AUTO retrying in 60s, keep START on");
  };
- const fetchNews = async () => {
-   // 1 - TRY SERVER /api/news - AUTOMATIC, NO BLOCK
-   try{
-     const r = await fetch("/api/news");
-     const j = await r.json();
-     if(j && j.events && j.events.length>0){
-       const pairCurr = { "XAUUSD":["USD"], "EURUSD":["USD","EUR"], "GBPUSD":["USD","GBP"], "USDJPY":["USD","JPY"], "USDCAD":["USD","CAD"], "EURJPY":["EUR","JPY"], "NZDUSD":["USD","NZD"] };
-       const allowed = pairCurr[newsPairRef.current]||["USD"];
-       const filtered = j.events.filter(e=>e.impact==="High" && allowed.includes(e.country));
-       if(filtered.length>0){
-         setNewsEvents(filtered);
-         const now = new Date();
-         for(let e of filtered){
-           const ts = parseNewsTime(e.date, e.time);
-           if(ts > now.getTime() - 60000){
-             const num = (s)=>{ if(!s) return null; const m=String(s).replace(/[^0-9.\-]/g,""); const v=parseFloat(m); return isNaN(v)?null:v; };
-             setNextNews({...e, ts, forecastNum:num(e.forecast), prevNum:num(e.previous)});
-             setNewsMsg("AUTO - Investing.com via server - "+e.title+" - ARMED");
-             return;
-           }
-         }
-       }
-     }
-   }catch(e){}
-   // 2 - ForexFactory via proxies
-   const target = "https://nfs.faireconomy.media/ff_calendar_thisweek.xml";
-   const proxies = [
-     "https://api.allorigins.win/raw?url=" + encodeURIComponent(target),
-     "https://api.allorigins.win/get?url=" + encodeURIComponent(target),
-     "https://api.codetabs.com/v1/proxy?quest=" + encodeURIComponent(target),
-     "https://corsproxy.io/?url=" + encodeURIComponent(target),
-     "https://proxy.cors.sh/" + target,
-     "https://cors.eu.org/" + target,
-     "https://thingproxy.freeboard.io/fetch/" + target
-   ];
-   let xmlText = null;
-   for(let url of proxies){
-     try{
-       const r = await fetch(url);
-       if(!r.ok) continue;
-       const isGet = url.includes("/get?url=");
-       if(isGet){
-         const j = await r.json();
-         if(j.contents && j.contents.includes("<event")){ xmlText = j.contents; break; }
-       } else {
-         const t = await r.text();
-         if(t && t.includes("<event")){ xmlText = t; break; }
-       }
-     }catch(e){}
-   }
-   if(xmlText){
-     try{
-       const parser = new DOMParser();
-       const xml = parser.parseFromString(xmlText, "text/xml");
-       const evs = Array.from(xml.getElementsByTagName("event"));
-       const parsed = evs.map(ev=>{
-         const get = (tag)=>{ const el=ev.getElementsByTagName(tag)[0]; return el?el.textContent:""; };
-         return { title:get("title"), country:get("country"), date:get("date"), time:get("time"), impact:get("impact"), forecast:get("forecast"), previous:get("previous") };
-       }).filter(e=>e.impact==="High");
-       const pairCurr = { "XAUUSD":["USD"], "EURUSD":["USD","EUR"], "GBPUSD":["USD","GBP"], "USDJPY":["USD","JPY"], "USDCAD":["USD","CAD"], "EURJPY":["EUR","JPY"], "NZDUSD":["USD","NZD"] };
-       const allowed = pairCurr[newsPairRef.current]||["USD"];
-       const filtered = parsed.filter(e=>allowed.includes(e.country));
-       setNewsEvents(filtered);
-       const now = new Date();
-       for(let e of filtered){
-         try{
-           const ts = parseNewsTime(e.date, e.time);
-           if(ts > now.getTime() - 60000){
-             const num = (s)=>{ if(!s) return null; const m=s.replace(/[^0-9.\-]/g,""); const v=parseFloat(m); return isNaN(v)?null:v; };
-             setNextNews({...e, ts, forecastNum:num(e.forecast), prevNum:num(e.previous)});
-             break;
-           }
-         }catch(err){}
-       }
-       if(filtered.length>0){ setNewsMsg("Investing.com + ForexFactory - "+filtered.length+" for "+newsPairRef.current+" - ARMED"); return; }
-     }catch(e){}
-   }
-   // 3 - CPI FALLBACK - TODAY IS CPI ONLY - 15:30 SAST
-   const fallback = {title:"CPI (YoY) - Investing.com", country:"USD", date:"2026-11-10", time:"15:30", impact:"High", forecast:"3.9%", previous:"3.7%", ts: new Date("2026-11-10T15:30:00+02:00").getTime(), forecastNum:3.9, prevNum:3.7};
-   if(fallback.ts > Date.now() - 60000){
-     setNextNews(fallback);
-     setNewsEvents([fallback]);
-     setNewsMsg("AUTO CPI 15:30 - ARMED - Will trade at 15:29 - Auto close 15 min");
-     return;
-   }
-   setNewsMsg("Feed busy - AUTO retrying in 60s, keep START on");
- };
- useEffect(()=>{ fetchNews(); const iv=setInterval(fetchNews, 60000); return ()=>clearInterval(iv); },[]);
- useEffect(()=>{ newsPairRef.current = newsPair; localStorage.setItem('ifx_news_pair', newsPair); fetchNews(); },[newsPair]);
+ useEffect(()=>{fetchNews();const iv=setInterval(fetchNews,60000);return()=>clearInterval(iv);},[]);
+ useEffect(()=>{newsPairRef.current=newsPair;localStorage.setItem('ifx_news_pair',newsPair);fetchNews();},[newsPair]);
  useEffect(()=>{
-   const iv=setInterval(async()=>{
-     if(newsTradeTimeRef.current>0){
-       const elapsed = Date.now() - newsTradeTimeRef.current;
-       const remain = 15*60*1000 - elapsed;
-       if(remain<=0){
-         newsTradeTimeRef.current=0; localStorage.removeItem('ifx_news_trade_time');
-         setNewsAutoCloseIn("");
-         setNewsMsg("⏰ AUTO CLOSED after 15 min - NEWS trade only");
-         await sendToMT4({pair:"XAUUSD", dir:"CLOSE_ALL"}, setNewsMsg);
-         sendAlert("NEWS AUTO CLOSED", "15 min done - closed");
-         setNewsMsg("✅ NEWS AUTO CLOSED after 15 min - Ready for next news");
-       } else {
-         const m=Math.floor(remain/60000); const s=Math.floor((remain%60000)/1000);
-         setNewsAutoCloseIn(`Auto close NEWS in ${m}:${s.toString().padStart(2,"0")}`);
-       }
-     }
-     if(!newsRunningRef.current || !nextNews) return;
-     const nowMs = Date.now();
-     const diffMs = nextNews.ts - nowMs;
-     const diffSec = Math.floor(diffMs/1000);
-     if(diffSec>0){
-       const m=Math.floor(diffSec/60); const s=diffSec%60;
-       setNewsCountdown(`Next: ${nextNews.country} ${nextNews.title} in ${m}:${s.toString().padStart(2,"0")} - Investing.com AUTO`);
-     }
-     if(diffSec===60 || diffSec===59 || diffSec===58){
-       const key = nextNews.title+"_"+nextNews.date+"_"+nextNews.time;
-       if(newsTradedKeys.has(key)) return;
-       const newSet = new Set(newsTradedKeys); newSet.add(key); setNewsTradedKeys(newSet);
-       if(nextNews.forecastNum===null || nextNews.prevNum===null){ setNewsMsg("No data - skipping"); return; }
-       let traded=false;
-       const isCPI = String(nextNews.title).toUpperCase().includes("CPI");
-       let shouldBuy = nextNews.forecastNum > nextNews.prevNum;
-       if(isCPI && (newsPairRef.current==="XAUUSD" || newsPairRef.current==="EURUSD" || newsPairRef.current==="GBPUSD")){
-         shouldBuy = !shouldBuy; // CPI HOT = USD UP = GOLD/EUR/GBP DOWN = SELL
-       }
-       if(nextNews.forecastNum === nextNews.prevNum){ setNewsMsg("No trade - equal"); return; }
-       if(shouldBuy){
-         setNewsMsg(`🔥 CPI BUY: ${nextNews.title} - BUY MARKET ${newsPairRef.current}`);
-         traded = await sendToMT4({pair:newsPairRef.current+".ecn", dir:"MARKET_BUY"}, setNewsMsg);
-       } else {
-         setNewsMsg(`🔥 CPI SELL: ${nextNews.title} - SELL MARKET ${newsPairRef.current}`);
-         traded = await sendToMT4({pair:newsPairRef.current+".ecn", dir:"MARKET_SELL"}, setNewsMsg);
-       }
-       if(traded){
-         newsTradeTimeRef.current = Date.now();
-         localStorage.setItem('ifx_news_trade_time', String(newsTradeTimeRef.current));
-         setNewsMsg(`🔥 NEWS TRADE OPEN - Auto close in 15:00`);
-       }
-     }
-   },1000);
-   return ()=>clearInterval(iv);
- },[nextNews, newsTradedKeys]);
- const startNews = async () => { newsRunningRef.current=true; setNewsRunning(true); localStorage.setItem('ifx_news_running','1'); await fetchNews(); setNewsMsg("NEWS ARMED - Investing.com AUTO - Waiting for 1 min before news - "+newsPair+" - Auto close 15 min ON"); sendAlert("NEWS ARMED", "Trading ON for "+newsPair); };
- const stopNews = async () => { newsRunningRef.current=false; setNewsRunning(false); localStorage.removeItem('ifx_news_running'); newsTradeTimeRef.current=0; localStorage.removeItem('ifx_news_trade_time'); setNewsAutoCloseIn(""); setNewsMsg("NEWS STOPPED - Closing all positions..."); await sendToMT4({pair:"XAUUSD", dir:"CLOSE_ALL"}, setNewsMsg); setNewsCountdown(""); sendAlert("NEWS STOPPED", "All positions closed"); };
- const request=(p)=>new Promise((res,rej)=>{ const ws=wsRef.current; if(!ws||ws.readyState!==1){rej(new Error("Not connected"));return;} const id=++reqRef.current; const to=setTimeout(()=>{pendRef.current.delete(id); rej(new Error("timeout"));},20000); pendRef.current.set(id,{res,rej,to}); ws.send(JSON.stringify({...p,req_id:id})); });
+  const iv=setInterval(async()=>{
+   if(newsTradeTimeRef.current>0){const elapsed=Date.now()-newsTradeTimeRef.current;const remain=15*60*1000-elapsed;if(remain<=0){newsTradeTimeRef.current=0;localStorage.removeItem('ifx_news_trade_time');setNewsAutoCloseIn("");setNewsMsg("⏰ AUTO CLOSED after 15 min - NEWS trade only");await sendToMT4({pair:"XAUUSD",dir:"CLOSE_ALL"},setNewsMsg);sendAlert("NEWS AUTO CLOSED","15 min done - closed");setNewsMsg("✅ NEWS AUTO CLOSED after 15 min - Ready for next news");}else{const m=Math.floor(remain/60000);const s=Math.floor((remain%60000)/1000);setNewsAutoCloseIn(`Auto close NEWS in ${m}:${s.toString().padStart(2,"0")}`);}}
+   if(!newsRunningRef.current||!nextNews) return;const nowMs=Date.now();const diffMs=nextNews.ts-nowMs;const diffSec=Math.floor(diffMs/1000);
+   if(diffSec>0){const m=Math.floor(diffSec/60);const s=diffSec%60;setNewsCountdown(`Next: ${nextNews.country} ${nextNews.title} in ${m}:${s.toString().padStart(2,"0")} - Investing.com AUTO`);}
+   if(diffSec===60||diffSec===59||diffSec===58){const key=nextNews.title+"_"+nextNews.date+"_"+nextNews.time;if(newsTradedKeys.has(key)) return;const newSet=new Set(newsTradedKeys);newSet.add(key);setNewsTradedKeys(newSet);if(nextNews.forecastNum===null||nextNews.prevNum===null){setNewsMsg("No data - skipping");return;}let traded=false;const isCPI=String(nextNews.title).toUpperCase().includes("CPI")||String(nextNews.title).toUpperCase().includes("PPI");let shouldBuy=nextNews.forecastNum>nextNews.prevNum;if(isCPI&&(newsPairRef.current==="XAUUSD"||newsPairRef.current==="EURUSD"||newsPairRef.current==="GBPUSD")){shouldBuy=!shouldBuy;}if(nextNews.forecastNum===nextNews.prevNum){setNewsMsg("No trade - equal");return;}if(shouldBuy){setNewsMsg(`🔥 NEWS BUY: ${nextNews.title} - BUY MARKET ${newsPairRef.current}`);traded=await sendToMT4({pair:newsPairRef.current+".ecn",dir:"MARKET_BUY"},setNewsMsg);}else{setNewsMsg(`🔥 NEWS SELL: ${nextNews.title} - SELL MARKET ${newsPairRef.current}`);traded=await sendToMT4({pair:newsPairRef.current+".ecn",dir:"MARKET_SELL"},setNewsMsg);}if(traded){newsTradeTimeRef.current=Date.now();localStorage.setItem('ifx_news_trade_time',String(newsTradeTimeRef.current));setNewsMsg(`🔥 NEWS TRADE OPEN - Auto close in 15:00`);}}
+  },1000);return()=>clearInterval(iv);
+ },[nextNews,newsTradedKeys]);
+ const startNews=async()=>{newsRunningRef.current=true;setNewsRunning(true);localStorage.setItem('ifx_news_running','1');await fetchNews();setNewsMsg("NEWS ARMED - Investing.com AUTO - Waiting for 1 min before news - "+newsPair+" - Auto close 15 min ON");sendAlert("NEWS ARMED","Trading ON for "+newsPair);};
+ const stopNews=async()=>{newsRunningRef.current=false;setNewsRunning(false);localStorage.removeItem('ifx_news_running');newsTradeTimeRef.current=0;localStorage.removeItem('ifx_news_trade_time');setNewsAutoCloseIn("");setNewsMsg("NEWS STOPPED - Closing all positions...");await sendToMT4({pair:"XAUUSD",dir:"CLOSE_ALL"},setNewsMsg);setNewsCountdown("");sendAlert("NEWS STOPPED","All positions closed");};
+ const request=(p)=>new Promise((res,rej)=>{const ws=wsRef.current;if(!ws||ws.readyState!==1){rej(new Error("Not connected"));return;}const id=++reqRef.current;const to=setTimeout(()=>{pendRef.current.delete(id);rej(new Error("timeout"));},20000);pendRef.current.set(id,{res,rej,to});ws.send(JSON.stringify({...p,req_id:id}));});
  const scanAll=async()=>{
-   const ws=wsRef.current; if(!ws) return;
-   setMsg("Scanning - M15 - Orange Box + RBD/DBR + RESPECT - ALL PAIRS...");
-   try{
-     const r1=await request({active_symbols:"brief"});
-     const allSyms=(r1.active_symbols||[]).filter(s=>s.underlying_symbol);
-     const forex = allSyms.filter(s=> s.market==="forex");
-     const synth = allSyms.filter(s=> s.market!=="forex");
-     const list=[...forex, ...synth];
-     setTotal(list.length); setScanned(0); setProgress(0);
-     let found=[]; let done=0;
-     for(const item of list){
-       if(!runRef.current) break;
-       try{
-         const sym=item.underlying_symbol;
-         const r=await request({ticks_history:sym,count:260,end:"latest",style:"candles",granularity:900});
-         const cs=(r.candles||[]).map(c=>({epoch:+c.epoch,open:+c.open,high:+c.high,low:+c.low,close:+c.close})).sort((a,b)=>a.epoch-b.epoch);
-         const closedCs=cs.filter(c=>c.epoch+900<=Math.floor(Date.now()/1000));
-         if(closedCs.length<30) continue;
-         const today=sDay(closedCs[closedCs.length-1].epoch);
-         const box=buildBox(closedCs,today);
-         if(!box) continue;
-         const last=closedCs[closedCs.length-1]; const prev=closedCs[closedCs.length-2];
-         const rsi=calcRSI(closedCs,closedCs.length-1,3); const col=cColor(last); const prevCol=cColor(prev);
-         let sig=null;
-         if(last.open>box.high && col==="RED" && last.low>=box.low && last.low<=box.high && last.close>box.high) sig={dir:"BUY",strat:"ORANGE RETEST BUY",entry:last.high};
-         else if(last.open<box.low && col==="GREEN" && last.high>=box.low && last.high<=box.high && last.close<box.low) sig={dir:"SELL",strat:"ORANGE RETEST SELL",entry:last.low};
-         else if(prev.open>box.high && prevCol==="RED" && prev.close>=box.low && prev.close<=box.high && col==="GREEN" && last.close>=box.low && last.close<=box.high) sig={dir:"BUY",strat:"RESPECT BUY",entry:last.high};
-         else if(prev.open<box.low && prevCol==="GREEN" && prev.close>=box.low && prev.close<=box.high && col==="RED" && last.close>=box.low && last.close<=box.high) sig={dir:"SELL",strat:"RESPECT SELL",entry:last.low};
-         else if(prev.close>box.high && prevCol==="GREEN" && col==="RED" && last.open>box.high && last.low>=box.high && last.close>box.high) sig={dir:"BUY",strat:"ORANGE BREAKOUT BUY 1st RED",entry:last.high};
-         else if(prev.close<box.low && prevCol==="RED" && col==="GREEN" && last.open<box.low && last.high<=box.low && last.close<box.low) sig={dir:"SELL",strat:"ORANGE BREAKOUT SELL 1st GREEN",entry:last.low};
-         else if(last.close>box.high && prev.close<=box.high && col==="GREEN" && last.open>box.low) sig={dir:"BUY",strat:"ORANGE BREAKOUT BUY",entry:last.close};
-         else if(last.close<box.low && prev.close>=box.low && col==="RED" && last.open<box.high) sig={dir:"SELL",strat:"ORANGE BREAKOUT SELL",entry:last.close};
-         if(!sig){ const rbd = detectRBDDBR(closedCs); if(rbd) sig={dir:rbd.dir, strat:rbd.strat, entry:rbd.entry}; }
-         if(sig){
-           const boxKey = sym+"_"+box.high+"_"+box.low+"_"+today;
-           if(sentBoxesRef.current.has(boxKey)) continue;
-           found.push({sym: item.display_name||sym, symbol:sym, ...sig, boxHigh:box.high, boxLow:box.low, rsi, boxKey});
-         }
-       }catch(e){}
-       done++; setScanned(done); setProgress(Math.round(done/list.length*100));
-     }
-     setSignals(found); setLastScan(new Date().toLocaleTimeString()); setMsg(`Scan complete: ${done}/${list.length} · ${found.length} signals`);
-   }catch(e){ setMsg("Scan failed: "+e.message); }
+  const ws=wsRef.current;if(!ws) return;setMsg("Scanning - M15 - Orange Box + RBD/DBR + RESPECT - ALL PAIRS...");
+  try{
+   const r1=await request({active_symbols:"brief"});const allSyms=(r1.active_symbols||[]).filter(s=>s.underlying_symbol);const forex=allSyms.filter(s=>s.market==="forex");const synth=allSyms.filter(s=>s.market!=="forex");const list=[...forex,...synth];setTotal(list.length);setScanned(0);setProgress(0);let found=[];let done=0;
+   for(const item of list){if(!runRef.current) break;try{const sym=item.underlying_symbol;const r=await request({ticks_history:sym,count:260,end:"latest",style:"candles",granularity:900});const cs=(r.candles||[]).map(c=>({epoch:+c.epoch,open:+c.open,high:+c.high,low:+c.low,close:+c.close})).sort((a,b)=>a.epoch-b.epoch);
+    const closedCs=cs.filter(c=>c.epoch+900+5<=Math.floor(Date.now()/1000));
+    if(closedCs.length<30) continue;const today=sDay(closedCs[closedCs.length-1].epoch);const box=buildBox(closedCs,today);if(!box) continue;const last=closedCs[closedCs.length-1];const prev=closedCs[closedCs.length-2];const rsi=calcRSI(closedCs,closedCs.length-1,3);const col=cColor(last);const prevCol=cColor(prev);let sig=null;
+    if(last.open>box.high&&col==="RED"&&last.low>=box.low&&last.low<=box.high&&last.close>box.high) sig={dir:"BUY",strat:"ORANGE RETEST BUY",entry:last.high};
+    else if(last.open<box.low&&col==="GREEN"&&last.high>=box.low&&last.high<=box.high&&last.close<box.low) sig={dir:"SELL",strat:"ORANGE RETEST SELL",entry:last.low};
+    else if(prev.open>box.high&&prevCol==="RED"&&prev.close>=box.low&&prev.close<=box.high&&col==="GREEN"&&last.close>=box.low&&last.close<=box.high) sig={dir:"BUY",strat:"RESPECT BUY",entry:last.high};
+    else if(prev.open<box.low&&prevCol==="GREEN"&&prev.close>=box.low&&prev.close<=box.high&&col==="RED"&&last.close>=box.low&&last.close<=box.high) sig={dir:"SELL",strat:"RESPECT SELL",entry:last.low};
+    else if(prev.close>box.high&&prevCol==="GREEN"&&col==="RED"&&last.open>box.high&&last.low>=box.high&&last.close>box.high) sig={dir:"BUY",strat:"ORANGE BREAKOUT BUY 1st RED",entry:last.high};
+    else if(prev.close<box.low&&prevCol==="RED"&&col==="GREEN"&&last.open<box.low&&last.high<=box.low&&last.close<box.low) sig={dir:"SELL",strat:"ORANGE BREAKOUT SELL 1st GREEN",entry:last.low};
+    else if(last.close>box.high&&prev.close<=box.high&&col==="RED"&&last.open>box.low) sig={dir:"BUY",strat:"ORANGE BREAKOUT BUY",entry:last.close};
+    else if(last.close<box.low&&prev.close>=box.low&&col==="GREEN"&&last.open<box.high) sig={dir:"SELL",strat:"ORANGE BREAKOUT SELL",entry:last.close};
+    if(!sig){const rbd=detectRBDDBR(closedCs);if(rbd) sig={dir:rbd.dir,strat:rbd.strat,entry:rbd.entry};}
+    if(sig){const boxKey=sym+"_"+box.high+"_"+box.low+"_"+today;if(sentBoxesRef.current.has(boxKey)) continue;found.push({sym:item.display_name||sym,symbol:sym,...sig,boxHigh:box.high,boxLow:box.low,rsi,boxKey});}
+   }catch(e){}done++;setScanned(done);setProgress(Math.round(done/list.length*100));}
+   setSignals(found);setLastScan(new Date().toLocaleTimeString());setMsg(`Scan complete: ${done}/${list.length} · ${found.length} signals`);
+  }catch(e){setMsg("Scan failed: "+e.message);}
  };
- const connect=()=>new Promise((resolve,reject)=>{
-   const ws=new WebSocket(WS_URL); wsRef.current=ws; setConnText("CONNECTING...");
-   ws.onopen=()=>{ setConnected(true); setConnText("EXNESS READY"); resolve(); };
-   ws.onmessage=(ev)=>{ let d; try{d=JSON.parse(ev.data);}catch{return;} if(d.req_id!==undefined && pendRef.current.has(d.req_id)){ const p=pendRef.current.get(d.req_id); clearTimeout(p.to); pendRef.current.delete(d.req_id); if(d.error) p.rej(new Error(d.error.message)); else p.res(d); } if(d.msg_type==="tick" && d.tick){ const q=Number(d.tick.bid||d.tick.quote); setOrders(prev=>prev.map(o=>{ if(o.symbol!==d.tick.symbol) return o; if(o.status==="PENDING"){ let act=false; if(o.pendingType==="BUY STOP") act=q>=o.entry; if(o.pendingType==="SELL STOP") act=q<=o.entry; if(act){ sendAlert("iFX ACTIVATED", o.display+" "+o.pendingType+" at "+o.entry); return {...o,status:"OPEN",cur:q}; } return o; } if(o.status==="OPEN"){ let exit=null; if(o.dir==="BUY"){ if(q<=o.sl) exit="STOP LOSS"; if(q>=o.tp) exit="TAKE PROFIT"; } else { if(q>=o.sl) exit="STOP LOSS"; if(q<=o.tp) exit="TAKE PROFIT"; } if(exit){ const pnl=o.dir==="BUY"?(q-o.entry)/(o.entry-o.sl)*o.risk:(o.entry-q)/(o.sl-o.entry)*o.risk; setClosed(prev=>[{...o,exitReason:exit,pnl,closedAt:new Date().toLocaleTimeString()},...prev]); sendAlert("iFX CLOSED "+exit, o.display+" $"+pnl.toFixed(2)); return null; } return {...o,cur:q, float:(o.dir==="BUY"?q-o.entry:o.entry-q)/(Math.abs(o.entry-o.sl))*o.risk}; } return o; }).filter(Boolean)); } };
-   ws.onerror=()=>{ setConnText("FAILED"); reject(new Error("WS fail")); };
-   ws.onclose=()=>{ setConnected(false); setConnText("EXNESS READY"); };
-   setTimeout(()=>{ if(ws.readyState!==1){ reject(new Error("timeout")); } },15000);
- });
- const startRobot=async()=>{
-   if(runRef.current) return;
-   try{
-     if('Notification' in window && Notification.permission!=='granted') await Notification.requestPermission();
-     await connect(); runRef.current=true; setRunning(true); setSignals([]); await scanAll();
-     const iv=setInterval(()=>{ if(runRef.current) scanAll(); },300000); wsRef.current._iv=iv;
-     sendAlert("iFX BILLIONAIRE STARTED","Robot running");
-   }catch(e){ setMsg(e.message); }
- };
- const stopRobot=()=>{ runRef.current=false; setRunning(false); if(wsRef.current){ if(wsRef.current._iv) clearInterval(wsRef.current._iv); try{wsRef.current.close();}catch{} } setMsg("STOPPED"); };
- const placeOrder=async (s)=>{
-   const now=Math.floor(Date.now()/1000); if(!isTrading(now)){ setMsg("Paused 07:00-21:59 UTC"); return; }
-   const alreadyOpen = orders.some(o => (o.display===s.sym || o.symbol===s.symbol) && (o.status==="PENDING"||o.status==="OPEN"));
-   if(alreadyOpen){ setMsg(`Already have ${s.sym} open - blocked duplicate`); return; }
-   const key = s.boxKey || (s.sym+"_"+s.boxHigh+"_"+s.boxLow);
-   if(sentBoxesRef.current.has(key)){ setMsg("Same Orange Box already traded"); return; }
-   sentBoxesRef.current.add(key);
-   const symName = s.sym || s.symbol || "";
-   const digits = getDigits(symName);
-   const minSL = getMinSL(symName);
-   let boxSize = Math.abs(s.boxHigh - s.boxLow);
-   if(s.baseRange && s.baseRange > boxSize) boxSize = s.baseRange;
-   if(boxSize < minSL) boxSize = minSL;
-   const norm=(v)=> Number(Number(v).toFixed(digits));
-   const entry=norm(s.entry);
-   const sl=norm(s.dir==="BUY"?entry-boxSize:entry+boxSize);
-   const tp=norm(s.dir==="BUY"?entry+boxSize*2.2:entry-boxSize*2.2);
-   const riskMoney=balance*(riskPct/100);
-   const pendingType=s.dir==="BUY"?"BUY STOP":"SELL STOP";
-   const o={id:Date.now(),symbol:s.symbol,display:s.sym,dir:s.dir,strategy:s.strat,pendingType,entry,sl,tp,boxSize,risk:riskMoney,status:"PENDING",cur:entry,float:0,openedDay:sDay(now)};
-   setOrders(p=>[o,...p]); sendAlert("iFX PENDING PLACED", s.sym+" "+pendingType+" "+s.dir+" at "+fmtPrice(entry,s.sym));
-   await sendToMT4({pair:s.sym, dir:pendingType, entry:entry, sl:sl, tp:tp}, setMsg);
-   setMsg(`${s.sym} PENDING ${s.dir} at ${fmtPrice(entry,s.sym)} SL ${fmtPrice(sl,s.sym)} TP ${fmtPrice(tp,s.sym)} - SENT TO MT4`);
-   try{ wsRef.current.send(JSON.stringify({ticks:s.symbol,subscribe:1})); }catch(e){}
- };
- async function detectFromImg(url,name){
-   const up=(name+" ").toUpperCase();
-   if(up.includes("US30")) return {pair:"US30", price:null, from:"filename"};
-   if(up.includes("USTEC")||up.includes("NAS100")||up.includes("NAS")) return {pair:"NAS100", price:null, from:"filename"};
-   const syms=["XAUUSD","EURUSD","GBPUSD","BTCUSD","V75","GBPJPY","USDJPY","AUDUSD","BOOM","CRASH","1HZ"];
-   for(const s of syms) if(up.includes(s)) return {pair:s.replace("BOOM","BOOM500").replace("CRASH","CRASH600"), price:null, from:"filename"};
-   try{ 
-     if(window.Tesseract){
-       setDetectMsg("🔍 Reading chart...");
-       const r=await window.Tesseract.recognize(url,'eng',{tessedit_char_whitelist:'0123456789.,XAUUSDGBPJPYEURBTCV75'});
-       const raw=(r.data.text||"");
-       const txt=raw.toUpperCase();
-       const nums=(raw.match(/\d{1,3}[, ]?\d{3,6}\.\d{1,3}|\d{3,6}\.\d{1,3}/g)||[]).map(s=>Number(s.replace(/[ ,]/g,""))).filter(n=>n>10 && n<200000);
-       let price=null;
-       if(nums.length>0){
-         const sorted=[...nums].sort((a,b)=>a-b);
-         price=sorted[sorted.length-1];
-         const golds=nums.filter(n=>n>3000 && n<5500);
-         if(golds.length>0) price=golds[golds.length-1];
-         const v75s=nums.filter(n=>n>30000 && n<42000);
-         if(v75s.length>0 && txt.includes("75") || v75s.length>2) price=v75s[v75s.length-1];
-         const us30s=nums.filter(n=>n>40000 && n<60000);
-         if(us30s.length>0 && (txt.includes("US30")||txt.includes("30M")||us30s.length>=2)) price=us30s[us30s.length-1];
-       }
-       if(txt.includes("US30")||txt.includes("US 30")||txt.includes("WALL STREET")||txt.includes("DJI")) return {pair:"US30", price};
-       if(txt.includes("XAU")||txt.includes("GOLD")||txt.includes("AUUSD")) return {pair:"XAUUSD", price};
-       if(txt.includes("VOLATILITY")||txt.includes("V75")||txt.includes("75 INDEX")) return {pair:"V75", price};
-       if(txt.includes("BOOM")) { if(txt.includes("500")) return {pair:"BOOM500", price}; if(txt.includes("1000")) return {pair:"BOOM1000", price}; return {pair:"BOOM500", price}; }
-       if(txt.includes("CRASH")) { if(txt.includes("600")) return {pair:"CRASH600", price}; if(txt.includes("500")) return {pair:"CRASH500", price}; return {pair:"CRASH600", price}; }
-       if(txt.includes("BTC")) return {pair:"BTCUSD", price};
-       if(txt.includes("EURUSD")||txt.includes("EUR")) return {pair:"EURUSD", price};
-       if(txt.includes("GBPUSD")) return {pair:"GBPUSD", price};
-       if(txt.includes("USDJPY")||txt.includes("JPY")&&price&&price>140&&price<170) return {pair:"USDJPY", price};
-       if(price){
-         if(price>3500 && price<5500) return {pair:"XAUUSD", price};
-         if(price>90000) return {pair:"BTCUSD", price};
-         if(price>40000 && price<60000) return {pair:"US30", price};
-         if(price>30000 && price<42000) return {pair:"V75", price};
-         if(price>18000 && price<25000) return {pair:"NAS100", price};
-         if(price>140 && price<170) return {pair:"USDJPY", price};
-         if(price>0.6 && price<0.7) return {pair:"AUDUSD", price};
-         if(price>1.0 && price<1.2) return {pair:"EURUSD", price};
-         return {pair:null, price};
-       }
-     }
-   }catch(e){ console.log("OCR fail",e); }
-   return null;
- }
- async function handleFile(f,setter){
-   if(!f) return; const url=URL.createObjectURL(f); setter(url); setIsDetecting(true); setDetectMsg("🔍 Detecting...");
-   const det=await detectFromImg(url,f.name); setIsDetecting(false);
-   if(det && det.pair){ setDetectedPair(det.pair); setScanPair(det.pair); setDetectMsg(`✅ ${det.pair} @ ${det.price||""}`); if(det.price){ setOcrPrice(det.price); setManualPrice(String(det.price)); } }
-   else if(det && det.price){ setOcrPrice(det.price); setManualPrice(String(det.price)); if(det.price>3500 && det.price<5500){ setDetectedPair("XAUUSD"); setScanPair("XAUUSD"); setDetectMsg(`✅ XAUUSD @ ${det.price} (price guess)`); } else if(det.price>40000 && det.price<60000){ setDetectedPair("US30"); setScanPair("US30"); setDetectMsg(`✅ US30 @ ${det.price}`); } else if(det.price>90000){ setDetectedPair("BTCUSD"); setScanPair("BTCUSD"); setDetectMsg(`✅ BTCUSD @ ${det.price}`); } else if(det.price>30000 && det.price<42000){ setDetectedPair("V75"); setScanPair("V75"); setDetectMsg(`✅ V75 @ ${det.price}`); } else { setDetectMsg(`Price ${det.price} - pick pair below`); } }
-   else { setDetectMsg("Couldn't read - pick pair below, price auto from live"); setDetectedPair("XAUUSD"); setScanPair("XAUUSD"); }
- }
- function analyzeImageTrend(url){
-   return new Promise(res=>{
-     const img=new Image(); img.src=url;
-     img.onload=()=>{
-       const c=document.createElement('canvas'); c.width=200; c.height=100;
-       const x=c.getContext('2d'); x.drawImage(img,0,0,200,100);
-       const d=x.getImageData(0,0,200,100).data;
-       let g=0,r=0; let leftY=0, leftCount=0, rightY=0, rightCount=0;
-       for(let yy=0;yy<100;yy++){ for(let xx=0;xx<200;xx++){ const i=(yy*200+xx)*4; const R=d[i], G=d[i+1], B=d[i+2]; const isBull = (R>180 && G>180 && B>180) || (G>R+20); const isBear = (R>150 && G<80 && B<80) || (R>G+20); if(isBull || isBear){ if(xx<66){ leftY+=yy; leftCount++; } if(xx>133){ rightY+=yy; rightCount++; } if(isBull) g++; if(isBear) r++; } } }
-       const leftAvg = leftCount? leftY/leftCount : 50; const rightAvg = rightCount? rightY/rightCount : 50;
-       let slopeScore = 0; if(rightAvg < leftAvg - 3) slopeScore = 15; else if(rightAvg > leftAvg + 3) slopeScore = -15;
-       let colorScore = g>=r ? 10 : -10; res(slopeScore*0.6 + colorScore*0.4);
-     };
-     img.onerror=()=>res(0);
-   });
- }
- async function getLivePrice(pair){
-   if(pair==="US30" || pair==="NAS100") return null;
-   const map={ "V75":"R_75", "XAUUSD":"frxXAUUSD", "EURUSD":"frxEURUSD", "GBPUSD":"frxGBPUSD", "BTCUSD":"cryBTCUSD", "GBPJPY":"frxGBPJPY", "USDJPY":"frxUSDJPY", "AUDUSD":"frxAUDUSD", "USDCAD":"frxUSDCAD", "EURJPY":"frxEURJPY", "NZDUSD":"frxNZDUSD" };
-   const sym=map[pair]; if(!sym) return null;
-   return new Promise((res)=>{ try{ const ws=new WebSocket(WS_URL); let done=false; ws.onopen=()=>{ ws.send(JSON.stringify({ticks:sym})); }; ws.onmessage=(e)=>{ try{ const d=JSON.parse(e.data); if(d.tick && d.tick.quote && !done){ done=true; res(Number(d.tick.quote)); try{ws.close();}catch{} } }catch{} }; setTimeout(()=>{ if(!done){ res(null); try{ws.close();}catch{} } },3500); }catch(e){ res(null); } });
- }
- async function getCandlesForScanner(pair, granularity){
-   if(pair==="US30" || pair==="NAS100") return null;
-   const map={ "V75":"R_75", "XAUUSD":"frxXAUUSD", "EURUSD":"frxEURUSD", "GBPUSD":"frxGBPUSD", "BTCUSD":"cryBTCUSD", "GBPJPY":"frxGBPJPY", "USDJPY":"frxUSDJPY", "AUDUSD":"frxAUDUSD" };
-   const sym=map[pair]; if(!sym) return null;
-   return new Promise((res)=>{ try{ const ws=new WebSocket(WS_URL); ws.onopen=()=>{ ws.send(JSON.stringify({ticks_history:sym,count:30,end:"latest",style:"candles",granularity})); }; ws.onmessage=(e)=>{ try{ const d=JSON.parse(e.data); if(d.candles){ const cs=d.candles.map(c=>({epoch:+c.epoch,open:+c.open,high:+c.high,low:+c.low,close:+c.close})).sort((a,b)=>a.epoch-b.epoch); res(cs); try{ws.close();}catch{} } }catch{} }; setTimeout(()=>{ res(null); try{ws.close();}catch{} },4000); }catch(e){ res(null); } });
- }
- async function analyze(){
-   if(!c1) return alert("Upload Chart 1 first"); setScanning(true);
-   const pair=(detectedPair||scanPair).toUpperCase();
-   const t1=await analyzeImageTrend(c1); const t2=c2?await analyzeImageTrend(c2):t1;
-   const score=t1*0.4+t2*0.6;
-   let pixelDir=score>=0?"BUY":"SELL"; let tf1Dir=t1>=0?"Bullish":"Bearish"; let tf2Dir=t2>=0?"Bullish":"Bearish";
-   let rbdSignal=null;
-   try{ const csH1=await getCandlesForScanner(pair, 3600); if(csH1) rbdSignal=detectRBDDBR(csH1); if(!rbdSignal){ const csM15=await getCandlesForScanner(pair, 900); if(csM15) rbdSignal=detectRBDDBR(csM15); } }catch(e){}
-   const fallbackMap={ "XAUUSD":4413.83, "BTCUSD":95000, "V75":38820.86, "US30":51567.4, "NAS100":24800, "EURUSD":1.0850, "GBPUSD":1.2700, "USDJPY":155.50, "GBPJPY":192.50, "AUDUSD":0.65840 };
-   let base=null;
-   if(manualPrice && Number(manualPrice)>0) base=Number(manualPrice);
-   if(!base && ocrPrice && ocrPrice>0) base=ocrPrice;
-   if(!base){ const live=await getLivePrice(pair); if(live && live>0) base=live; }
-   if(!base) base=fallbackMap[pair]||4413.83;
-   const digits = getDigits(pair);
-   const minSL = getMinSL(pair);
-   let bs = minSL;
-   const norm=(v)=> Number(Number(v).toFixed(digits));
-   if(rbdSignal){
-     const entry=norm(base);
-     let boxSize = Math.abs(rbdSignal.baseRange || bs);
-     if(boxSize < minSL) boxSize = minSL;
-     let sl=norm(rbdSignal.dir==="BUY"?entry-boxSize:entry+boxSize);
-     let tp=norm(rbdSignal.dir==="BUY"?entry+boxSize*2.2:entry-boxSize*2.2);
-     setResult({pair:pair+".ecn",dir:rbdSignal.dir,entry,sl,tp,conf:88, livePrice:base, strat:rbdSignal.strat+" | "+tf1+" "+tf1Dir+" / "+tf2+" "+tf2Dir, detail:"Multi-Timeframe - "+rbdSignal.detail});
-     setScanning(false); sendAlert(`iFX ${rbdSignal.strat} ${pair}`,`Entry ${fmtPrice(entry,pair)} TP ${fmtPrice(tp,pair)}`); return;
-   }
-   let dir=pixelDir; let conf=Math.min(92,Math.max(62,68+Math.abs(score)));
-   if(t2>=10 && t1>=-10) { dir="BUY"; conf=78; } if(t2<=-10 && t1<=10) { dir="SELL"; conf=78; }
-   const entry=norm(base);
-   let sl=norm(dir==="BUY"?entry-bs:entry+bs);
-   let tp=norm(dir==="BUY"?entry+bs*2.2:entry-bs*2.2);
-   setResult({pair:pair+".ecn",dir,entry,sl,tp,conf, livePrice:base, strat:"MULTI-TF | "+tf1+":"+tf1Dir+" "+tf2+":"+tf2Dir, detail:"Timeframe Alignment - M15 is boss"});
-   setScanning(false); sendAlert(`iFX AI ${dir} ${pair}`,`Entry ${fmtPrice(entry,pair)} TP ${fmtPrice(tp,pair)} ${conf}%`);
- }
- const openTrades=orders.filter(o=>o.status==="OPEN"||o.status==="PENDING");
- const floating=openTrades.reduce((s,t)=>s+(t.float||0),0); const realised=closed.reduce((s,t)=>s+(t.pnl||0),0);
- const tradingActive=isTrading(clock);
- const doLogin=()=>{
-   if(loginUser===AUTH_USER && loginPass===AUTH_PASS){
-     localStorage.setItem('ifx_auth','1'); setAuthed(true); setLoginErr("");
-   } else {
-     setLoginErr("❌ Wrong Code - Try Again"); setShakeIt(true); setTimeout(()=>setShakeIt(false),500);
-     if(navigator.vibrate) navigator.vibrate(200);
-   }
- };
- const doLogout=()=>{ localStorage.removeItem('ifx_auth'); setAuthed(false); setLoginUser(""); setLoginPass(""); };
- const checkLicenseServer = async (acc) => {
-   try{
-     const r = await fetch(`/api/license?account=${acc}`);
-     const j = await r.json();
-     setLicCheckMsg(j.ok ? "License Active ✅" : "Not Active - Contact Smamkele");
-     return j;
-   }catch(e){ setLicCheckMsg("Checking..."); return {ok:false}; }
- };
- if(!authed){
-   return (
-     <div style={{maxWidth:480,margin:"0 auto",minHeight:"100vh",background:"#0a0f1a",display:"flex",flexDirection:"column",alignItems:"center",padding:"20px 14px"}}>
-       <div style={{width:"100%",border:"1px solid #d4af37",borderRadius:16,overflow:"hidden",boxShadow:"0 0 25px rgba(212,175,55,.4)",marginTop:10}}>
-         <img src="/lion-king.png" style={{width:"100%",display:"block",height:230,objectFit:"cover",objectPosition:"top"}} />
-       </div>
-       <div style={{fontSize:26,fontWeight:900,color:"#d4af37",letterSpacing:1,marginTop:14,textAlign:"center"}}>iFX BILLIONAIRE EA</div>
-       <div style={{fontSize:11,fontWeight:800,letterSpacing:"2.5px",color:"#FFD700",marginTop:4,textAlign:"center",textTransform:"uppercase"}}>Creating More Bread Winners</div>
-       <div style={{fontSize:11,color:"#8a9bb5",marginTop:4}}>{DISPLAY_NAME} 👑</div>
-       <div className={shakeIt?"shake":""} style={{width:"100%",background:"#131e32",border:"1px solid #d4af37",borderRadius:14,padding:18,marginTop:18}}>
-         <div style={{textAlign:"center",fontSize:13,color:"#e6edf7",fontWeight:700}}>Welcome Back {DISPLAY_NAME}</div>
-         <div style={{marginTop:16}}>
-           <div style={{background:"#d4af37",color:"black",display:"inline-block",padding:"3px 10px",borderRadius:5,fontSize:12,fontWeight:800}}>Username</div>
-           <input value={loginUser} onChange={e=>setLoginUser(e.target.value)} placeholder="Enter your username" style={{width:"100%",marginTop:6,background:"#0f172a",color:"white",border:"1px solid #d4af37",borderRadius:8,padding:12,fontSize:14}} />
-         </div>
-         <div style={{marginTop:16}}>
-           <div style={{background:"#d4af37",color:"black",display:"inline-block",padding:"3px 10px",borderRadius:5,fontSize:12,fontWeight:800}}>Password</div>
-           <div style={{position:"relative",marginTop:6}}>
-             <input type={showPass?"text":"password"} value={loginPass} onChange={e=>setLoginPass(e.target.value)} onKeyDown={e=>{if(e.key==='Enter') doLogin()}} placeholder="Enter your password" style={{width:"100%",background:"#0f172a",color:"white",border:"1px solid #d4af37",borderRadius:8,padding:12,paddingRight:45,fontSize:14}} />
-             <span onClick={()=>setShowPass(v=>!v)} style={{position:"absolute",right:12,top:12,cursor:"pointer",fontSize:16}}>{showPass?"🙈":"👁️"}</span>
-           </div>
-         </div>
-         {loginErr && <div style={{color:"#f87171",fontSize:12,textAlign:"center",marginTop:10,fontWeight:700}}>{loginErr}</div>}
-         <button onClick={doLogin} className="gold-btn" style={{width:"100%",padding:14,marginTop:18,border:"none",borderRadius:8,fontWeight:900,fontSize:16}}>LOGIN</button>
-         <div style={{textAlign:"center",fontSize:10,color:"#64748b",marginTop:12}}>Protected by {DISPLAY_NAME} • iFX BILLIONAIRE • Creating More Bread Winners</div>
-       </div>
-     </div>
-   );
- }
- return (
-  <div style={{maxWidth:480,margin:"0 auto",minHeight:"100vh",background:"#0a0f1a",paddingBottom:10}}>
-   <div style={{padding:"8px 12px",display:"flex",justifyContent:"space-between",alignItems:"center",borderBottom:"1px solid #1e2d45"}}>
-     <div>
-       <div style={{fontSize:20,fontWeight:900,lineHeight:1,color:"#d4af37"}}>iFX BILLIONAIRE EA</div>
-       <div style={{fontSize:9,fontWeight:800,letterSpacing:"2.2px",color:"#FFD700",marginTop:3,textTransform:"uppercase"}}>Creating More Bread Winners</div>
-     </div>
-     <div style={{display:"flex",gap:6,alignItems:"center"}}>
-       <div style={{background:running?"#14532d":"#3a1a1a",color:running?"#4ade80":"#ff6b6b",padding:"6px 10px",borderRadius:16,fontSize:11,fontWeight:800}}>● {running?"RUNNING":"STOPPED"}</div>
-       <button onClick={doLogout} style={{background:"#1e293b",color:"white",border:"1px solid #334155",padding:"6px 8px",borderRadius:8,fontSize:11,fontWeight:800}}>🔒 OUT</button>
-     </div>
-   </div>
-   <div className="lion-frame"><img src="/lion-king.png" alt="King Lion" /></div>
-   <div style={{background:"#131e32",border:"1px solid #d4af37",borderRadius:12,margin:"8px 10px",padding:"8px 10px"}}>
-     <button onClick={()=>setShowRobot(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",background:"transparent",color:"white",border:"none",padding:2,fontSize:12,fontWeight:900,textAlign:"left"}}><span>ROBOT CONTROL • {connText} • {tradingActive?"ACTIVE":"PAUSED"}</span><span>{showRobot?"▲":"▼"}</span></button>
-     {showRobot && (
-       <div>
-         <div style={{display:"flex",gap:8,marginTop:8}}>
-           <button onClick={startRobot} disabled={running} className="gold-btn" style={{flex:1,padding:11,border:"none",borderRadius:8,fontWeight:900,fontSize:13,opacity:running?0.5:1}}>▶ START</button>
-           <button onClick={stopRobot} style={{flex:1,padding:11,border:"none",borderRadius:8,fontWeight:900,fontSize:13,background:"#dc2626",color:"white"}}>■ STOP</button>
-           <button onClick={()=>{ Notification.requestPermission(); sendAlert('TEST','Buzz test!'); }} style={{padding:"11px 10px",background:"#0ea5e9",color:"white",border:"none",borderRadius:8,fontWeight:800,fontSize:11}}>🔔</button>
-         </div>
-         <div style={{fontSize:11,color:"#8a9bb5",marginTop:6}}>{msg} • {scanned}/{total} • {progress}% • {lastScan}</div>
-         <div style={{height:4,background:"#1e2d45",borderRadius:3,margin:"6px 0"}}><div style={{height:"100%",background:"#d4af37",width:`${progress}%`}} /></div>
-       </div>
-     )}
-     {!showRobot && (
-       <div style={{display:"flex",gap:8,marginTop:8}}>
-         <button onClick={startRobot} disabled={running} className="gold-btn" style={{flex:1,padding:10,border:"none",borderRadius:8,fontWeight:900,fontSize:13,opacity:running?0.5:1}}>▶ START ROBOT</button>
-         <button onClick={stopRobot} style={{flex:1,padding:10,border:"none",borderRadius:8,fontWeight:900,fontSize:13,background:"#dc2626",color:"white"}}>■ STOP</button>
-       </div>
-     )}
-   </div>
-   <div style={{background:"linear-gradient(135deg,#0a1e3f,#0f172a)",border:"2px solid #0ea5e9",borderRadius:12,margin:"8px 10px",padding:"10px",boxShadow:"0 0 18px rgba(14,165,233,.35)"}}>
-     <button onClick={()=>setShowNews(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",alignItems:"center",background:"transparent",color:"white",border:"none",padding:0,textAlign:"left"}}>
-       <div style={{display:"flex",alignItems:"center",gap:6}}>
-         <span style={{fontSize:14,fontWeight:900}}>📰 TRADE NEWS</span>
-         <span style={{fontSize:10,color:"#fff",background:"#0ea5e9",padding:"2px 6px",borderRadius:4}}>{newsRunning?"ARMED":"OFF"}</span>
-         {!showNews && newsCountdown && <span style={{fontSize:10,color:"#fbbf24",marginLeft:4}}>{newsCountdown}</span>}
-       </div>
-       <span style={{display:"flex",gap:8,alignItems:"center"}}><span style={{fontSize:9,color:"#7dd3fc"}}>INVESTING.COM AUTO • 15 MIN</span><span>{showNews?"▲":"▼"}</span></span>
-     </button>
-     {showNews && (
-       <div>
-         <div style={{display:"flex",gap:4,overflowX:"auto",marginTop:8,paddingBottom:2}}>{["XAUUSD","EURUSD","GBPUSD","USDJPY","USDCAD","EURJPY","NZDUSD"].map(p=>(<button key={p} onClick={()=>{setNewsPair(p);}} style={{padding:"6px 10px",borderRadius:14,background:newsPair===p?"#0ea5e9":"#1e293b",color:"white",border:newsPair===p?"1px solid #bae6fd":"none",fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{p==="XAUUSD"?"GOLD":p}</button>))}</div>
-         <div style={{background:"#0f172a",border:"1px solid #0ea5e9",borderRadius:8,padding:8,marginTop:8, fontSize:11}}>
-           <div style={{color:"#fbbf24"}}>{newsCountdown || "Fetching Investing.com AUTO..."}</div>
-           <div style={{color:"#e6edf7",marginTop:4}}>{newsMsg}</div>
-           {newsAutoCloseIn && <div style={{color:"#f87171",marginTop:4,fontWeight:800}}>⏰ {newsAutoCloseIn} - NEWS only</div>}
-         </div>
-         <div style={{display:"flex",gap:8,marginTop:8}}>
-           <button onClick={startNews} disabled={newsRunning} style={{flex:1,padding:12,border:"none",borderRadius:8,fontWeight:900,fontSize:13,background:"#22c55e",color:"white",opacity:newsRunning?0.5:1}}>▶ START TRADE NEWS</button>
-           <button onClick={stopNews} style={{flex:1,padding:12,border:"none",borderRadius:8,fontWeight:900,fontSize:13,background:"#dc2626",color:"white"}}>■ STOP + CLOSE ALL</button>
-         </div>
-         <div style={{fontSize:10,color:"#7dd3fc",marginTop:6, textAlign:"center"}}>AUTO: Investing.com • Pair: {newsPair} • MARKET 60 sec before • CPI logic: Hot = SELL GOLD</div>
-       </div>
-     )}
-     {!showNews && (
-       <div style={{display:"flex",gap:8,marginTop:8}}>
-         <button onClick={startNews} disabled={newsRunning} style={{flex:1,padding:10,border:"none",borderRadius:8,fontWeight:900,fontSize:12,background:"#22c55e",color:"white",opacity:newsRunning?0.5:1}}>▶ START NEWS</button>
-         <button onClick={stopNews} style={{flex:1,padding:10,border:"none",borderRadius:8,fontWeight:900,fontSize:12,background:"#dc2626",color:"white"}}>■ STOP</button>
-       </div>
-     )}
-   </div>
-   <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:12,margin:"0 10px",padding:"7px 10px"}}>
-     <button onClick={()=>setShowBalance(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",background:"transparent",color:"white",border:"none",padding:0,fontSize:11,fontWeight:800}}><span>Balance ${balance} • Risk {riskPct}% • Lots {lots} • P/L ${fmt(floating+realised,2)}</span><span>{showBalance?"▲":"▼"}</span></button>
-     {showBalance && (
-       <div style={{display:"flex",gap:6,marginTop:8}}>
-         <input type="number" value={balance} onChange={e=>setBalance(Number(e.target.value))} style={{flex:1,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:6,padding:7,fontSize:12}} />
-         <input type="number" value={riskPct} onChange={e=>setRiskPct(Number(e.target.value))} style={{width:60,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:6,padding:7,fontSize:12}} />
-         <input type="number" step="0.01" value={lots} onChange={e=>setLots(Number(e.target.value))} style={{width:60,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:6,padding:7,fontSize:12}} />
-       </div>
-     )}
-   </div>
-   <div style={{background:"linear-gradient(135deg,#0f172a,#1e1b4b)",border:"1px solid #d4af37",borderRadius:12,margin:"8px 10px",padding:"10px"}}>
-     <button onClick={()=>setShowScanner(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",background:"transparent",color:"white",border:"none",padding:0,textAlign:"left"}}>
-       <div><div style={{fontSize:14,fontWeight:900}}>🤖 AI SCANNER 📸 <span style={{fontSize:10,color:"#4ade80",background:"#14532d",padding:"2px 6px",borderRadius:4,marginLeft:4}}>ON</span></div><div style={{fontSize:10,color:"#93c5fd",marginTop:2}}>Multi-Timeframe M1 + M15 • {detectedPair||scanPair} {detectMsg}</div></div>
-       <span style={{fontSize:14}}>{showScanner?"▲":"▼"}</span>
-     </button>
-     {showScanner && (
-       <div>
-         <div style={{display:"flex",gap:4,overflowX:"auto",marginTop:8,paddingBottom:2}}>{["XAUUSD","EURUSD","GBPUSD","BTCUSD","US30","NAS100","V75","GBPJPY","USDJPY","AUDUSD"].map(p=>(<button key={p} onClick={()=>{setScanPair(p); setDetectedPair(p); setManualPrice("");}} style={{padding:"5px 10px",borderRadius:14,background:(detectedPair||scanPair)===p?"#d4af37":"#1e293b",color:(detectedPair||scanPair)===p?"black":"white",border:"none",fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{p}</button>))}</div>
-         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:8}}>
-           <label style={{display:"block",border:"1px dashed #d4af37",borderRadius:8,padding:4,textAlign:"center",cursor:"pointer",background:"#131e32",height:72,overflow:"hidden"}}>{c1?<img src={c1} style={{width:"100%",height:62,objectFit:"cover",borderRadius:4}}/>:<div style={{paddingTop:22,color:"#94a3b8",fontSize:11}}>+ Chart 1 - {tf1}</div>}<input type="file" accept="image/*" onChange={e=>handleFile(e.target.files[0],setC1)} style={{display:"none"}} /></label>
-           <label style={{display:"block",border:"1px dashed #475569",borderRadius:8,padding:4,textAlign:"center",cursor:"pointer",background:"#131e32",height:72,overflow:"hidden"}}>{c2?<img src={c2} style={{width:"100%",height:62,objectFit:"cover",borderRadius:4}}/>:<div style={{paddingTop:22,color:"#94a3b8",fontSize:11}}>+ Chart 2 - {tf2}</div>}<input type="file" accept="image/*" onChange={e=>handleFile(e.target.files[0],setC2)} style={{display:"none"}} /></label>
-         </div>
-         <div style={{fontSize:11,color:"#fbbf24",marginTop:6, minHeight:14}}>{isDetecting?"🔍 Reading screenshot...":detectMsg}</div>
-         <div style={{display:"flex",gap:6,marginTop:6}}>
-           <select value={tf1} onChange={e=>setTf1(e.target.value)} style={{flex:1,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:6,padding:6,fontSize:11}}><option>M1</option><option>M5</option><option>M15</option><option>H1</option></select>
-           <select value={tf2} onChange={e=>setTf2(e.target.value)} style={{flex:1,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:6,padding:6,fontSize:11}}><option>M15</option><option>M1</option><option>M5</option><option>H1</option></select>
-           <input value={manualPrice} onChange={e=>setManualPrice(e.target.value)} placeholder="Live price auto" style={{flex:1,background:"#0f172a",color:"#fbbf24",border:"1px solid #f59e0b",borderRadius:6,padding:6,fontSize:11}} />
-         </div>
-         <button onClick={analyze} className="gold-btn" style={{width:"100%",padding:11,marginTop:8,border:"none",borderRadius:8,fontWeight:900,fontSize:12}}>{scanning?"🔍 COMPARING TIMEFRAMES...":"🔍 ANALYZE CHARTS"}</button>
-         {result && (
-           <div style={{background:"#0f172a",border:"1px solid #22c55e",borderRadius:8,padding:8,marginTop:8}}>
-             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><b style={{fontSize:13}}>{result.pair} • {result.conf}%</b><div style={{background:result.dir==="BUY"?"#16a34a":"#dc2626",color:"white",padding:"5px 14px",borderRadius:6,fontWeight:900,fontSize:13}}>{result.dir}</div></div>
-             <div style={{fontSize:10,marginTop:4,color:"#93c5fd"}}>{result.strat} - {result.detail||""}</div>
-             <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6,marginTop:8,textAlign:"center"}}>
-               <div style={{background:"#1e293b",padding:7,borderRadius:6}}><div style={{fontSize:9,color:"#94a3b8"}}>ENTRY</div><b style={{fontSize:13}}>{fmtPrice(result.entry, result.pair)}</b></div>
-               <div style={{background:"#1e293b",padding:7,borderRadius:6}}><div style={{fontSize:9,color:"#94a3b8"}}>SL</div><b style={{fontSize:13}}>{fmtPrice(result.sl, result.pair)}</b></div>
-               <div style={{background:"#1e293b",padding:7,borderRadius:6}}><div style={{fontSize:9,color:"#fbbf24"}}>TAKE PROFIT</div><b style={{color:"#4ade80",fontSize:13}}>{fmtPrice(result.tp, result.pair)}</b></div>
-             </div>
-             <button onClick={()=>sendToMT4(result,setMsg)} style={{width:"100%",padding:12,marginTop:8,background:"#f59e0b",color:"black",border:"none",borderRadius:8,fontWeight:900,fontSize:13}}>🚀 SEND TO MT4 - AUTO TRADE</button>
-             <div style={{fontSize:11,color:"#4ade80",textAlign:"center",marginTop:6}}>{msg}</div>
-           </div>
-         )}
-       </div>
-     )}
-     {!showScanner && result && (
-       <div style={{display:"flex",justifyContent:"space-between",background:"#0f172a",border:"1px solid #22c55e",borderRadius:8,padding:8,marginTop:8}}><b>{result.pair} {result.dir} @ {fmtPrice(result.entry,result.pair)}</b><b style={{color:"#4ade80"}}>TP {fmtPrice(result.tp,result.pair)}</b></div>
-     )}
-   </div>
-   <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:10,margin:"0 10px",padding:"8px 10px"}}>
-     <button onClick={()=>setShowSignals(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:6,padding:8,fontSize:11,fontWeight:900}}><span>SIGNALS ({signals.length})</span><span>{showSignals?"▲":"▼"}</span></button>
-     {showSignals && signals.map((s,i)=>(
-       <div key={i} style={{background:"#0f172a",border:"1px solid #334155",borderRadius:8,padding:8,marginTop:6}}>
-         <div style={{display:"flex",justifyContent:"space-between",fontSize:12}}><b>{s.sym}</b><span style={{color:s.dir==="BUY"?"#4ade80":"#f87171",fontWeight:900}}>{s.dir} {s.strat}</span></div>
-         <button onClick={()=>placeOrder(s)} style={{width:"100%",padding:8,marginTop:6,background:"#f59e0b",color:"black",border:"none",borderRadius:6,fontWeight:900,fontSize:11}}>PLACE {s.dir==="BUY"?"BUY STOP":"SELL STOP"} 🔔</button>
-       </div>
-     ))}
-   </div>
-   <div style={{background:"#131e32",border:"1px solid #d4af37",borderRadius:12,margin:"8px 10px",padding:"10px"}}>
-     <button onClick={()=>setShowLic(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",background:"transparent",color:"#FFD700",border:"none",padding:0,fontSize:12,fontWeight:900,textAlign:"left"}}><span>👑 {DISPLAY_NAME.toUpperCase()} LICENSE CONTROL</span><span>{showLic?"▲":"▼"}</span></button>
-     {showLic && (
-       <div>
-         <div style={{fontSize:10,color:"#8a9bb5",marginTop:6}}>Manage EA licenses from your phone.</div>
-         {licenseList.map((l,i)=>(
-           <div key={i} style={{display:"flex",justifyContent:"space-between",background:"#0f172a",padding:"7px",borderRadius:6,marginTop:6,fontSize:11}}>
-             <span>Acc: <b>{l.account}</b> - Exp: {l.expiry}</span>
-             <span style={{color:"#FFD700",fontWeight:800}}>{l.status}</span>
-           </div>
-         ))}
-         <div style={{display:"flex",gap:6,marginTop:8}}>
-           <input value={newLicAcc} onChange={e=>setNewLicAcc(e.target.value)} placeholder="Client MT4 account" style={{flex:1,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:6,padding:7,fontSize:11}} />
-           <input value={newLicExp} onChange={e=>setNewLicExp(e.target.value)} placeholder="2027.12.31" style={{width:90,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:6,padding:7,fontSize:11}} />
-         </div>
-         <button onClick={async()=>{
-           if(!newLicAcc) return;
-           const chk = await checkLicenseServer(newLicAcc);
-           setLicenseList(p=>[...p, {account:newLicAcc, expiry:newLicExp, status: chk.ok?"ACTIVE ✅":"NOT ACTIVE - Contact Smamkele"}]);
-           setNewLicAcc("");
-         }} className="gold-btn" style={{width:"100%",padding:10,marginTop:8,border:"none",borderRadius:8,fontWeight:900,fontSize:12}}>ADD / CHECK CLIENT LICENSE</button>
-         <button onClick={async()=>{
-           const j = await checkLicenseServer(KING_ACCOUNT);
-           alert(DISPLAY_NAME+": "+(j.ok?"License Active ✅":"Check failed"));
-         }} style={{width:"100%",padding:9,marginTop:6,background:"#0ea5e9",color:"white",border:"none",borderRadius:8,fontWeight:800,fontSize:11}}>TEST MY LICENSE</button>
-         <div style={{fontSize:11,color:"#4ade80",marginTop:6, textAlign:"center"}}>{licCheckMsg}</div>
-       </div>
-     )}
-   </div>
-   <div style={{textAlign:"center",fontSize:10,color:"#64748b",marginTop:6}}>UTC {new Date(clock*1000).toISOString().slice(11,19)} • Trading 07:00-21:59 • iFX BILLIONAIRE • MT4 LINKED • Logged as {DISPLAY_NAME}</div>
-   <div style={{textAlign:"center",fontSize:9,letterSpacing:"2px",color:"#FFD700",fontWeight:800,marginTop:4,textTransform:"uppercase"}}>Creating More Bread Winners 👑</div>
-  </div>
- );
+ const connect=()=>new Promise((resolve,reject)=>{const ws=new WebSocket(WS_URL);wsRef.current=ws;setConnText("CONNECTING...");ws.onopen=()=>{setConnected(true);setConnText("EXNESS READY");resolve();};ws.onmessage=(ev)=>{let d;try{d=JSON.parse(ev.data);}catch{return;}if(d.req_id!==undefined&&pendRef.current.has(d.req_id)){const p=pendRef.current.get(d.req_id);clearTimeout(p.to);pendRef.current.delete(d.req_id);if(d.error) p.rej(new Error(d.error.message));else p.res(d);}if(d.msg_type==="tick"&&d.tick){const q=Number(d.tick.bid||d.tick.quote);setOrders(prev=>prev.map(o=>{if(o.symbol!==d.tick.symbol) return o;if(o.status==="PENDING"){let act=false;if(o.pendingType==="BUY STOP") act=q>=o.entry;if(o.pendingType==="SELL STOP") act=q<=o.entry;if(act){sendAlert("iFX ACTIVATED",o.display+" "+o.pendingType+" at "+o.entry);return{...o,status:"OPEN",cur:q};}return o;}if(o.status==="OPEN"){let exit=null;if(o.dir==="BUY"){if(q<=o.sl) exit="STOP LOSS";if(q>=o.tp) exit="TAKE PROFIT";}else{if(q>=o.sl) exit="STOP LOSS";if(q<=o.tp) exit="TAKE PROFIT";}if(exit){const pnl=o.dir==="BUY"?(q-o.entry)/(o.entry-o.sl)*o.risk:(o.entry-q)/(o.sl-o.entry)*o.risk;setClosed(prev=>[{...o,exitReason:exit,pnl,closedAt:new Date().toLocaleTimeString()},...prev]);sendAlert("iFX CLOSED "+exit,o.display+" $"+pnl.toFixed(2));return null;}return{...o,cur:q,float:(o.dir==="BUY"?q-o.entry:o.entry-q)/(Math.abs(o.entry-o.sl))*o.risk};}return o;}).filter(Boolean));}};ws.onerror=()=>{setConnText("FAILED");reject(new Error("WS fail"));};ws.onclose=()=>{setConnected(false);setConnText("EXNESS READY");};setTimeout(()=>{if(ws.readyState!==1){reject(new Error("timeout"));}},15000);});
+ const startRobot=async()=>{if(runRef.current) return;try{if('Notification' in window && Notification.permission!=='granted') await Notification.requestPermission();await connect();runRef.current=true;setRunning(true);setSignals([]);await scanAll();const iv=setInterval(()=>{if(runRef.current) scanAll();},300000);wsRef.current._iv=iv;sendAlert("iFX BILLIONAIRE STARTED","Robot running");}catch(e){setMsg(e.message);}};
+ const stopRobot=()=>{runRef.current=false;setRunning(false);if(wsRef.current){if(wsRef.current._iv) clearInterval(wsRef.current._iv);try{wsRef.current.close();}catch{}}setMsg("STOPPED");};
+ const placeOrder=async(s)=>{const now=Math.floor(Date.now()/1000);if(!isTrading(now)){setMsg("Paused 07:00-21:59 UTC");return;}const alreadyOpen=orders.some(o=>(o.display===s.sym||o.symbol===s.symbol)&&(o.status==="PENDING"||o.status==="OPEN"));if(alreadyOpen){setMsg(`Already have ${s.sym} open - blocked duplicate`);return;}const key=s.boxKey||(s.sym+"_"+s.boxHigh+"_"+s.boxLow);if(sentBoxesRef.current.has(key)){setMsg("Same Orange Box already traded");return;}sentBoxesRef.current.add(key);const symName=s.sym||s.symbol||"";const digits=getDigits(symName);const minSL=getMinSL(symName);let boxSize=Math.abs(s.boxHigh-s.boxLow);if(s.baseRange&&s.baseRange>boxSize) boxSize=s.baseRange;if(boxSize<minSL) boxSize=minSL;const norm=(v)=>Number(Number(v).toFixed(digits));const entry=norm(s.entry);const sl=norm(s.dir==="BUY"?entry-boxSize:entry+boxSize);const tp=norm(s.dir==="BUY"?entry+boxSize*11:entry-boxSize*11);const riskMoney=balance*(riskPct/100);const pendingType=s.dir==="BUY"?"BUY STOP":"SELL STOP";const o={id:Date.now(),symbol:s.symbol,display:s.sym,dir:s.dir,strategy:s.strat,pendingType,entry,sl,tp,boxSize,risk:riskMoney,status:"PENDING",cur:entry,float:0,openedDay:sDay(now)};setOrders(p=>[o,...p]);sendAlert("iFX PENDING PLACED",s.sym+" "+pendingType+" "+s.dir+" at "+fmtPrice(entry,s.sym));await sendToMT4({pair:s.sym,dir:pendingType,entry:entry,sl:sl,tp:tp},setMsg);setMsg(`${s.sym} PENDING ${s.dir} at ${fmtPrice(entry,s.sym)} SL ${fmtPrice(sl,s.sym)} TP ${fmtPrice(tp,s.sym)} - SENT TO MT4`);try{wsRef.current.send(JSON.stringify({ticks:s.symbol,subscribe:1}));}catch(e){}};
+ async function detectFromImg(url,name){const up=(name+" ").toUpperCase();if(up.includes("US30")) return{pair:"US30",price:null,from:"filename"};if(up.includes("USTEC")||up.includes("NAS100")||up.includes("NAS")) return{pair:"NAS100",price:null,from:"filename"};const syms=["XAUUSD","EURUSD","GBPUSD","BTCUSD","V75","GBPJPY","USDJPY","AUDUSD","BOOM","CRASH","1HZ"];for(const s of syms) if(up.includes(s)) return{pair:s.replace("BOOM","BOOM500").replace("CRASH","CRASH600"),price:null,from:"filename"};try{if(window.Tesseract){setDetectMsg("🔍 Reading chart...");const r=await window.Tesseract.recognize(url,'eng',{tessedit_char_whitelist:'0123456789.,XAUUSDGBPJPYEURBTCV75'});const raw=(r.data.text||"");const txt=raw.toUpperCase();const nums=(raw.match(/\d{1,3}[, ]?\d{3,6}\.\d{1,3}|\d{3,6}\.\d{1,3}/g)||[]).map(s=>Number(s.replace(/[ ,]/g,""))).filter(n=>n>10&&n<200000);let price=null;if(nums.length>0){const sorted=[...nums].sort((a,b)=>a-b);price=sorted[sorted.length-1];const golds=nums.filter(n=>n>3000&&n<5500);if(golds.length>0) price=golds[golds.length-1];const v75s=nums.filter(n=>n>30000&&n<42000);if(v75s.length>0&&txt.includes("75")||v75s.length>2) price=v75s[v75s.length-1];const us30s=nums.filter(n=>n>40000&&n<60000);if(us30s.length>0&&(txt.includes("US30")||txt.includes("30M")||us30s.length>=2)) price=us30s[us30s.length-1];}if(txt.includes("US30")||txt.includes("US 30")||txt.includes("WALL STREET")||txt.includes("DJI")) return{pair:"US30",price};if(txt.includes("XAU")||txt.includes("GOLD")||txt.includes("AUUSD")) return{pair:"XAUUSD",price};if(txt.includes("VOLATILITY")||txt.includes("V75")||txt.includes("75 INDEX")) return{pair:"V75",price};if(txt.includes("BOOM")){if(txt.includes("500")) return{pair:"BOOM500",price};if(txt.includes("1000")) return{pair:"BOOM1000",price};return{pair:"BOOM500",price};}if(txt.includes("CRASH")){if(txt.includes("600")) return{pair:"CRASH600",price};if(txt.includes("500")) return{pair:"CRASH500",price};return{pair:"CRASH600",price};}if(txt.includes("BTC")) return{pair:"BTCUSD",price};if(txt.includes("EURUSD")||txt.includes("EUR")) return{pair:"EURUSD",price};if(txt.includes("GBPUSD")) return{pair:"GBPUSD",price};if(txt.includes("USDJPY")||txt.includes("JPY")&&price&&price>140&&price<170) return{pair:"USDJPY",price};if(price){if(price>3500&&price<5500) return{pair:"XAUUSD",price};if(price>90000) return{pair:"BTCUSD",price};if(price>40000&&price<60000) return{pair:"US30",price};if(price>30000&&price<42000) return{pair:"V75",price};if(price>18000&&price<25000) return{pair:"NAS100",price};if(price>140&&price<170) return{pair:"USDJPY",price};if(price>0.6&&price<0.7) return{pair:"AUDUSD",price};if(price>1.0&&price<1.2) return{pair:"EURUSD",price};return{pair:null,price};}}}catch(e){console.log("OCR fail",e);}return null;}
+ async function handleFile(f,setter){if(!f) return;const url=URL.createObjectURL(f);setter(url);setIsDetecting(true);setDetectMsg("🔍 Detecting...");const det=await detectFromImg(url,f.name);setIsDetecting(false);if(det&&det.pair){setDetectedPair(det.pair);setScanPair(det.pair);setDetectMsg(`✅ ${det.pair} @ ${det.price||""}`);if(det.price){setOcrPrice(det.price);setManualPrice(String(det.price));}}else if(det&&det.price){setOcrPrice(det.price);setManualPrice(String(det.price));if(det.price>3500&&det.price<5500){setDetectedPair("XAUUSD");setScanPair("XAUUSD");setDetectMsg(`✅ XAUUSD @ ${det.price} (price guess)`);}else if(det.price>40000&&det.price<60000){setDetectedPair("US30");setScanPair("US30");setDetectMsg(`✅ US30 @ ${det.price}`);}else if(det.price>90000){setDetectedPair("BTCUSD");setScanPair("BTCUSD");setDetectMsg(`✅ BTCUSD @ ${det.price}`);}else if(det.price>30000&&det.price<42000){setDetectedPair("V75");setScanPair("V75");setDetectMsg(`✅ V75 @ ${det.price}`);}else{setDetectMsg(`Price ${det.price} - pick pair below`);}}else{setDetectMsg("Couldn't read - pick pair below, price auto from live");setDetectedPair("XAUUSD");setScanPair("XAUUSD");}}
+ function analyzeImageTrend(url){return new Promise(res=>{const img=new Image();img.src=url;img.onload=()=>{const c=document.createElement('canvas');c.width=200;c.height=100;const x=c.getContext('2d');x.drawImage(img,0,0,200,100);const d=x.getImageData(0,0,200,100).data;let g=0,r=0;let leftY=0,leftCount=0,rightY=0,rightCount=0;for(let yy=0;yy<100;yy++){for(let xx=0;xx<200;xx++){const i=(yy*200+xx)*4;const R=d[i],G=d[i+1],B=d[i+2];const isBull=(R>180&&G>180&&B>180)||(G>R+20);const isBear=(R>150&&G<80&&B<80)||(R>G+20);if(isBull||isBear){if(xx<66){leftY+=yy;leftCount++;}if(xx>133){rightY+=yy;rightCount++;}if(isBull) g++;if(isBear) r++;}}}const leftAvg=leftCount?leftY/leftCount:50;const rightAvg=rightCount?rightY/rightCount:50;let slopeScore=0;if(rightAvg<leftAvg-3) slopeScore=15;else if(rightAvg>leftAvg+3) slopeScore=-15;let colorScore=g>=r?10:-10;res(slopeScore*0.6+colorScore*0.4);};img.onerror=()=>res(0);});}
+ async function getLivePrice(pair){if(pair==="US30"||pair==="NAS100") return null;const map={"V75":"R_75","XAUUSD":"frxXAUUSD","EURUSD":"frxEURUSD","GBPUSD":"frxGBPUSD","BTCUSD":"cryBTCUSD","GBPJPY":"frxGBPJPY","USDJPY":"frxUSDJPY","AUDUSD":"frxAUDUSD","USDCAD":"frxUSDCAD","EURJPY":"frxEURJPY","NZDUSD":"frxNZDUSD"};const sym=map[pair];if(!sym) return null;return new Promise((res)=>{try{const ws=new WebSocket(WS_URL);let done=false;ws.onopen=()=>{ws.send(JSON.stringify({ticks:sym}));};ws.onmessage=(e)=>{try{const d=JSON.parse(e.data);if(d.tick&&d.tick.quote&&!done){done=true;res(Number(d.tick.quote));try{ws.close();}catch{}}}catch{}};setTimeout(()=>{if(!done){res(null);try{ws.close();}catch{}}},3500);}catch(e){res(null);}});}
+ async function getCandlesForScanner(pair,granularity){if(pair==="US30"||pair==="NAS100") return null;const map={"V75":"R_75","XAUUSD":"frxXAUUSD","EURUSD":"frxEURUSD","GBPUSD":"frxGBPUSD","BTCUSD":"cryBTCUSD","GBPJPY":"frxGBPJPY","USDJPY":"frxUSDJPY","AUDUSD":"frxAUDUSD"};const sym=map[pair];if(!sym) return null;return new Promise((res)=>{try{const ws=new WebSocket(WS_URL);ws.onopen=()=>{ws.send(JSON.stringify({ticks_history:sym,count:30,end:"latest",style:"candles",granularity}));};ws.onmessage=(e)=>{try{const d=JSON.parse(e.data);if(d.candles){const cs=d.candles.map(c=>({epoch:+c.epoch,open:+c.open,high:+c.high,low:+c.low,close:+c.close})).sort((a,b)=>a.epoch-b.epoch);res(cs);try{ws.close();}catch{}}}catch{}};setTimeout(()=>{res(null);try{ws.close();}catch{}},4000);}catch(e){res(null);}});}
+ async function analyze(){if(!c1) return alert("Upload Chart 1 first");setScanning(true);const pair=(detectedPair||scanPair).toUpperCase();const t1=await analyzeImageTrend(c1);const t2=c2?await analyzeImageTrend(c2):t1;const score=t1*0.4+t2*0.6;let pixelDir=score>=0?"BUY":"SELL";let tf1Dir=t1>=0?"Bullish":"Bearish";let tf2Dir=t2>=0?"Bullish":"Bearish";let rbdSignal=null;try{const csH1=await getCandlesForScanner(pair,3600);if(csH1) rbdSignal=detectRBDDBR(csH1);if(!rbdSignal){const csM15=await getCandlesForScanner(pair,900);if(csM15) rbdSignal=detectRBDDBR(csM15);}}catch(e){}const fallbackMap={"XAUUSD":4413.83,"BTCUSD":95000,"V75":38820.86,"US30":51567.4,"NAS100":24800,"EURUSD":1.0850,"GBPUSD":1.2700,"USDJPY":155.50,"GBPJPY":192.50,"AUDUSD":0.65840};let base=null;if(manualPrice&&Number(manualPrice)>0) base=Number(manualPrice);if(!base&&ocrPrice&&ocrPrice>0) base=ocrPrice;if(!base){const live=await getLivePrice(pair);if(live&&live>0) base=live;}if(!base) base=fallbackMap[pair]||4413.83;const digits=getDigits(pair);const minSL=getMinSL(pair);let bs=minSL;const norm=(v)=>Number(Number(v).toFixed(digits));if(rbdSignal){const entry=norm(base);let boxSize=Math.abs(rbdSignal.baseRange||bs);if(boxSize<minSL) boxSize=minSL;let sl=norm(rbdSignal.dir==="BUY"?entry-boxSize:entry+boxSize);let tp=norm(rbdSignal.dir==="BUY"?entry+boxSize*11:entry-boxSize*11);setResult({pair:pair+".ecn",dir:rbdSignal.dir,entry,sl,tp,conf:88,livePrice:base,strat:rbdSignal.strat+" | "+tf1+" "+tf1Dir+" / "+tf2+" "+tf2Dir,detail:"Multi-Timeframe - "+rbdSignal.detail});setScanning(false);sendAlert(`iFX ${rbdSignal.strat} ${pair}`,`Entry ${fmtPrice(entry,pair)} TP ${fmtPrice(tp,pair)}`);return;}let dir=pixelDir;let conf=Math.min(92,Math.max(62,68+Math.abs(score)));if(t2>=10&&t1>=-10){dir="BUY";conf=78;}if(t2<=-10&&t1<=10){dir="SELL";conf=78;}const entry=norm(base);let sl=norm(dir==="BUY"?entry-bs:entry+bs);let tp=norm(dir==="BUY"?entry+bs*11:entry-bs*11);setResult({pair:pair+".ecn",dir,entry,sl,tp,conf,livePrice:base,strat:"MULTI-TF | "+tf1+":"+tf1Dir+" "+tf2+":"+tf2Dir,detail:"Timeframe Alignment - M15 is boss"});setScanning(false);sendAlert(`iFX AI ${dir} ${pair}`,`Entry ${fmtPrice(entry,pair)} TP ${fmtPrice(tp,pair)} ${conf}%`);}
+ const openTrades=orders.filter(o=>o.status==="OPEN"||o.status==="PENDING");const floating=openTrades.reduce((s,t)=>s+(t.float||0),0);const realised=closed.reduce((s,t)=>s+(t.pnl||0),0);const tradingActive=isTrading(clock);
+ const doLogin=()=>{if(loginUser===AUTH_USER&&loginPass===AUTH_PASS){localStorage.setItem('ifx_auth','1');setAuthed(true);setLoginErr("");}else{setLoginErr("❌ Wrong Code - Try Again");setShakeIt(true);setTimeout(()=>setShakeIt(false),500);if(navigator.vibrate) navigator.vibrate(200);}};
+ const doLogout=()=>{localStorage.removeItem('ifx_auth');setAuthed(false);setLoginUser("");setLoginPass("");};
+ const checkLicenseServer=async(acc)=>{try{const r=await fetch(`/api/license?account=${acc}`);const j=await r.json();setLicCheckMsg(j.ok?"License Active ✅":"Not Active - Contact Smamkele");return j;}catch(e){setLicCheckMsg("Checking...");return{ok:false};}};
+ if(!authed){return(<div style={{maxWidth:480,margin:"0 auto",minHeight:"100vh",background:"#0a0f1a",display:"flex",flexDirection:"column",alignItems:"center",padding:"20px 14px"}}><div style={{width:"100%",border:"1px solid #d4af37",borderRadius:16,overflow:"hidden",boxShadow:"0 0 25px rgba(212,175,55,.4)",marginTop:10}}><img src="/lion-king.png" style={{width:"100%",display:"block",height:230,objectFit:"cover",objectPosition:"top"}} /></div><div style={{fontSize:26,fontWeight:900,color:"#d4af37",letterSpacing:1,marginTop:14,textAlign:"center"}}>iFX BILLIONAIRE EA</div><div style={{fontSize:11,fontWeight:800,letterSpacing:"2.5px",color:"#FFD700",marginTop:4,textAlign:"center",textTransform:"uppercase"}}>Creating More Bread Winners</div><div style={{fontSize:11,color:"#8a9bb5",marginTop:4}}>{DISPLAY_NAME} 👑</div><div className={shakeIt?"shake":""} style={{width:"100%",background:"#131e32",border:"1px solid #d4af37",borderRadius:14,padding:18,marginTop:18}}><div style={{textAlign:"center",fontSize:13,color:"#e6edf7",fontWeight:700}}>Welcome Back {DISPLAY_NAME}</div><div style={{marginTop:16}}><div style={{background:"#d4af37",color:"black",display:"inline-block",padding:"3px 10px",borderRadius:5,fontSize:12,fontWeight:800}}>Username</div><input value={loginUser} onChange={e=>setLoginUser(e.target.value)} placeholder="Enter your username" style={{width:"100%",marginTop:6,background:"#0f172a",color:"white",border:"1px solid #d4af37",borderRadius:8,padding:12,fontSize:14}} /></div><div style={{marginTop:16}}><div style={{background:"#d4af37",color:"black",display:"inline-block",padding:"3px 10px",borderRadius:5,fontSize:12,fontWeight:800}}>Password</div><div style={{position:"relative",marginTop:6}}><input type={showPass?"text":"password"} value={loginPass} onChange={e=>setLoginPass(e.target.value)} onKeyDown={e=>{if(e.key==='Enter') doLogin()}} placeholder="Enter your password" style={{width:"100%",background:"#0f172a",color:"white",border:"1px solid #d4af37",borderRadius:8,padding:12,paddingRight:45,fontSize:14}} /><span onClick={()=>setShowPass(v=>!v)} style={{position:"absolute",right:12,top:12,cursor:"pointer",fontSize:16}}>{showPass?"🙈":"👁️"}</span></div></div>{loginErr&&<div style={{color:"#f87171",fontSize:12,textAlign:"center",marginTop:10,fontWeight:700}}>{loginErr}</div>}<button onClick={doLogin} className="gold-btn" style={{width:"100%",padding:14,marginTop:18,border:"none",borderRadius:8,fontWeight:900,fontSize:16}}>LOGIN</button><div style={{textAlign:"center",fontSize:10,color:"#64748b",marginTop:12}}>Protected by {DISPLAY_NAME} • iFX BILLIONAIRE • Creating More Bread Winners</div></div></div>);}
+ return(<div style={{maxWidth:480,margin:"0 auto",minHeight:"100vh",background:"#0a0f1a",paddingBottom:10}}><div style={{padding:"8px 12px",display:"flex",justifyContent:"space-between",alignItems:"center",borderBottom:"1px solid #1e2d45"}}><div><div style={{fontSize:20,fontWeight:900,lineHeight:1,color:"#d4af37"}}>iFX BILLIONAIRE EA</div><div style={{fontSize:9,fontWeight:800,letterSpacing:"2.2px",color:"#FFD700",marginTop:3,textTransform:"uppercase"}}>Creating More Bread Winners</div></div><div style={{display:"flex",gap:6,alignItems:"center"}}><div style={{background:running?"#14532d":"#3a1a1a",color:running?"#4ade80":"#ff6b6b",padding:"6px 10px",borderRadius:16,fontSize:11,fontWeight:800}}>● {running?"RUNNING":"STOPPED"}</div><button onClick={doLogout} style={{background:"#1e293b",color:"white",border:"1px solid #334155",padding:"6px 8px",borderRadius:8,fontSize:11,fontWeight:800}}>🔒 OUT</button></div></div><div className="lion-frame"><img src="/lion-king.png" alt="King Lion" /></div><div style={{background:"#131e32",border:"1px solid #d4af37",borderRadius:12,margin:"8px 10px",padding:"8px 10px"}}><button onClick={()=>setShowRobot(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",background:"transparent",color:"white",border:"none",padding:2,fontSize:12,fontWeight:900,textAlign:"left"}}><span>ROBOT CONTROL • {connText} • {tradingActive?"ACTIVE":"PAUSED"}</span><span>{showRobot?"▲":"▼"}</span></button>{showRobot&&(<div><div style={{display:"flex",gap:8,marginTop:8}}><button onClick={startRobot} disabled={running} className="gold-btn" style={{flex:1,padding:11,border:"none",borderRadius:8,fontWeight:900,fontSize:13,opacity:running?0.5:1}}>▶ START</button><button onClick={stopRobot} style={{flex:1,padding:11,border:"none",borderRadius:8,fontWeight:900,fontSize:13,background:"#dc2626",color:"white"}}>■ STOP</button><button onClick={()=>{Notification.requestPermission();sendAlert('TEST','Buzz test!');}} style={{padding:"11px 10px",background:"#0ea5e9",color:"white",border:"none",borderRadius:8,fontWeight:800,fontSize:11}}>🔔</button></div><div style={{fontSize:11,color:"#8a9bb5",marginTop:6}}>{msg} • {scanned}/{total} • {progress}% • {lastScan}</div><div style={{height:4,background:"#1e2d45",borderRadius:3,margin:"6px 0"}}><div style={{height:"100%",background:"#d4af37",width:`${progress}%`}} /></div></div>)}{!showRobot&&(<div style={{display:"flex",gap:8,marginTop:8}}><button onClick={startRobot} disabled={running} className="gold-btn" style={{flex:1,padding:10,border:"none",borderRadius:8,fontWeight:900,fontSize:13,opacity:running?0.5:1}}>▶ START ROBOT</button><button onClick={stopRobot} style={{flex:1,padding:10,border:"none",borderRadius:8,fontWeight:900,fontSize:13,background:"#dc2626",color:"white"}}>■ STOP</button></div>)}</div><div style={{background:"linear-gradient(135deg,#0a1e3f,#0f172a)",border:"2px solid #0ea5e9",borderRadius:12,margin:"8px 10px",padding:"10px",boxShadow:"0 0 18px rgba(14,165,233,.35)"}}><button onClick={()=>setShowNews(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",alignItems:"center",background:"transparent",color:"white",border:"none",padding:0,textAlign:"left"}}><div style={{display:"flex",alignItems:"center",gap:6}}><span style={{fontSize:14,fontWeight:900}}>📰 TRADE NEWS</span><span style={{fontSize:10,color:"#fff",background:newsDirection==="SELL"?"#dc2626":newsDirection==="BUY"?"#16a34a":"#0ea5e9",padding:"3px 7px",borderRadius:4,fontWeight:900}}>{newsRunning?(newsDirection?"ARMED FOR "+newsDirection:"ARMED"):"OFF"}</span>{!showNews&&newsCountdown&&<span style={{fontSize:10,color:"#fbbf24",marginLeft:4}}>{newsCountdown}</span>}</div><span style={{display:"flex",gap:8,alignItems:"center"}}><span style={{fontSize:9,color:"#7dd3fc"}}>INVESTING.COM AUTO • 15 MIN</span><span>{showNews?"▲":"▼"}</span></span></button>{showNews&&(<div><div style={{display:"flex",gap:4,overflowX:"auto",marginTop:8,paddingBottom:2}}>{["XAUUSD","EURUSD","GBPUSD","USDJPY","USDCAD","EURJPY","NZDUSD"].map(p=>(<button key={p} onClick={()=>{setNewsPair(p);}} style={{padding:"6px 10px",borderRadius:14,background:newsPair===p?"#0ea5e9":"#1e293b",color:"white",border:newsPair===p?"1px solid #bae6fd":"none",fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{p==="XAUUSD"?"GOLD":p}</button>))}</div><div style={{background:"#0f172a",border:"1px solid #0ea5e9",borderRadius:8,padding:8,marginTop:8,fontSize:11}}><div style={{color:"#fbbf24"}}>{newsCountdown||"Fetching Investing.com AUTO..."}</div><div style={{color:"#e6edf7",marginTop:4}}>{newsMsg}{newsDirection&&<span style={{color:newsDirection==="SELL"?"#f87171":"#4ade80",fontWeight:900}}> - EXPECTED: {newsDirection} {newsPair}</span>}</div>{newsAutoCloseIn&&<div style={{color:"#f87171",marginTop:4,fontWeight:800}}>⏰ {newsAutoCloseIn} - NEWS only</div>}</div><div style={{display:"flex",gap:8,marginTop:8}}><button onClick={startNews} disabled={newsRunning} style={{flex:1,padding:12,border:"none",borderRadius:8,fontWeight:900,fontSize:13,background:"#22c55e",color:"white",opacity:newsRunning?0.5:1}}>▶ START TRADE NEWS</button><button onClick={stopNews} style={{flex:1,padding:12,border:"none",borderRadius:8,fontWeight:900,fontSize:13,background:"#dc2626",color:"white"}}>■ STOP + CLOSE ALL</button></div><div style={{fontSize:10,color:"#7dd3fc",marginTop:6,textAlign:"center"}}>AUTO: Investing.com • Pair: {newsPair} • MARKET 60 sec before • CPI/PPI: Hot = SELL GOLD, Cold = BUY GOLD</div></div>)}{!showNews&&(<div style={{display:"flex",gap:8,marginTop:8}}><button onClick={startNews} disabled={newsRunning} style={{flex:1,padding:10,border:"none",borderRadius:8,fontWeight:900,fontSize:12,background:"#22c55e",color:"white",opacity:newsRunning?0.5:1}}>▶ START NEWS</button><button onClick={stopNews} style={{flex:1,padding:10,border:"none",borderRadius:8,fontWeight:900,fontSize:12,background:"#dc2626",color:"white"}}>■ STOP</button></div>)}</div><div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:12,margin:"0 10px",padding:"7px 10px"}}><button onClick={()=>setShowBalance(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",background:"transparent",color:"white",border:"none",padding:0,fontSize:11,fontWeight:800}}><span>Balance ${balance} • Risk {riskPct}% • Lots {lots} • P/L ${fmt(floating+realised,2)}</span><span>{showBalance?"▲":"▼"}</span></button>{showBalance&&(<div style={{display:"flex",gap:6,marginTop:8}}><input type="number" value={balance} onChange={e=>setBalance(Number(e.target.value))} style={{flex:1,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:6,padding:7,fontSize:12}} /><input type="number" value={riskPct} onChange={e=>setRiskPct(Number(e.target.value))} style={{width:60,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:6,padding:7,fontSize:12}} /><input type="number" step="0.01" value={lots} onChange={e=>setLots(Number(e.target.value))} style={{width:60,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:6,padding:7,fontSize:12}} /></div>)}</div><div style={{background:"linear-gradient(135deg,#0f172a,#1e1b4b)",border:"1px solid #d4af37",borderRadius:12,margin:"8px 10px",padding:"10px"}}><button onClick={()=>setShowScanner(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",background:"transparent",color:"white",border:"none",padding:0,textAlign:"left"}}><div><div style={{fontSize:14,fontWeight:900}}>🤖 AI SCANNER 📸 <span style={{fontSize:10,color:"#4ade80",background:"#14532d",padding:"2px 6px",borderRadius:4,marginLeft:4}}>ON</span></div><div style={{fontSize:10,color:"#93c5fd",marginTop:2}}>Multi-Timeframe M1 + M15 • {detectedPair||scanPair} {detectMsg}</div></div><span style={{fontSize:14}}>{showScanner?"▲":"▼"}</span></button>{showScanner&&(<div><div style={{display:"flex",gap:4,overflowX:"auto",marginTop:8,paddingBottom:2}}>{["XAUUSD","EURUSD","GBPUSD","BTCUSD","US30","NAS100","V75","GBPJPY","USDJPY","AUDUSD"].map(p=>(<button key={p} onClick={()=>{setScanPair(p);setDetectedPair(p);setManualPrice("");}} style={{padding:"5px 10px",borderRadius:14,background:(detectedPair||scanPair)===p?"#d4af37":"#1e293b",color:(detectedPair||scanPair)===p?"black":"white",border:"none",fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{p}</button>))}</div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:8}}><label style={{display:"block",border:"1px dashed #d4af37",borderRadius:8,padding:4,textAlign:"center",cursor:"pointer",background:"#131e32",height:72,overflow:"hidden"}}>{c1?<img src={c1} style={{width:"100%",height:62,objectFit:"cover",borderRadius:4}}/>:<div style={{paddingTop:22,color:"#94a3b8",fontSize:11}}>+ Chart 1 - {tf1}</div>}<input type="file" accept="image/*" onChange={e=>handleFile(e.target.files[0],setC1)} style={{display:"none"}} /></label><label style={{display:"block",border:"1px dashed #475569",borderRadius:8,padding:4,textAlign:"center",cursor:"pointer",background:"#131e32",height:72,overflow:"hidden"}}>{c2?<img src={c2} style={{width:"100%",height:62,objectFit:"cover",borderRadius:4}}/>:<div style={{paddingTop:22,color:"#94a3b8",fontSize:11}}>+ Chart 2 - {tf2}</div>}<input type="file" accept="image/*" onChange={e=>handleFile(e.target.files[0],setC2)} style={{display:"none"}} /></label></div><div style={{fontSize:11,color:"#fbbf24",marginTop:6,minHeight:14}}>{isDetecting?"🔍 Reading screenshot...":detectMsg}</div><div style={{display:"flex",gap:6,marginTop:6}}><select value={tf1} onChange={e=>setTf1(e.target.value)} style={{flex:1,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:6,padding:6,fontSize:11}}><option>M1</option><option>M5</option><option>M15</option><option>H1</option></select><select value={tf2} onChange={e=>setTf2(e.target.value)} style={{flex:1,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:6,padding:6,fontSize:11}}><option>M15</option><option>M1</option><option>M5</option><option>H1</option></select><input value={manualPrice} onChange={e=>setManualPrice(e.target.value)} placeholder="Live price auto" style={{flex:1,background:"#0f172a",color:"#fbbf24",border:"1px solid #f59e0b",borderRadius:6,padding:6,fontSize:11}} /></div><button onClick={analyze} className="gold-btn" style={{width:"100%",padding:11,marginTop:8,border:"none",borderRadius:8,fontWeight:900,fontSize:12}}>{scanning?"🔍 COMPARING TIMEFRAMES...":"🔍 ANALYZE CHARTS"}</button>{result&&(<div style={{background:"#0f172a",border:"1px solid #22c55e",borderRadius:8,padding:8,marginTop:8}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><b style={{fontSize:13}}>{result.pair} • {result.conf}%</b><div style={{background:result.dir==="BUY"?"#16a34a":"#dc2626",color:"white",padding:"5px 14px",borderRadius:6,fontWeight:900,fontSize:13}}>{result.dir}</div></div><div style={{fontSize:10,marginTop:4,color:"#93c5fd"}}>{result.strat} - {result.detail||""}</div><div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6,marginTop:8,textAlign:"center"}}><div style={{background:"#1e293b",padding:7,borderRadius:6}}><div style={{fontSize:9,color:"#94a3b8"}}>ENTRY</div><b style={{fontSize:13}}>{fmtPrice(result.entry,result.pair)}</b></div><div style={{background:"#1e293b",padding:7,borderRadius:6}}><div style={{fontSize:9,color:"#94a3b8"}}>SL</div><b style={{fontSize:13}}>{fmtPrice(result.sl,result.pair)}</b></div><div style={{background:"#1e293b",padding:7,borderRadius:6}}><div style={{fontSize:9,color:"#fbbf24"}}>TAKE PROFIT 5X</div><b style={{color:"#4ade80",fontSize:13}}>{fmtPrice(result.tp,result.pair)}</b></div></div><button onClick={()=>sendToMT4(result,setMsg)} style={{width:"100%",padding:12,marginTop:8,background:"#f59e0b",color:"black",border:"none",borderRadius:8,fontWeight:900,fontSize:13}}>🚀 SEND TO MT4 - AUTO TRADE</button><div style={{fontSize:11,color:"#4ade80",textAlign:"center",marginTop:6}}>{msg}</div></div>)}</div>)}</div><div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:10,margin:"0 10px",padding:"8px 10px"}}><button onClick={()=>setShowSignals(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:6,padding:8,fontSize:11,fontWeight:900}}><span>SIGNALS ({signals.length})</span><span>{showSignals?"▲":"▼"}</span></button>{showSignals&&signals.map((s,i)=>(<div key={i} style={{background:"#0f172a",border:"1px solid #334155",borderRadius:8,padding:8,marginTop:6}}><div style={{display:"flex",justifyContent:"space-between",fontSize:12}}><b>{s.sym}</b><span style={{color:s.dir==="BUY"?"#4ade80":"#f87171",fontWeight:900}}>{s.dir} {s.strat}</span></div><button onClick={()=>placeOrder(s)} style={{width:"100%",padding:8,marginTop:6,background:"#f59e0b",color:"black",border:"none",borderRadius:6,fontWeight:900,fontSize:11}}>PLACE {s.dir==="BUY"?"BUY STOP":"SELL STOP"} 🔔</button></div>))}</div><div style={{background:"#131e32",border:"1px solid #d4af37",borderRadius:12,margin:"8px 10px",padding:"10px"}}><button onClick={()=>setShowLic(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",background:"transparent",color:"#FFD700",border:"none",padding:0,fontSize:12,fontWeight:900,textAlign:"left"}}><span>👑 {DISPLAY_NAME.toUpperCase()} LICENSE CONTROL</span><span>{showLic?"▲":"▼"}</span></button>{showLic&&(<div><div style={{fontSize:10,color:"#8a9bb5",marginTop:6}}>Manage EA licenses from your phone.</div>{licenseList.map((l,i)=>(<div key={i} style={{display:"flex",justifyContent:"space-between",background:"#0f172a",padding:"7px",borderRadius:6,marginTop:6,fontSize:11}}><span>Acc: <b>{l.account}</b> - Exp: {l.expiry}</span><span style={{color:"#FFD700",fontWeight:800}}>{l.status}</span></div>))}<div style={{display:"flex",gap:6,marginTop:8}}><input value={newLicAcc} onChange={e=>setNewLicAcc(e.target.value)} placeholder="Client MT4 account" style={{flex:1,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:6,padding:7,fontSize:11}} /><input value={newLicExp} onChange={e=>setNewLicExp(e.target.value)} placeholder="2027.12.31" style={{width:90,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:6,padding:7,fontSize:11}} /></div><button onClick={async()=>{if(!newLicAcc) return;const chk=await checkLicenseServer(newLicAcc);setLicenseList(p=>[...p,{account:newLicAcc,expiry:newLicExp,status:chk.ok?"ACTIVE ✅":"NOT ACTIVE - Contact Smamkele"}]);setNewLicAcc("");}} className="gold-btn" style={{width:"100%",padding:10,marginTop:8,border:"none",borderRadius:8,fontWeight:900,fontSize:12}}>ADD / CHECK CLIENT LICENSE</button><button onClick={async()=>{const j=await checkLicenseServer(KING_ACCOUNT);alert(DISPLAY_NAME+": "+(j.ok?"License Active ✅":"Check failed"));}} style={{width:"100%",padding:9,marginTop:6,background:"#0ea5e9",color:"white",border:"none",borderRadius:8,fontWeight:800,fontSize:11}}>TEST MY LICENSE</button><div style={{fontSize:11,color:"#4ade80",marginTop:6,textAlign:"center"}}>{licCheckMsg}</div></div>)}</div><div style={{textAlign:"center",fontSize:10,color:"#64748b",marginTop:6}}>UTC {new Date(clock*1000).toISOString().slice(11,19)} • Trading 07:00-21:59 • iFX BILLIONAIRE • MT4 LINKED • Logged as {DISPLAY_NAME}</div><div style={{textAlign:"center",fontSize:9,letterSpacing:"2px",color:"#FFD700",fontWeight:800,marginTop:4,textTransform:"uppercase"}}>Creating More Bread Winners 👑 v12.4 - 5X TP + BE CHAIN + CLOSED ONLY</div></div>);
 }
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script></body></html>
