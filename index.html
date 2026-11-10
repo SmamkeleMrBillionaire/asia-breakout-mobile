@@ -15,11 +15,19 @@
 .lion-frame{margin:8px 10px;border:1px solid #d4af37;border-radius:14px;overflow:hidden;box-shadow:0 0 20px rgba(212,175,55,.4);background:#0a1428}
 .lion-frame img{width:100%;display:block;height:190px;object-fit:cover;object-position:top}
 .gold-btn{background:linear-gradient(180deg,#f5d67a,#d4af37)!important;color:#000!important;border:1px solid #ffe9a3!important}
+@keyframes shake{0%,100%{transform:translateX(0)}20%,60%{transform:translateX(-8px)}40%,80%{transform:translateX(8px)}}
+.shake{animation:shake 0.4s}
 </style>
 </head><body><div id="root"></div>
 <script type="text/babel">
 const {useState,useEffect,useRef}=React;
 const WS_URL="wss://api.derivws.com/trading/v1/options/ws/public";
+
+// ===== KING LOGIN SETTINGS - CHANGE HERE =====
+const AUTH_USER = "King";
+const AUTH_PASS = "Billionaire123";
+// =============================================
+
 if('serviceWorker' in navigator){ navigator.serviceWorker.register('/sw.js').catch(()=>{}); }
 function sendAlert(t,b){
   if(navigator.vibrate) navigator.vibrate([400,100,400,100,400]);
@@ -144,6 +152,9 @@ function detectRBDDBR(cs){
   return null;
 }
 function App(){
+ const [authed,setAuthed]=useState(localStorage.getItem('ifx_auth')==='1');
+ const [loginUser,setLoginUser]=useState(""),[loginPass,setLoginPass]=useState(""),[loginErr,setLoginErr]=useState(""),[showPass,setShowPass]=useState(false),[shakeIt,setShakeIt]=useState(false);
+
  const [running,setRunning]=useState(false),[connected,setConnected]=useState(false),[connText,setConnText]=useState("EXNESS READY");
  const [balance,setBalance]=useState(10000),[riskPct,setRiskPct]=useState(1),[lots,setLots]=useState(0.1);
  const [progress,setProgress]=useState(0),[scanned,setScanned]=useState(0),[total,setTotal]=useState(0);
@@ -371,11 +382,55 @@ function App(){
  const openTrades=orders.filter(o=>o.status==="OPEN"||o.status==="PENDING");
  const floating=openTrades.reduce((s,t)=>s+(t.float||0),0); const realised=closed.reduce((s,t)=>s+(t.pnl||0),0);
  const tradingActive=isTrading(clock);
+
+ const doLogin=()=>{
+   if(loginUser===AUTH_USER && loginPass===AUTH_PASS){
+     localStorage.setItem('ifx_auth','1'); setAuthed(true); setLoginErr("");
+   } else {
+     setLoginErr("❌ Wrong King Code - Try Again"); setShakeIt(true); setTimeout(()=>setShakeIt(false),500);
+     if(navigator.vibrate) navigator.vibrate(200);
+   }
+ };
+ const doLogout=()=>{ localStorage.removeItem('ifx_auth'); setAuthed(false); setLoginUser(""); setLoginPass(""); };
+
+ if(!authed){
+   return (
+     <div style={{maxWidth:480,margin:"0 auto",minHeight:"100vh",background:"#0a0f1a",display:"flex",flexDirection:"column",alignItems:"center",padding:"20px 14px"}}>
+       <div style={{width:"100%",border:"1px solid #d4af37",borderRadius:16,overflow:"hidden",boxShadow:"0 0 25px rgba(212,175,55,.4)",marginTop:10}}>
+         <img src="/lion-king.png" style={{width:"100%",display:"block",height:230,objectFit:"cover",objectPosition:"top"}} />
+       </div>
+       <div style={{fontSize:26,fontWeight:900,color:"#d4af37",letterSpacing:1,marginTop:14,textAlign:"center"}}>iFX BILLIONAIRE EA</div>
+       <div style={{fontSize:11,color:"#8a9bb5",marginTop:2}}>King Access Only 👑</div>
+
+       <div className={shakeIt?"shake":""} style={{width:"100%",background:"#131e32",border:"1px solid #d4af37",borderRadius:14,padding:18,marginTop:18}}>
+         <div style={{textAlign:"center",fontSize:13,color:"#e6edf7",fontWeight:700}}>Welcome Back King</div>
+         <div style={{marginTop:16}}>
+           <div style={{background:"#d4af37",color:"black",display:"inline-block",padding:"3px 10px",borderRadius:5,fontSize:12,fontWeight:800}}>Username</div>
+           <input value={loginUser} onChange={e=>setLoginUser(e.target.value)} placeholder="Enter your username" style={{width:"100%",marginTop:6,background:"#0f172a",color:"white",border:"1px solid #d4af37",borderRadius:8,padding:12,fontSize:14}} />
+         </div>
+         <div style={{marginTop:16}}>
+           <div style={{background:"#d4af37",color:"black",display:"inline-block",padding:"3px 10px",borderRadius:5,fontSize:12,fontWeight:800}}>Password</div>
+           <div style={{position:"relative",marginTop:6}}>
+             <input type={showPass?"text":"password"} value={loginPass} onChange={e=>setLoginPass(e.target.value)} onKeyDown={e=>{if(e.key==='Enter') doLogin()}} placeholder="Enter your password" style={{width:"100%",background:"#0f172a",color:"white",border:"1px solid #d4af37",borderRadius:8,padding:12,paddingRight:45,fontSize:14}} />
+             <span onClick={()=>setShowPass(v=>!v)} style={{position:"absolute",right:12,top:12,cursor:"pointer",fontSize:16}}>{showPass?"🙈":"👁️"}</span>
+           </div>
+         </div>
+         {loginErr && <div style={{color:"#f87171",fontSize:12,textAlign:"center",marginTop:10,fontWeight:700}}>{loginErr}</div>}
+         <button onClick={doLogin} className="gold-btn" style={{width:"100%",padding:14,marginTop:18,border:"none",borderRadius:8,fontWeight:900,fontSize:16}}>LOGIN</button>
+         <div style={{textAlign:"center",fontSize:10,color:"#64748b",marginTop:12}}>Protected by King Security • iFX BILLIONAIRE</div>
+       </div>
+     </div>
+   );
+ }
+
  return (
   <div style={{maxWidth:480,margin:"0 auto",minHeight:"100vh",background:"#0a0f1a",paddingBottom:10}}>
    <div style={{padding:"8px 12px",display:"flex",justifyContent:"space-between",alignItems:"center",borderBottom:"1px solid #1e2d45"}}>
      <div style={{fontSize:20,fontWeight:900,lineHeight:1,color:"#d4af37"}}>iFX BILLIONAIRE EA</div>
-     <div style={{background:running?"#14532d":"#3a1a1a",color:running?"#4ade80":"#ff6b6b",padding:"6px 10px",borderRadius:16,fontSize:11,fontWeight:800}}>● {running?"RUNNING":"STOPPED"}</div>
+     <div style={{display:"flex",gap:6,alignItems:"center"}}>
+       <div style={{background:running?"#14532d":"#3a1a1a",color:running?"#4ade80":"#ff6b6b",padding:"6px 10px",borderRadius:16,fontSize:11,fontWeight:800}}>● {running?"RUNNING":"STOPPED"}</div>
+       <button onClick={doLogout} style={{background:"#1e293b",color:"white",border:"1px solid #334155",padding:"6px 8px",borderRadius:8,fontSize:11,fontWeight:800}}>🔒 OUT</button>
+     </div>
    </div>
    <div className="lion-frame"><img src="/lion-king.png" alt="King Lion" /></div>
    <div style={{background:"#131e32",border:"1px solid #d4af37",borderRadius:12,margin:"8px 10px",padding:"8px 10px"}}>
@@ -455,7 +510,7 @@ function App(){
        </div>
      ))}
    </div>
-   <div style={{textAlign:"center",fontSize:10,color:"#64748b",marginTop:6}}>UTC {new Date(clock*1000).toISOString().slice(11,19)} • Trading 07:00-21:59 • iFX BILLIONAIRE • MT4 LINKED</div>
+   <div style={{textAlign:"center",fontSize:10,color:"#64748b",marginTop:6}}>UTC {new Date(clock*1000).toISOString().slice(11,19)} • Trading 07:00-21:59 • iFX BILLIONAIRE • MT4 LINKED • Logged as {AUTH_USER}</div>
   </div>
  );
 }
