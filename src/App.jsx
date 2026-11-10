@@ -111,7 +111,10 @@ export default function App(){
   return (
     <div style={{background:"#0a0f1a",minHeight:"100vh",color:"#e6edf7",fontFamily:"system-ui",paddingBottom:30, maxWidth:480, margin:"0 auto"}}>
       <div style={{padding:"14px 16px",display:"flex",justifyContent:"space-between",alignItems:"center",borderBottom:"1px solid #1e2d45"}}>
-        <div style={{fontSize:28,fontWeight:900,letterSpacing:"-0.5px"}}>iFX BILLIONAIRE EA</div>
+        <div>
+          <div style={{fontSize:28,fontWeight:900,letterSpacing:"-0.5px",lineHeight:1}}>iFX BILLIONAIRE EA</div>
+          <div style={{fontSize:11,fontWeight:800,letterSpacing:"2.5px",color:"#FFD700",marginTop:4,textTransform:"uppercase"}}>Creating More Bread Winners</div>
+        </div>
         <div style={{background:running?"#14532d":"#3a1a1a",color:running?"#4ade80":"#ff6b6b",padding:"8px 14px",borderRadius:20,fontSize:13,fontWeight:800,whiteSpace:"nowrap"}}>● {running?"RUNNING":"STOPPED"}</div>
       </div>
       <div style={{background:"#131e32",border:"1px solid #24334b",borderRadius:16,margin:12,padding:16}}>
@@ -192,6 +195,7 @@ export default function App(){
         {closedTrades.slice(0,10).map((t,i)=>(<div key={i} style={{fontSize:11,padding:"8px 0",borderBottom:"1px solid #1e2d45"}}>{t.displayName} - {t.exitReason} ${fmt(t.realisedPnl,2)} • {t.closedAt}</div>))}
         {closedTrades.length===0 && <div style={{fontSize:11,color:"#8a9bb5",marginTop:8}}>No closed trades yet.</div>}
       </div>
+      <div style={{textAlign:"center",padding:"16px 12px 8px",fontSize:11,letterSpacing:"2px",color:"#FFD700",fontWeight:800,textTransform:"uppercase"}}>Creating More Bread Winners 👑</div>
     </div>
   );
 }
