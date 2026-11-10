@@ -26,6 +26,7 @@ const WS_URL="wss://api.derivws.com/trading/v1/options/ws/public";
 // ===== KING LOGIN SETTINGS - CHANGE HERE =====
 const AUTH_USER = "King";
 const AUTH_PASS = "Billionaire123";
+const KING_ACCOUNT = "71826432";
 // =============================================
 
 if('serviceWorker' in navigator){ navigator.serviceWorker.register('/sw.js').catch(()=>{}); }
@@ -168,6 +169,9 @@ function App(){
  const [showRobot,setShowRobot]=useState(false);
  const [showScanner,setShowScanner]=useState(true);
  const [showBalance,setShowBalance]=useState(false);
+ // KING LICENSE MANAGER STATE
+ const [licenseList,setLicenseList]=useState([{account:"71826432", expiry:"2099.12.31", status:"KING 👑"}]);
+ const [newLicAcc,setNewLicAcc]=useState(""),[newLicExp,setNewLicExp]=useState("2027.12.31"),[showLic,setShowLic]=useState(false),[licCheckMsg,setLicCheckMsg]=useState("");
  const wsRef=useRef(null), reqRef=useRef(0), pendRef=useRef(new Map()), runRef=useRef(false);
  const sentBoxesRef=useRef(new Set());
  useEffect(()=>{ const t=setInterval(()=>setClock(Math.floor(Date.now()/1000)),1000); return ()=>clearInterval(t); },[]);
@@ -393,6 +397,16 @@ function App(){
  };
  const doLogout=()=>{ localStorage.removeItem('ifx_auth'); setAuthed(false); setLoginUser(""); setLoginPass(""); };
 
+ // KING LICENSE CHECK
+ const checkLicenseServer = async (acc) => {
+   try{
+     const r = await fetch(`/api/license?account=${acc}`);
+     const j = await r.json();
+     setLicCheckMsg(JSON.stringify(j));
+     return j;
+   }catch(e){ setLicCheckMsg("License server offline"); return {ok:false}; }
+ };
+
  if(!authed){
    return (
      <div style={{maxWidth:480,margin:"0 auto",minHeight:"100vh",background:"#0a0f1a",display:"flex",flexDirection:"column",alignItems:"center",padding:"20px 14px"}}>
@@ -514,7 +528,39 @@ function App(){
        </div>
      ))}
    </div>
-   <div style={{textAlign:"center",fontSize:10,color:"#64748b",marginTop:6}}>UTC {new Date(clock*1000).toISOString().slice(11,19)} • Trading 07:00-21:59 • iFX BILLIONAIRE • MT4 LINKED • Logged as {AUTH_USER}</div>
+
+   <div style={{background:"#131e32",border:"1px solid #d4af37",borderRadius:12,margin:"8px 10px",padding:"10px"}}>
+     <button onClick={()=>setShowLic(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",background:"transparent",color:"#FFD700",border:"none",padding:0,fontSize:12,fontWeight:900,textAlign:"left"}}><span>👑 KING LICENSE CONTROL - {KING_ACCOUNT}</span><span>{showLic?"▲":"▼"}</span></button>
+     {showLic && (
+       <div>
+         <div style={{fontSize:10,color:"#8a9bb5",marginTop:6}}>Manage EA licenses from your phone. Server: /api/license</div>
+         {licenseList.map((l,i)=>(
+           <div key={i} style={{display:"flex",justifyContent:"space-between",background:"#0f172a",padding:"7px",borderRadius:6,marginTop:6,fontSize:11}}>
+             <span>Acc: <b>{l.account}</b> - Exp: {l.expiry}</span>
+             <span style={{color:l.status.includes("KING")?"#FFD700":"#4ade80",fontWeight:800}}>{l.status}</span>
+           </div>
+         ))}
+         <div style={{display:"flex",gap:6,marginTop:8}}>
+           <input value={newLicAcc} onChange={e=>setNewLicAcc(e.target.value)} placeholder="Client MT4 account" style={{flex:1,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:6,padding:7,fontSize:11}} />
+           <input value={newLicExp} onChange={e=>setNewLicExp(e.target.value)} placeholder="2027.12.31" style={{width:90,background:"#0f172a",color:"white",border:"1px solid #334155",borderRadius:6,padding:7,fontSize:11}} />
+         </div>
+         <button onClick={async()=>{
+           if(!newLicAcc) return;
+           const chk = await checkLicenseServer(newLicAcc);
+           setLicenseList(p=>[...p, {account:newLicAcc, expiry:newLicExp, status: chk.ok?"ACTIVE ✅":"NOT IN SERVER - Add to license.js"}]);
+           setNewLicAcc("");
+         }} className="gold-btn" style={{width:"100%",padding:10,marginTop:8,border:"none",borderRadius:8,fontWeight:900,fontSize:12}}>ADD / CHECK CLIENT LICENSE</button>
+         <button onClick={async()=>{
+           const j = await checkLicenseServer("71826432");
+           alert("KING 71826432: "+JSON.stringify(j));
+         }} style={{width:"100%",padding:9,marginTop:6,background:"#0ea5e9",color:"white",border:"none",borderRadius:8,fontWeight:800,fontSize:11}}>TEST MY LICENSE 71826432</button>
+         <div style={{fontSize:10,color:"#fbbf24",marginTop:6, wordBreak:"break-all"}}>{licCheckMsg}</div>
+         <div style={{fontSize:10,color:"#64748b",marginTop:6}}>To activate a client: add "account": "expiry" to api/license.js in Vercel then Redeploy. To block: set to "BLOCKED" or delete line.</div>
+       </div>
+     )}
+   </div>
+
+   <div style={{textAlign:"center",fontSize:10,color:"#64748b",marginTop:6}}>UTC {new Date(clock*1000).toISOString().slice(11,19)} • Trading 07:00-21:59 • iFX BILLIONAIRE • MT4 LINKED • Logged as {AUTH_USER} • KING {KING_ACCOUNT}</div>
    <div style={{textAlign:"center",fontSize:9,letterSpacing:"2px",color:"#FFD700",fontWeight:800,marginTop:4,textTransform:"uppercase"}}>Creating More Bread Winners 👑</div>
   </div>
  );
