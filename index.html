@@ -23,9 +23,10 @@
 const {useState,useEffect,useRef}=React;
 const WS_URL="wss://api.derivws.com/trading/v1/options/ws/public";
 
-// ===== KING LOGIN SETTINGS - CHANGE HERE =====
+// ===== SMAMKELE MR BILLIONAIRE LOGIN - Login stays King / Billionaire123 behind scenes =====
 const AUTH_USER = "King";
 const AUTH_PASS = "Billionaire123";
+const DISPLAY_NAME = "Smamkele Mr Billionaire";
 const KING_ACCOUNT = "71826432";
 // =============================================
 
@@ -155,7 +156,6 @@ function detectRBDDBR(cs){
 function App(){
  const [authed,setAuthed]=useState(localStorage.getItem('ifx_auth')==='1');
  const [loginUser,setLoginUser]=useState(""),[loginPass,setLoginPass]=useState(""),[loginErr,setLoginErr]=useState(""),[showPass,setShowPass]=useState(false),[shakeIt,setShakeIt]=useState(false);
-
  const [running,setRunning]=useState(false),[connected,setConnected]=useState(false),[connText,setConnText]=useState("EXNESS READY");
  const [balance,setBalance]=useState(10000),[riskPct,setRiskPct]=useState(1),[lots,setLots]=useState(0.1);
  const [progress,setProgress]=useState(0),[scanned,setScanned]=useState(0),[total,setTotal]=useState(0);
@@ -169,8 +169,8 @@ function App(){
  const [showRobot,setShowRobot]=useState(false);
  const [showScanner,setShowScanner]=useState(true);
  const [showBalance,setShowBalance]=useState(false);
- // KING LICENSE MANAGER STATE
- const [licenseList,setLicenseList]=useState([{account:"71826432", expiry:"2099.12.31", status:"KING 👑"}]);
+ // SMAMKELE MR BILLIONAIRE LICENSE MANAGER STATE - CLEAN, NO SERVER DETAILS
+ const [licenseList,setLicenseList]=useState([{account:"71826432", expiry:"2099.12.31", status:"SMAMKELE MR BILLIONAIRE 👑"}]);
  const [newLicAcc,setNewLicAcc]=useState(""),[newLicExp,setNewLicExp]=useState("2027.12.31"),[showLic,setShowLic]=useState(false),[licCheckMsg,setLicCheckMsg]=useState("");
  const wsRef=useRef(null), reqRef=useRef(0), pendRef=useRef(new Map()), runRef=useRef(false);
  const sentBoxesRef=useRef(new Set());
@@ -179,7 +179,7 @@ function App(){
  const request=(p)=>new Promise((res,rej)=>{ const ws=wsRef.current; if(!ws||ws.readyState!==1){rej(new Error("Not connected"));return;} const id=++reqRef.current; const to=setTimeout(()=>{pendRef.current.delete(id); rej(new Error("timeout"));},20000); pendRef.current.set(id,{res,rej,to}); ws.send(JSON.stringify({...p,req_id:id})); });
  const scanAll=async()=>{
    const ws=wsRef.current; if(!ws) return;
-   setMsg("Scanning - M15 - Orange Box + RBD/DBR - ALL PAIRS...");
+   setMsg("Scanning - M15 - Orange Box + RBD/DBR + RESPECT - ALL PAIRS...");
    try{
      const r1=await request({active_symbols:"brief"});
      const allSyms=(r1.active_symbols||[]).filter(s=>s.underlying_symbol);
@@ -204,8 +204,8 @@ function App(){
          let sig=null;
          if(last.open>box.high && col==="RED" && last.low>=box.low && last.low<=box.high && last.close>box.high) sig={dir:"BUY",strat:"ORANGE RETEST BUY",entry:last.high};
          else if(last.open<box.low && col==="GREEN" && last.high>=box.low && last.high<=box.high && last.close<box.low) sig={dir:"SELL",strat:"ORANGE RETEST SELL",entry:last.low};
-         else if(last.open>box.high && col==="RED" && last.close>=box.low && last.close<=box.high) sig={dir:"SELL",strat:"ORANGE BREAK-IN SELL",entry:box.low};
-         else if(last.open<box.low && col==="GREEN" && last.close>=box.low && last.close<=box.high) sig={dir:"BUY",strat:"ORANGE BREAK-IN BUY",entry:box.high};
+         else if(prev.open>box.high && prevCol==="RED" && prev.close>=box.low && prev.close<=box.high && col==="GREEN" && last.close>=box.low && last.close<=box.high) sig={dir:"BUY",strat:"RESPECT BUY",entry:last.high};
+         else if(prev.open<box.low && prevCol==="GREEN" && prev.close>=box.low && prev.close<=box.high && col==="RED" && last.close>=box.low && last.close<=box.high) sig={dir:"SELL",strat:"RESPECT SELL",entry:last.low};
          else if(prev.close>box.high && prevCol==="GREEN" && col==="RED" && last.open>box.high && last.low>=box.high && last.close>box.high) sig={dir:"BUY",strat:"ORANGE BREAKOUT BUY 1st RED",entry:last.high};
          else if(prev.close<box.low && prevCol==="RED" && col==="GREEN" && last.open<box.low && last.high<=box.low && last.close<box.low) sig={dir:"SELL",strat:"ORANGE BREAKOUT SELL 1st GREEN",entry:last.low};
          else if(last.close>box.high && prev.close<=box.high && col==="GREEN" && last.open>box.low) sig={dir:"BUY",strat:"ORANGE BREAKOUT BUY",entry:last.close};
@@ -386,27 +386,24 @@ function App(){
  const openTrades=orders.filter(o=>o.status==="OPEN"||o.status==="PENDING");
  const floating=openTrades.reduce((s,t)=>s+(t.float||0),0); const realised=closed.reduce((s,t)=>s+(t.pnl||0),0);
  const tradingActive=isTrading(clock);
-
  const doLogin=()=>{
    if(loginUser===AUTH_USER && loginPass===AUTH_PASS){
      localStorage.setItem('ifx_auth','1'); setAuthed(true); setLoginErr("");
    } else {
-     setLoginErr("❌ Wrong King Code - Try Again"); setShakeIt(true); setTimeout(()=>setShakeIt(false),500);
+     setLoginErr("❌ Wrong Code - Try Again"); setShakeIt(true); setTimeout(()=>setShakeIt(false),500);
      if(navigator.vibrate) navigator.vibrate(200);
    }
  };
  const doLogout=()=>{ localStorage.removeItem('ifx_auth'); setAuthed(false); setLoginUser(""); setLoginPass(""); };
-
- // KING LICENSE CHECK
+ // LICENSE CHECK - HIDDEN DETAILS, CLEAN FOR CLIENTS
  const checkLicenseServer = async (acc) => {
    try{
      const r = await fetch(`/api/license?account=${acc}`);
      const j = await r.json();
-     setLicCheckMsg(JSON.stringify(j));
+     setLicCheckMsg(j.ok ? "License Active ✅" : "Not Active - Contact Smamkele");
      return j;
-   }catch(e){ setLicCheckMsg("License server offline"); return {ok:false}; }
+   }catch(e){ setLicCheckMsg("Checking..."); return {ok:false}; }
  };
-
  if(!authed){
    return (
      <div style={{maxWidth:480,margin:"0 auto",minHeight:"100vh",background:"#0a0f1a",display:"flex",flexDirection:"column",alignItems:"center",padding:"20px 14px"}}>
@@ -415,10 +412,9 @@ function App(){
        </div>
        <div style={{fontSize:26,fontWeight:900,color:"#d4af37",letterSpacing:1,marginTop:14,textAlign:"center"}}>iFX BILLIONAIRE EA</div>
        <div style={{fontSize:11,fontWeight:800,letterSpacing:"2.5px",color:"#FFD700",marginTop:4,textAlign:"center",textTransform:"uppercase"}}>Creating More Bread Winners</div>
-       <div style={{fontSize:11,color:"#8a9bb5",marginTop:4}}>King Access Only 👑</div>
-
+       <div style={{fontSize:11,color:"#8a9bb5",marginTop:4}}>{DISPLAY_NAME} 👑</div>
        <div className={shakeIt?"shake":""} style={{width:"100%",background:"#131e32",border:"1px solid #d4af37",borderRadius:14,padding:18,marginTop:18}}>
-         <div style={{textAlign:"center",fontSize:13,color:"#e6edf7",fontWeight:700}}>Welcome Back King</div>
+         <div style={{textAlign:"center",fontSize:13,color:"#e6edf7",fontWeight:700}}>Welcome Back {DISPLAY_NAME}</div>
          <div style={{marginTop:16}}>
            <div style={{background:"#d4af37",color:"black",display:"inline-block",padding:"3px 10px",borderRadius:5,fontSize:12,fontWeight:800}}>Username</div>
            <input value={loginUser} onChange={e=>setLoginUser(e.target.value)} placeholder="Enter your username" style={{width:"100%",marginTop:6,background:"#0f172a",color:"white",border:"1px solid #d4af37",borderRadius:8,padding:12,fontSize:14}} />
@@ -432,12 +428,11 @@ function App(){
          </div>
          {loginErr && <div style={{color:"#f87171",fontSize:12,textAlign:"center",marginTop:10,fontWeight:700}}>{loginErr}</div>}
          <button onClick={doLogin} className="gold-btn" style={{width:"100%",padding:14,marginTop:18,border:"none",borderRadius:8,fontWeight:900,fontSize:16}}>LOGIN</button>
-         <div style={{textAlign:"center",fontSize:10,color:"#64748b",marginTop:12}}>Protected by King Security • iFX BILLIONAIRE • Creating More Bread Winners</div>
+         <div style={{textAlign:"center",fontSize:10,color:"#64748b",marginTop:12}}>Protected by {DISPLAY_NAME} • iFX BILLIONAIRE • Creating More Bread Winners</div>
        </div>
      </div>
    );
  }
-
  return (
   <div style={{maxWidth:480,margin:"0 auto",minHeight:"100vh",background:"#0a0f1a",paddingBottom:10}}>
    <div style={{padding:"8px 12px",display:"flex",justifyContent:"space-between",alignItems:"center",borderBottom:"1px solid #1e2d45"}}>
@@ -530,14 +525,14 @@ function App(){
    </div>
 
    <div style={{background:"#131e32",border:"1px solid #d4af37",borderRadius:12,margin:"8px 10px",padding:"10px"}}>
-     <button onClick={()=>setShowLic(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",background:"transparent",color:"#FFD700",border:"none",padding:0,fontSize:12,fontWeight:900,textAlign:"left"}}><span>👑 KING LICENSE CONTROL - {KING_ACCOUNT}</span><span>{showLic?"▲":"▼"}</span></button>
+     <button onClick={()=>setShowLic(v=>!v)} style={{width:"100%",display:"flex",justifyContent:"space-between",background:"transparent",color:"#FFD700",border:"none",padding:0,fontSize:12,fontWeight:900,textAlign:"left"}}><span>👑 {DISPLAY_NAME.toUpperCase()} LICENSE CONTROL</span><span>{showLic?"▲":"▼"}</span></button>
      {showLic && (
        <div>
-         <div style={{fontSize:10,color:"#8a9bb5",marginTop:6}}>Manage EA licenses from your phone. Server: /api/license</div>
+         <div style={{fontSize:10,color:"#8a9bb5",marginTop:6}}>Manage EA licenses from your phone.</div>
          {licenseList.map((l,i)=>(
            <div key={i} style={{display:"flex",justifyContent:"space-between",background:"#0f172a",padding:"7px",borderRadius:6,marginTop:6,fontSize:11}}>
              <span>Acc: <b>{l.account}</b> - Exp: {l.expiry}</span>
-             <span style={{color:l.status.includes("KING")?"#FFD700":"#4ade80",fontWeight:800}}>{l.status}</span>
+             <span style={{color:"#FFD700",fontWeight:800}}>{l.status}</span>
            </div>
          ))}
          <div style={{display:"flex",gap:6,marginTop:8}}>
@@ -547,20 +542,19 @@ function App(){
          <button onClick={async()=>{
            if(!newLicAcc) return;
            const chk = await checkLicenseServer(newLicAcc);
-           setLicenseList(p=>[...p, {account:newLicAcc, expiry:newLicExp, status: chk.ok?"ACTIVE ✅":"NOT IN SERVER - Add to license.js"}]);
+           setLicenseList(p=>[...p, {account:newLicAcc, expiry:newLicExp, status: chk.ok?"ACTIVE ✅":"NOT ACTIVE - Contact Smamkele"}]);
            setNewLicAcc("");
          }} className="gold-btn" style={{width:"100%",padding:10,marginTop:8,border:"none",borderRadius:8,fontWeight:900,fontSize:12}}>ADD / CHECK CLIENT LICENSE</button>
          <button onClick={async()=>{
-           const j = await checkLicenseServer("71826432");
-           alert("KING 71826432: "+JSON.stringify(j));
-         }} style={{width:"100%",padding:9,marginTop:6,background:"#0ea5e9",color:"white",border:"none",borderRadius:8,fontWeight:800,fontSize:11}}>TEST MY LICENSE 71826432</button>
-         <div style={{fontSize:10,color:"#fbbf24",marginTop:6, wordBreak:"break-all"}}>{licCheckMsg}</div>
-         <div style={{fontSize:10,color:"#64748b",marginTop:6}}>To activate a client: add "account": "expiry" to api/license.js in Vercel then Redeploy. To block: set to "BLOCKED" or delete line.</div>
+           const j = await checkLicenseServer(KING_ACCOUNT);
+           alert(DISPLAY_NAME+": "+(j.ok?"License Active ✅":"Check failed"));
+         }} style={{width:"100%",padding:9,marginTop:6,background:"#0ea5e9",color:"white",border:"none",borderRadius:8,fontWeight:800,fontSize:11}}>TEST MY LICENSE</button>
+         <div style={{fontSize:11,color:"#4ade80",marginTop:6, textAlign:"center"}}>{licCheckMsg}</div>
        </div>
      )}
    </div>
 
-   <div style={{textAlign:"center",fontSize:10,color:"#64748b",marginTop:6}}>UTC {new Date(clock*1000).toISOString().slice(11,19)} • Trading 07:00-21:59 • iFX BILLIONAIRE • MT4 LINKED • Logged as {AUTH_USER} • KING {KING_ACCOUNT}</div>
+   <div style={{textAlign:"center",fontSize:10,color:"#64748b",marginTop:6}}>UTC {new Date(clock*1000).toISOString().slice(11,19)} • Trading 07:00-21:59 • iFX BILLIONAIRE • MT4 LINKED • Logged as {DISPLAY_NAME}</div>
    <div style={{textAlign:"center",fontSize:9,letterSpacing:"2px",color:"#FFD700",fontWeight:800,marginTop:4,textTransform:"uppercase"}}>Creating More Bread Winners 👑</div>
   </div>
  );
