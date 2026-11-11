@@ -24,7 +24,7 @@
 <script type="text/babel">
 const {useState,useEffect,useRef}=React;
 const WS_URL="wss://api.derivws.com/trading/v1/options/ws/public";
-const AUTH_USER="King";const AUTH_PASS="Billionaire123";const DISPLAY_NAME="Smamkele Mr Billionaire";const KING_ACCOUNT="71826432";const KING_ACCOUNT2="53962946";const KING_ACCOUNTS=["71826432","53962946"];
+const AUTH_USER="King";const AUTH_PASS="Billionaire123";const DISPLAY_NAME="Smamkele Mr Billionaire";const KING_ACCOUNT="53962946";const KING_ACCOUNT2="53962946";const KING_ACCOUNTS=["53962946","53962946"];
 const EA_COMMENT="iFX BILLIONAIRE EA";
 if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{});}
 function sendAlert(t,b){if(navigator.vibrate) navigator.vibrate([400,100,400,100,400]);try{const a=new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg');a.play().catch(()=>{});}catch(e){}if('Notification' in window && Notification.permission==='granted'){if(navigator.serviceWorker && navigator.serviceWorker.ready){navigator.serviceWorker.ready.then(reg=>{reg.showNotification(t,{body:b,icon:'/icon-192.png',vibrate:[400,100,400]});}).catch(()=>{try{new Notification(t,{body:b});}catch(e){}});}else{try{new Notification(t,{body:b});}catch(e){}}}else if('Notification' in window){Notification.requestPermission().then(()=>{try{new Notification(t,{body:b});}catch(e){}});}}
